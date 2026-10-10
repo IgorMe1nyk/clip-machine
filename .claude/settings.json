@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "defaultMode": "default",
+    "disableBypassPermissionsMode": "disable",
+    "disableAutoMode": "disable",
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(!.env.example)"
+    ],
+    "ask": [
+      "Bash(git push *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv",
+            "args": [
+              "run",
+              "--no-sync",
+              "--quiet",
+              "python",
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/ruff_fix.py"
+            ],
+            "timeout": 60,
+            "statusMessage": "ruff format + check"
+          }
+        ]
+      }
+    ]
+  }
+}
