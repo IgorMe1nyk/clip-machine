@@ -20,6 +20,7 @@ from clipmachine.pipeline import (
 )
 from clipmachine.preflight import MissingToolError, check_ffmpeg
 from clipmachine.runs import RunError
+from helpers import edit_yaml
 
 TODAY = date(2026, 10, 12)
 
@@ -244,6 +245,25 @@ def test_bad_input_creates_nothing(project: Path) -> None:
     notes.write_text("hi", encoding="utf-8")
     with pytest.raises(RunError):
         start_new_run(project, notes, "example-client", TODAY)
+    assert list((project / "runs").iterdir()) == []
+
+
+def test_oversize_input_creates_nothing(project: Path) -> None:
+    edit_yaml(
+        project / "config" / "default.yaml", lambda d: d["fetch"].update(max_size_gb=0.000001)
+    )
+    media = project / "big.mp4"
+    media.write_bytes(b"x" * 2000)  # limit is about 1074 bytes
+    with pytest.raises(RunError, match="too large"):
+        start_new_run(project, media, "example-client", TODAY)
+    assert list((project / "runs").iterdir()) == []
+
+
+def test_audio_only_input_creates_nothing(project: Path) -> None:
+    media = project / "talk.mp3"
+    media.write_bytes(b"")
+    with pytest.raises(RunError, match="audio-only"):
+        start_new_run(project, media, "example-client", TODAY)
     assert list((project / "runs").iterdir()) == []
 
 

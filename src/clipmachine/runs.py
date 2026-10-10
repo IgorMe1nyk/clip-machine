@@ -8,7 +8,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-ALLOWED_EXTENSIONS = frozenset({".mp4", ".mov", ".mkv", ".m4a", ".wav", ".mp3"})
+ALLOWED_EXTENSIONS = frozenset({".mp4", ".mov", ".mkv", ".webm"})
+AUDIO_ONLY_EXTENSIONS = frozenset({".m4a", ".wav", ".mp3"})
+GIB = 1024**3
 MAX_SLUG_LENGTH = 50
 FALLBACK_SLUG = "episode"
 
@@ -24,15 +26,29 @@ def slugify(stem: str) -> str:
 
 
 def validate_input(path: Path) -> Path:
-    """Light checks only; full container/size/duration checks arrive in Brief 2."""
+    """Cheap checks on the path only. The real container check is ffprobe's, in the fetch stage."""
     if not path.exists():
         raise RunError(f"input file not found: {path}")
     if not path.is_file():
         raise RunError(f"input is not a regular file: {path}")
-    if path.suffix.lower() not in ALLOWED_EXTENSIONS:
+    suffix = path.suffix.lower()
+    if suffix in AUDIO_ONLY_EXTENSIONS:
+        raise RunError("audio-only files aren't supported yet (video needed for clips)")
+    if suffix not in ALLOWED_EXTENSIONS:
         allowed = " ".join(sorted(ALLOWED_EXTENSIONS))
         raise RunError(f"unsupported input type {path.suffix or '(none)'!r}; allowed: {allowed}")
     return path
+
+
+def check_input_size(path: Path, max_size_gb: float) -> int:
+    """Return the file size in bytes, or raise if it is over the limit (GiB, 1024^3 bytes)."""
+    size = path.stat().st_size
+    if size > max_size_gb * GIB:
+        raise RunError(
+            f"input file is too large: {size / GIB:.2f} GB, limit is {max_size_gb:g} GB "
+            "(fetch.max_size_gb)"
+        )
+    return size
 
 
 def ensure_inside(root: Path, candidate: Path) -> Path:

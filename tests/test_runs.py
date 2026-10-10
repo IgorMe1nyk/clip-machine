@@ -7,7 +7,9 @@ import pytest
 
 from clipmachine import runs
 from clipmachine.runs import (
+    GIB,
     RunError,
+    check_input_size,
     create_run_dir,
     ensure_inside,
     slugify,
@@ -79,11 +81,21 @@ def test_ensure_inside_rejects_other_locations(tmp_path: Path) -> None:
         ensure_inside(root, root / "nested" / "deeper")
 
 
-@pytest.mark.parametrize("name", ["a.mp4", "a.MOV", "a.mkv", "a.m4a", "a.wav", "a.mp3"])
+@pytest.mark.parametrize("name", ["a.mp4", "a.MOV", "a.mkv", "a.webm", "a.WebM"])
 def test_input_extensions_allowed(tmp_path: Path, name: str) -> None:
     f = tmp_path / name
     f.write_bytes(b"")
     assert validate_input(f) == f
+
+
+@pytest.mark.parametrize("name", ["a.m4a", "a.WAV", "a.mp3"])
+def test_audio_only_extensions_rejected_with_specific_message(tmp_path: Path, name: str) -> None:
+    f = tmp_path / name
+    f.write_bytes(b"")
+    with pytest.raises(
+        RunError, match=r"^audio-only files aren't supported yet \(video needed for clips\)$"
+    ):
+        validate_input(f)
 
 
 @pytest.mark.parametrize("name", ["a.txt", "a.exe", "a", "a.mp4.txt", "a.avi"])
@@ -104,6 +116,15 @@ def test_input_directory_rejected(tmp_path: Path) -> None:
     d.mkdir()
     with pytest.raises(RunError, match="regular file"):
         validate_input(d)
+
+
+def test_size_check_boundary(tmp_path: Path) -> None:
+    f = tmp_path / "a.mp4"
+    f.write_bytes(b"x" * 1024)
+    limit_gb = 1024 / GIB  # exactly the file size
+    assert check_input_size(f, limit_gb) == 1024
+    with pytest.raises(RunError, match="too large"):
+        check_input_size(f, limit_gb * 0.99)
 
 
 def test_write_json_atomic_replaces_and_leaves_no_temp(tmp_path: Path) -> None:

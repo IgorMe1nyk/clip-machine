@@ -13,7 +13,13 @@ from clipmachine.config import dump_resolved, load_resolved, load_resolved_file
 from clipmachine.context import RunContext
 from clipmachine.models import RunState, StageState
 from clipmachine.preflight import check_ffmpeg
-from clipmachine.runs import RunError, create_run_dir, validate_input, write_json_atomic
+from clipmachine.runs import (
+    RunError,
+    check_input_size,
+    create_run_dir,
+    validate_input,
+    write_json_atomic,
+)
 from clipmachine.stages import candidates, fetch, render, report, score, transcribe
 
 log = logging.getLogger("clipmachine")
@@ -91,6 +97,7 @@ def start_new_run(root: Path, input_path: Path, client: str, today: date | None 
     """Validate everything, then create the run folder. Nothing is created on bad input."""
     resolved = load_resolved(root, client)
     validate_input(input_path)
+    check_input_size(input_path, resolved.app.fetch.max_size_gb)
     check_ffmpeg()
     run_dir = create_run_dir(root / "runs", input_path, today or date.today())
     try:
