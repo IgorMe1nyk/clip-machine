@@ -11,6 +11,7 @@
       "Bash(uv run pip-audit *)",
       "Bash(uv run python -m clipmachine *)",
       "Bash(uv sync *)",
+      "Bash(nvidia-smi *)",
       "Bash(git add *)",
       "Bash(git commit *)"
     ],
