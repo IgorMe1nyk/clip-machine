@@ -76,7 +76,7 @@ def _cmd_run(args: argparse.Namespace, root: Path) -> int:
         run_dir = start_new_run(root, target, args.client)
         print(f"run folder: {run_dir}")
 
-    outcome = run_pipeline(run_dir, from_stage=args.from_stage)
+    outcome = run_pipeline(run_dir, from_stage=args.from_stage, project_root=root)
     if not outcome.ok:
         print(
             f"error: stage {outcome.failed_stage} failed: {outcome.error}. "

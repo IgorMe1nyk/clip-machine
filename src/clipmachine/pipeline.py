@@ -115,7 +115,9 @@ def start_new_run(root: Path, input_path: Path, client: str, today: date | None 
     return run_dir
 
 
-def run_pipeline(run_dir: Path, from_stage: str | None = None) -> PipelineOutcome:
+def run_pipeline(
+    run_dir: Path, from_stage: str | None = None, project_root: Path | None = None
+) -> PipelineOutcome:
     state = load_state(run_dir)
     resolved = load_resolved_file(run_dir / RESOLVED_CONFIG)
     check_ffmpeg()
@@ -124,7 +126,12 @@ def run_pipeline(run_dir: Path, from_stage: str | None = None) -> PipelineOutcom
     recover_interrupted(state)
     save_state(run_dir, state)
 
-    ctx = RunContext(run_dir=run_dir, config=resolved, input_path=Path(state.input))
+    ctx = RunContext(
+        run_dir=run_dir,
+        config=resolved,
+        input_path=Path(state.input),
+        project_root=project_root,
+    )
     outcome = PipelineOutcome()
     for name, stage_fn in STAGES.items():
         stage = state.stages[name]
