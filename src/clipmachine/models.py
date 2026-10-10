@@ -62,12 +62,30 @@ class CaptionsConfig(StrictModel):
         return self
 
 
+class FetchConfig(StrictModel):
+    """Input limits. Defaults keep run folders made before this section existed loadable."""
+
+    max_size_gb: float = Field(default=8, gt=0)
+    max_duration_minutes: float = Field(default=240, gt=0)
+    min_duration_seconds: float = Field(default=60, gt=0)
+
+    @model_validator(mode="after")
+    def _check_relations(self) -> "FetchConfig":
+        if self.min_duration_seconds >= self.max_duration_minutes * 60:
+            raise ValueError(
+                f"min_duration_seconds ({self.min_duration_seconds}) must be less than "
+                f"max_duration_minutes ({self.max_duration_minutes}) in seconds"
+            )
+        return self
+
+
 class AppConfig(StrictModel):
     clip: ClipConfig
     models: ModelsConfig
     transcribe: TranscribeConfig
     video: VideoConfig
     captions: CaptionsConfig
+    fetch: FetchConfig = Field(default_factory=FetchConfig)
 
 
 StageStatus = Literal["pending", "running", "done", "failed"]

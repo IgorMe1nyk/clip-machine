@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from clipmachine.config import (
     ConfigError,
@@ -63,6 +64,15 @@ def test_client_without_clip_length_keeps_defaults(project: Path) -> None:
         (lambda d: d["clip"].update(min_second=20), "min_second"),  # typo: unknown key
         (lambda d: d.update(extra_section={}), "extra_section"),
         (lambda d: d["video"].update(crop="zoom"), "video.crop"),
+        (lambda d: d["fetch"].update(max_size_gb=0), "fetch.max_size_gb"),
+        (lambda d: d["fetch"].update(max_duration_minutes=-1), "fetch.max_duration_minutes"),
+        (lambda d: d["fetch"].update(min_duration_seconds=0), "fetch.min_duration_seconds"),
+        (lambda d: d["fetch"].update(max_size_gb="big"), "fetch.max_size_gb"),
+        (lambda d: d["fetch"].update(max_size=8), "fetch.max_size"),  # typo: unknown key
+        (
+            lambda d: d["fetch"].update(min_duration_seconds=600, max_duration_minutes=10),
+            "min_duration_seconds",
+        ),
     ],
 )
 def test_default_config_validation_rules(
@@ -71,6 +81,39 @@ def test_default_config_validation_rules(
     _default(project, mutate)
     with pytest.raises(ConfigError, match=expected):
         load_app_config(project)
+
+
+def test_fetch_section_values(project: Path) -> None:
+    fetch = load_app_config(project).fetch
+    assert fetch.max_size_gb == 8
+    assert fetch.max_duration_minutes == 240
+    assert fetch.min_duration_seconds == 60
+
+
+def test_missing_fetch_section_uses_defaults(project: Path) -> None:
+    _default(project, lambda d: d.pop("fetch"))
+    fetch = load_app_config(project).fetch
+    assert (fetch.max_size_gb, fetch.max_duration_minutes, fetch.min_duration_seconds) == (
+        8,
+        240,
+        60,
+    )
+
+
+def test_resolved_file_from_before_fetch_section_still_loads(project: Path, tmp_path: Path) -> None:
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "example-client"), target)
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    del data["config"]["fetch"]
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert load_resolved_file(target).app.fetch.max_size_gb == 8
+
+
+def test_resolved_config_carries_fetch_section(project: Path, tmp_path: Path) -> None:
+    edit_yaml(project / "config" / "default.yaml", lambda d: d["fetch"].update(max_size_gb=2))
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "example-client"), target)
+    assert load_resolved_file(target).app.fetch.max_size_gb == 2
 
 
 def test_missing_required_key(project: Path) -> None:

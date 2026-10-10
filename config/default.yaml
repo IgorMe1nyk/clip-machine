@@ -12,6 +12,10 @@ video:
   width: 1080
   height: 1920
   crop: center               # v2: face
+fetch:
+  max_size_gb: 8             # GiB (1024^3 bytes)
+  max_duration_minutes: 240
+  min_duration_seconds: 60
 captions:
   words_per_line: 3
   font: Montserrat
