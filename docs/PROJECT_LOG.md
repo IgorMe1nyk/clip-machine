@@ -2,6 +2,27 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-10 — Brief 2: Fetch stage
+
+**Facts**
+- Commits: 9 (8 feature/docs/test commits + this log entry), `24a0978` to this one.
+- Tests: 232 passed, 0 skipped (was 104). 8 of them are `ffmpeg`-marked integration tests.
+- ruff, mypy and pip-audit clean. No new dependencies.
+- Real video (`3Dprinting_time laps.mp4`, 5,219,973 bytes, 66.3 s, 640x360 h264/aac): first fetch
+  `fetch_seconds` 0.79, `--from-stage fetch` 0.253. Audio is 16000 Hz mono `pcm_s16le`. SHA-256 of
+  the copy matches the original; original size and mtime unchanged.
+- Rejections checked with real files: text renamed `.mp4` (exit 1, run folder keeps only
+  `run.json` and `config.resolved.yaml`), `.mp3` (exit 2, no run folder), missing path (exit 2).
+- `-protocol_whitelist file` and the `file:` prefix work on Windows paths with spaces. On ffmpeg
+  9.0.1 no hostile playlist tried (HLS, DASH, concat) connected even without the flag, so the flag's
+  own effect is unproven here.
+
+**Parked**
+- Rejected input still creates a run folder and the CLI suggests "rerun" for it; consider
+  rejecting before the folder exists, or a clearer message.
+- A copy-then-probe order (probe the run-folder copy, not the original) would close the small
+  window where the original changes between probe and copy.
+
 ## 2026-10-10 — Session 1: Gate 0 + Brief 1 (02:11–04:00 ET)
 
 **Done**
