@@ -2,6 +2,27 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-10 — Brief 3: Transcribe stage (benchmark done, default not chosen yet)
+
+**Facts**
+- New runtime dependency: faster-whisper 1.2.1 (MIT) with ctranslate2 4.8.2, onnxruntime, av,
+  tokenizers, huggingface-hub (plus hf-xet, numpy, tqdm and a few small helpers). New optional
+  group `gpu`: nvidia-cublas-cu12 12.9.2.10, nvidia-cudnn-cu12 9.27.0.42 and (transitively)
+  nvidia-cuda-nvrtc-cu12 12.9.86. The newest cuDNN already has a Windows wheel, so no upper bound.
+- GPU route that worked first time: the pip wheels in the `gpu` group, with
+  `os.add_dll_directory`, a ctypes preload and a process-local PATH prefix. No Purfview archive.
+- Benchmark on a 923 s two-speaker interview, GTX 1660 Ti: see the report; no default chosen yet.
+
+**Parked**
+- Batched mode (`batch_size > 0`) returns about 26 s segments because the library turns timestamps
+  off per chunk; with timestamps on it gave 236 segments but ran about 40 % slower. A config option
+  for this is not built.
+- `turbo` lost punctuation and capitalisation in some stretches; `small` did not.
+- Per-process VRAM shows N/A under Windows WDDM; GPU use is shown by the PID row, the total memory
+  rise and utilisation instead.
+- Word strings keep faster-whisper's leading space (" Hey"); caption code must strip it.
+- Hugging Face prints an "unauthenticated requests" warning on first download; harmless.
+
 ## 2026-10-10 — Brief 2: Fetch stage
 
 **Facts**
