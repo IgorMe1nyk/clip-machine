@@ -67,10 +67,11 @@ def test_stubs_log_not_implemented(project: Path, caplog: pytest.LogCaptureFixtu
     run_dir = new_run(project)
     with caplog.at_level(logging.INFO, logger="clipmachine"):
         run_pipeline(run_dir)
-    # fetch is real now (and replaced by a silent no-op in unit tests); the rest are stubs
-    for name in STAGE_NAMES[1:]:
+    # fetch and transcribe are real now (and replaced by silent no-ops in unit tests)
+    for name in STAGE_NAMES[2:]:
         assert f"stage {name} not implemented yet" in caplog.text
-    assert "stage fetch not implemented yet" not in caplog.text
+    for name in STAGE_NAMES[:2]:
+        assert f"stage {name} not implemented yet" not in caplog.text
 
 
 def test_done_stages_are_skipped(project: Path) -> None:

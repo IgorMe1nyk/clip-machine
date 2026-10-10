@@ -1,3 +1,4 @@
+import os
 import shutil
 from pathlib import Path
 
@@ -11,30 +12,39 @@ FFMPEG_AVAILABLE = shutil.which("ffmpeg") is not None and shutil.which("ffprobe"
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Tests marked `ffmpeg` are skipped when ffmpeg or ffprobe is not on PATH."""
-    if FFMPEG_AVAILABLE:
-        return
-    skip = pytest.mark.skip(reason="ffmpeg/ffprobe not on PATH")
+    """Tests marked `ffmpeg` are skipped when ffmpeg or ffprobe is not on PATH.
+
+    Tests marked `whisper` run a real model and need CLIPMACHINE_WHISPER_TESTS=1.
+    """
+    skip_ffmpeg = pytest.mark.skip(reason="ffmpeg/ffprobe not on PATH")
+    skip_whisper = pytest.mark.skip(reason=f"set {WHISPER_ENV}=1 to run real Whisper tests")
     for item in items:
-        if "ffmpeg" in item.keywords:
-            item.add_marker(skip)
+        if not FFMPEG_AVAILABLE and "ffmpeg" in item.keywords:
+            item.add_marker(skip_ffmpeg)
+        if os.environ.get(WHISPER_ENV) != "1" and "whisper" in item.keywords:
+            item.add_marker(skip_whisper)
+
+
+WHISPER_ENV = "CLIPMACHINE_WHISPER_TESTS"
 
 
 @pytest.fixture(autouse=True)
-def _no_ffmpeg_needed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unit tests never need ffmpeg: the tool check is stubbed and the fetch stage is a no-op.
+def _no_tools_needed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit tests never need ffmpeg or a Whisper model: those stages are stubbed in the pipeline.
 
-    Tests marked `ffmpeg` get the real check and the real fetch stage. Tests of the stage itself
-    call `fetch.run` directly, so they are unaffected.
+    Tests marked `ffmpeg` get the real tool check and the real fetch stage; tests marked `whisper`
+    also get the real transcribe stage. Tests of a stage itself call its `run` directly, so they
+    are unaffected.
     """
-    if request.node.get_closest_marker("ffmpeg") is not None:
-        return
 
-    def silent_fetch(ctx: RunContext) -> None:
+    def silent(ctx: RunContext) -> None:
         return None
 
-    monkeypatch.setattr("clipmachine.pipeline.check_ffmpeg", lambda: None)
-    monkeypatch.setitem(pipeline.STAGES, "fetch", silent_fetch)
+    if request.node.get_closest_marker("ffmpeg") is None:
+        monkeypatch.setattr("clipmachine.pipeline.check_ffmpeg", lambda: None)
+        monkeypatch.setitem(pipeline.STAGES, "fetch", silent)
+    if request.node.get_closest_marker("whisper") is None:
+        monkeypatch.setitem(pipeline.STAGES, "transcribe", silent)
 
 
 @pytest.fixture
