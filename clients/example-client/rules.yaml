@@ -1,0 +1,12 @@
+name: Example Fitness Podcast
+niche: fitness / nutrition
+audience: men 20-35 trying to build muscle
+tone: direct, practical, a bit funny
+prefer:
+  - specific actionable tips
+  - myth-busting
+  - personal transformation stories
+avoid:
+  - supplement sponsor reads
+  - inside jokes that need context
+clip_length: { min: 25, max: 50 }

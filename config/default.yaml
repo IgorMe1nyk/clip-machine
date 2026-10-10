@@ -1,0 +1,18 @@
+clip:
+  min_seconds: 20
+  max_seconds: 60
+  keep_top: 8
+  candidates_target: 20
+models:
+  find: claude-haiku-5-5     # cheap pass
+  score: claude-sonnet-5-5   # quality pass
+transcribe:
+  model: small               # faster-whisper size: base / small / medium
+video:
+  width: 1080
+  height: 1920
+  crop: center               # v2: face
+captions:
+  words_per_line: 3
+  font: Montserrat
+  highlight_color: "#FFD400"
