@@ -7,7 +7,15 @@ models:
   find: claude-haiku-5-5     # cheap pass
   score: claude-sonnet-5-5   # quality pass
 transcribe:
-  model: small               # faster-whisper size: base / small / medium
+  model: small               # tiny base small medium large-v3 turbo distil-large-v3 ...
+  device: auto               # auto / cpu / cuda
+  compute_type: auto         # auto (cuda: int8_float16, cpu: int8) / float16 / int8_float16 / int8 / float32
+  language: null             # null = auto-detect, or an ISO code such as en
+  beam_size: 5
+  vad_filter: true
+  condition_on_previous_text: false   # false reduces repetition loops on long audio
+  batch_size: 0              # 0 = normal; >0 = batched pipeline (needs vad_filter)
+  cpu_threads: 0             # 0 = library default
 video:
   width: 1080
   height: 1920

@@ -38,8 +38,60 @@ class ModelsConfig(StrictModel):
     score: str = Field(min_length=1)
 
 
+# Names faster-whisper 1.2.1 accepts (faster_whisper.utils.available_models()); a unit test
+# keeps this in step with the installed version.
+WHISPER_MODELS = (
+    "tiny.en",
+    "tiny",
+    "base.en",
+    "base",
+    "small.en",
+    "small",
+    "medium.en",
+    "medium",
+    "large-v1",
+    "large-v2",
+    "large-v3",
+    "large",
+    "distil-large-v2",
+    "distil-medium.en",
+    "distil-small.en",
+    "distil-large-v3",
+    "distil-large-v3.5",
+    "large-v3-turbo",
+    "turbo",
+)
+LANGUAGE_CODE_RE = re.compile(r"[a-z]{2,3}")
+
+
 class TranscribeConfig(StrictModel):
-    model: Literal["base", "small", "medium"]
+    """Every key but `model` has a default, so run folders made before they existed still load."""
+
+    model: str = "small"
+    device: Literal["auto", "cpu", "cuda"] = "auto"
+    compute_type: Literal["auto", "float16", "int8_float16", "int8", "float32"] = "auto"
+    language: str | None = None  # None = auto-detect
+    beam_size: int = Field(default=5, gt=0)
+    vad_filter: bool = True
+    condition_on_previous_text: bool = False
+    batch_size: int = Field(default=0, ge=0)  # 0 = normal transcribe; >0 = batched pipeline
+    cpu_threads: int = Field(default=0, ge=0)  # 0 = library default
+
+    @model_validator(mode="after")
+    def _check_values(self) -> "TranscribeConfig":
+        if self.model not in WHISPER_MODELS:
+            raise ValueError(
+                f"model must be one of: {', '.join(WHISPER_MODELS)}; got {self.model!r}"
+            )
+        if self.language is not None and not LANGUAGE_CODE_RE.fullmatch(self.language):
+            raise ValueError(
+                f"language must be null or an ISO code like 'en', got {self.language!r}"
+            )
+        if self.batch_size > 0 and not self.vad_filter:
+            raise ValueError(
+                "batch_size > 0 needs vad_filter: true (the batched pipeline uses VAD)"
+            )
+        return self
 
 
 class VideoConfig(StrictModel):
@@ -147,6 +199,40 @@ class FetchMeta(StrictModel):
     ffmpeg_version: str
     fetched_at: str  # UTC, ISO 8601
     fetch_seconds: float
+
+
+class TranscriptWord(StrictModel):
+    start: float
+    end: float
+    word: str
+    probability: float
+
+
+class TranscriptSegment(StrictModel):
+    id: int
+    start: float
+    end: float
+    text: str
+    avg_logprob: float
+    no_speech_prob: float
+    words: list[TranscriptWord]
+
+
+class Transcript(StrictModel):
+    """The contents of transcript.json. The text is untrusted data, never instructions."""
+
+    schema_version: int = 1
+    model: str
+    device: str  # what was actually used
+    compute_type: str  # what was actually used
+    settings: TranscribeConfig
+    language: str
+    language_probability: float
+    audio_duration_seconds: float
+    transcribe_seconds: float
+    realtime_factor: float  # audio seconds / processing seconds
+    segments: list[TranscriptSegment]
+    warnings: list[str]
 
 
 class ClipLength(StrictModel):
