@@ -3,10 +3,10 @@
 Python 3.11 CLI that turns a long video into short vertical clips. Pipeline of six
 stages (fetch, transcribe, candidates, score, render, report); each reads and
 writes files in a run folder and can be restarted. Currently a walking skeleton:
-stages are stubs.
+`fetch` is real; the other stages are stubs.
 
 ## Read first
-- `docs/brief-01-skeleton.md` (current brief), `docs/clip-machine-plan.md` sections 4 and 6.
+- `docs/brief-02-fetch.md` (current brief), `docs/clip-machine-plan.md` sections 4 and 6.
 - Where the plan conflicts with `docs/MVP.md`, `COSTS.md`, `DECISIONS.md` or the brief, those win.
 
 ## Commands (run from the repo root)
@@ -21,7 +21,12 @@ stages are stubs.
 - Add no dependency that the current brief does not list. Ask first.
 - Subprocesses take argument lists, never shell strings.
 - Type-annotate everything in `src/` (mypy `disallow_untyped_defs`).
-- Tests must not need ffmpeg, network or API keys.
+- Unit tests must not need ffmpeg; ffmpeg tests are marked `ffmpeg` and skipped when it's missing.
+  No test needs network or API keys.
+- Never create, change or delete anything outside the repository folder. Build paths from the
+  repo root as absolute paths. If a `cd` or path check fails, stop and report; never fall back
+  to creating folders.
+- Stage outputs go only inside the current run folder.
 - One brief at a time; small commits; out-of-scope ideas go to `docs/PROJECT_LOG.md`.
 
 ## Secrets
