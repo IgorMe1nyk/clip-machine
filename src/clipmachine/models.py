@@ -108,6 +108,47 @@ class RunState(StrictModel):
     stages: dict[str, StageState]
 
 
+class VideoStreamInfo(StrictModel):
+    codec: str
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    avg_frame_rate: str  # exactly as ffprobe prints it, e.g. "30000/1001"
+    r_frame_rate: str
+    rotation: int = Field(default=0, ge=0, lt=360)  # clockwise degrees; 0 if none
+    variable_frame_rate: bool  # avg_frame_rate differs from r_frame_rate; noted, never fixed
+
+
+class AudioStreamInfo(StrictModel):
+    codec: str
+    sample_rate: int = Field(gt=0)
+    channels: int = Field(gt=0)
+
+
+class MediaInfo(StrictModel):
+    """What ffprobe says about a file. video/audio are the first usable stream of each kind."""
+
+    format_name: str  # e.g. "mov,mp4,m4a,3gp,3g2,mj2"
+    duration_seconds: float | None
+    size_bytes: int = Field(ge=0)
+    video: VideoStreamInfo | None
+    audio: AudioStreamInfo | None
+
+
+class FetchMeta(StrictModel):
+    """The contents of meta.json."""
+
+    schema_version: int = 1
+    original_filename: str  # name only, never a folder path
+    source_file: str  # file name inside the run folder
+    sha256: str
+    size_bytes: int
+    media: MediaInfo
+    audio_file: str
+    ffmpeg_version: str
+    fetched_at: str  # UTC, ISO 8601
+    fetch_seconds: float
+
+
 class ClipLength(StrictModel):
     min: float = Field(gt=0)
     max: float = Field(gt=0)
