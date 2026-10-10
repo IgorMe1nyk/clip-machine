@@ -78,6 +78,20 @@ def create_run_dir(runs_root: Path, input_path: Path, today: date) -> Path:
         return target
 
 
+def write_text_atomic(path: Path, text: str) -> None:
+    """Write text (LF line endings) to a temp file in the same folder, then os.replace it."""
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+
+
 def write_json_atomic(path: Path, data: Any) -> None:
     """Write JSON to a temp file in the same folder, then os.replace it into place."""
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")

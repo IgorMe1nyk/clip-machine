@@ -38,9 +38,17 @@ warn_redundant_casts = true
 warn_return_any = true
 check_untyped_defs = true
 
+[[tool.mypy.overrides]]
+# These two ship no type information; only utils/whisper.py imports them.
+module = ["faster_whisper", "faster_whisper.*", "ctranslate2"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["ffmpeg: needs ffmpeg and ffprobe on PATH; skipped when they are missing"]
+markers = [
+    "ffmpeg: needs ffmpeg and ffprobe on PATH; skipped when they are missing",
+    "whisper: runs a real Whisper model on the CPU; skipped unless CLIPMACHINE_WHISPER_TESTS=1",
+]
 
 [dependency-groups]
 dev = [
