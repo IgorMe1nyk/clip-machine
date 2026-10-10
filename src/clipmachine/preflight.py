@@ -14,5 +14,6 @@ def check_ffmpeg() -> None:
     if missing:
         raise MissingToolError(
             f"{' and '.join(missing)} not found on PATH. On Windows: run "
-            "'winget install Gyan.FFmpeg', open a new terminal, then check 'ffmpeg -version'."
+            "'winget install Gyan.FFmpeg.Essentials', open a new terminal, then check "
+            "'ffmpeg -version'."
         )
