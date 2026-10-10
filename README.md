@@ -6,9 +6,10 @@ scores them with Claude, cuts and captions the best ones, and produces a page fo
 human review.
 
 **Status: walking skeleton.** The package, CLI, validated config, run folders and a
-restartable six-stage pipeline exist, but every stage is a stub. There is no video
-processing, transcription or AI call yet. See `docs/MVP.md` for the finish line and
-`docs/brief-01-skeleton.md` for what this stage covers.
+restartable six-stage pipeline exist. The `fetch` stage is real (it validates the input,
+copies it into the run folder and extracts audio); the other five stages are still stubs.
+There is no transcription or AI call yet. See `docs/MVP.md` for the finish line and
+`docs/brief-01-skeleton.md` and `docs/brief-02-fetch.md` for what each step covers.
 
 ## How it works
 
@@ -61,7 +62,27 @@ uv run python -m clipmachine run runs\2026-10-12_episode --from-stage render
 uv run python -m clipmachine report runs\2026-10-12_episode
 ```
 
-Accepted inputs: `.mp4 .mov .mkv .m4a .wav .mp3`.
+Accepted inputs: `.mp4 .mov .mkv .webm` (case-insensitive). Audio-only files
+(`.m4a .wav .mp3`) are rejected: clips need video.
+
+### What fetch produces
+
+The `fetch` stage checks that the input really is video (ffprobe decides, not the file
+extension), then writes three files into the run folder:
+
+- `source.<ext>`: a copy of the input.
+- `audio.wav`: 16 kHz mono 16-bit audio, for transcription.
+- `meta.json`: original file name, SHA-256, size, ffprobe details (container, duration,
+  video and audio streams, rotation, whether the frame rate is variable), ffmpeg version
+  and timing.
+
+Limits live in `config/default.yaml` under `fetch:` (defaults: at most 8 GB, at most 240
+minutes, at least 60 seconds). Fetch also needs free disk space of twice the file size plus
+1 GB. A rejected input stops the stage with a one-line reason in `run.json` and leaves no
+outputs behind.
+
+**The original file is never changed or moved.** It is only opened for reading; everything
+fetch writes goes into the run folder.
 
 Exit codes: `0` success, `1` a stage failed (the run folder keeps the error in `run.json`),
 `2` bad usage, bad config, bad input, or ffmpeg/ffprobe missing.
@@ -85,8 +106,9 @@ uv run pytest -q
 uv run pip-audit --skip-editable
 ```
 
-Tests need no ffmpeg, network or API key. The same commands run in CI
-(`.github/workflows/ci.yml`).
+Unit tests need no ffmpeg, network or API key. Tests marked `ffmpeg` run real ffmpeg and
+ffprobe on tiny generated files and are skipped when those are not on `PATH`. The same
+commands run in CI (`.github/workflows/ci.yml`), which installs ffmpeg so they run there too.
 
 ## Secrets
 
