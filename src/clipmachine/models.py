@@ -70,6 +70,26 @@ class AppConfig(StrictModel):
     captions: CaptionsConfig
 
 
+StageStatus = Literal["pending", "running", "done", "failed"]
+
+
+class StageState(StrictModel):
+    status: StageStatus = "pending"
+    started_at: str | None = None
+    finished_at: str | None = None
+    error: str | None = None
+
+
+class RunState(StrictModel):
+    """The contents of run.json."""
+
+    schema_version: int = 1
+    input: str
+    client: str
+    created_at: str
+    stages: dict[str, StageState]
+
+
 class ClipLength(StrictModel):
     min: float = Field(gt=0)
     max: float = Field(gt=0)
