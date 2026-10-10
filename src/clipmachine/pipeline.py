@@ -124,7 +124,7 @@ def run_pipeline(run_dir: Path, from_stage: str | None = None) -> PipelineOutcom
     recover_interrupted(state)
     save_state(run_dir, state)
 
-    ctx = RunContext(run_dir=run_dir, config=resolved)
+    ctx = RunContext(run_dir=run_dir, config=resolved, input_path=Path(state.input))
     outcome = PipelineOutcome()
     for name, stage_fn in STAGES.items():
         stage = state.stages[name]

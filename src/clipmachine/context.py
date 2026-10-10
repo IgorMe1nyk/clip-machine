@@ -10,3 +10,4 @@ class RunContext:
 
     run_dir: Path
     config: ResolvedConfig
+    input_path: Path  # the original media file; only the fetch stage reads it
