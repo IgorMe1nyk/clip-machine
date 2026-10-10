@@ -31,5 +31,7 @@ stages are stubs.
 - Never write code or commands that print, log or echo secrets or environment variables.
 
 ## Environment
-- Native Windows (D-007), Manual permission mode, no command sandbox: every command is approved by Igor.
+- Native Windows (D-007), no command sandbox. Mode is acceptEdits; shell commands outside the
+  allow-list in `.claude/settings.json` still need Igor's approval.
+- Use the Bash tool, not PowerShell, for shell commands: the Bash allow/ask/deny rules do not apply to PowerShell.
 - Never push or add a remote unless asked.
