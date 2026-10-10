@@ -1,1 +1,35 @@
 # PROJECT_LOG.md
+
+Dated entries, newest first. Numbers come from real runs only.
+
+## 2026-10-10 — Session 1: Gate 0 + Brief 1 (02:11–04:00 ET)
+
+**Done**
+- **Gate 0:** plan review (top 5 risks), `COSTS.md` from live pricing pages, `MVP.md` (finish line + clip rubric), decisions D-001 to D-010.
+  - Key finding: Max 5x includes $100/month of API credits that stop (not overcharge) when empty, so the cash budget is $0.
+- **Setup (native Windows 11):**
+  - Tools: Git 2.55.0, uv 0.11.21, Python 3.11.15, FFmpeg 9.0.1 essentials, Claude Code 2.1.296, VS Code + Claude Code extension.
+  - Git commits use the GitHub noreply email.
+- **Brief 1, walking skeleton:** 12 commits.
+  - Checks: 104 tests pass; ruff, mypy and pip-audit are clean.
+  - End-to-end checks pass: new run, rerun with "nothing to do", `--from-stage render`, and `--client ../evil` rejected.
+
+**Caught along the way**
+- Path escape: a run-folder slug like `../../evil` could resolve outside `runs/`. Fixed with a single-path-component check and a test.
+- 3.12-only generic syntax: the ruff hook flagged it on a real edit. Fixed.
+- Stray folder: a failed `cd` led Claude Code to create a folder outside the repo (`dev\utils`). It disclosed this and removed it, and now uses absolute paths. Brief 2 adds a "never write outside the repo" rule.
+- Approval fatigue: about 100 routine prompts. Replaced with an allow-list (D-010).
+
+**Cost:** $0. No Claude API calls yet; Claude Code ran on the Max plan.
+
+**What I did vs what AI did**
+- **Igor:** every decision (D-001 to D-010), installs and accounts, checkpoint reviews (guardrail test, commit-email check), and pushed back on approval fatigue.
+- **Claude (chat):** research with sources, the cost register, the MVP and rubric, Brief 1, plan and report reviews, and this log.
+- **Claude Code:** Opus 5.5 wrote the plan; Sonnet 5.5 wrote the code and tests.
+
+**Parked**
+- GitHub Actions are pinned by tag, not commit SHA (revisit before taking clients).
+- Test video choice (D-006).
+- Phase 0 niche and target list.
+
+**Next:** push to GitHub (first CI run), then Brief 2 (Fetch: local file, ffprobe validation, audio extraction).
