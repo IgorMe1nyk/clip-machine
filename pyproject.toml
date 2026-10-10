@@ -58,3 +58,10 @@ dev = [
     "ruff>=0.17.0",
     "types-pyyaml>=6.0.12.20260906",
 ]
+# Optional: CUDA 12 libraries for faster-whisper on an NVIDIA GPU. Not installed by default and
+# never in CI. Install with: uv sync --locked --group gpu (plain `uv sync` removes them again).
+# No upper bound: the newest nvidia-cudnn-cu12 has a Windows wheel (checked 2026-10-10).
+gpu = [
+    "nvidia-cublas-cu12>=12.9.2.10",
+    "nvidia-cudnn-cu12>=9.27.0.42",
+]
