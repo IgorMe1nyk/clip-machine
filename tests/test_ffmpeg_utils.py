@@ -370,3 +370,152 @@ def test_probe_oversized_output_is_rejected(
     install(monkeypatch, FakeRun(stdout=" " * (ffmpeg.MAX_PROBE_OUTPUT_CHARS + 1)))
     with pytest.raises(MediaError, match="not a readable media file"):
         probe(media)
+
+
+# --- audio extraction ---------------------------------------------------------------------
+
+
+def test_extract_argument_list_is_exact(tmp_path: Path) -> None:
+    source = tmp_path / "source.mp4"
+    temp = tmp_path / ".audio.wav.abc.tmp"
+    assert ffmpeg.extract_args(source, temp) == [
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-v",
+        "error",
+        "-protocol_whitelist",
+        "file",
+        "-i",
+        f"file:{source.resolve()}",
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_s16le",
+        "-f",
+        "wav",
+        "-y",
+        str(temp.resolve()),
+    ]
+
+
+@pytest.mark.parametrize(("duration", "expected"), [(0.0, 120.0), (60.0, 150.0), (3600.0, 1920.0)])
+def test_extract_timeout(duration: float, expected: float) -> None:
+    assert ffmpeg.extract_timeout(duration) == expected
+
+
+def test_extract_runs_safely(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = install(monkeypatch, FakeRun())
+    ffmpeg.extract_audio(tmp_path / "source.mp4", tmp_path / "t.tmp", 600.0)
+    ((args, kwargs),) = fake.calls
+    assert args == ffmpeg.extract_args(tmp_path / "source.mp4", tmp_path / "t.tmp")
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["timeout"] == 420.0
+    assert kwargs["capture_output"] is True
+    assert kwargs.get("shell") in (None, False)
+
+
+def test_extract_failure_reports_last_stderr_line_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    noisy = "first\nsecond\n" + "x" * 500 + "\n\n"
+    install(monkeypatch, FakeRun(returncode=1, stderr=noisy))
+    with pytest.raises(MediaError) as excinfo:
+        ffmpeg.extract_audio(tmp_path / "s.mp4", tmp_path / "t.tmp", 10.0)
+    message = str(excinfo.value)
+    assert message.startswith("audio extraction failed: xxx")
+    assert "\n" not in message
+    assert len(message) <= len("audio extraction failed: ") + 200
+
+
+def test_extract_timeout_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    install(monkeypatch, FakeRun(raises=subprocess.TimeoutExpired("ffmpeg", 125)))
+    with pytest.raises(MediaError, match="ffmpeg timed out after 125 s"):
+        ffmpeg.extract_audio(tmp_path / "s.mp4", tmp_path / "t.tmp", 10.0)
+
+
+def test_ffmpeg_version_is_first_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = install(monkeypatch, FakeRun(stdout="ffmpeg version 9.0.1 Copyright\nbuilt with gcc\n"))
+    assert ffmpeg.ffmpeg_version() == "ffmpeg version 9.0.1 Copyright"
+    ((args, kwargs),) = fake.calls
+    assert args == ["ffmpeg", "-version"]
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["timeout"] == 10
+
+
+def test_ffmpeg_version_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    install(monkeypatch, FakeRun(returncode=1))
+    with pytest.raises(MediaError, match="ffmpeg version"):
+        ffmpeg.ffmpeg_version()
+
+
+def test_real_wav_fixture_verifies() -> None:
+    ffmpeg.verify_audio(info("wav"), source_duration_seconds=2.0)
+
+
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("mp4", "not a plain audio file"),  # has video
+        ("audio_only", "aac 44100 Hz 1 ch"),  # wrong codec and rate
+    ],
+)
+def test_verify_audio_rejects_wrong_shape(name: str, message: str) -> None:
+    with pytest.raises(MediaError, match=message):
+        ffmpeg.verify_audio(info(name), source_duration_seconds=2.0)
+
+
+def test_verify_audio_rejects_wrong_channels_and_rate() -> None:
+    stereo = info("wav")
+    assert stereo.audio is not None
+    stereo = stereo.model_copy(update={"audio": stereo.audio.model_copy(update={"channels": 2})})
+    with pytest.raises(MediaError, match="pcm_s16le 16000 Hz 2 ch"):
+        ffmpeg.verify_audio(stereo, source_duration_seconds=2.0)
+    other_rate = stereo.model_copy(
+        update={"audio": stereo.audio.model_copy(update={"channels": 1, "sample_rate": 44100})}
+    )
+    with pytest.raises(MediaError, match="44100 Hz"):
+        ffmpeg.verify_audio(other_rate, source_duration_seconds=2.0)
+
+
+def test_tolerance_is_max_of_half_second_and_0_2_percent() -> None:
+    assert ffmpeg.duration_tolerance(10) == 0.5
+    assert ffmpeg.duration_tolerance(250) == 0.5  # 0.2 % is exactly 0.5 here
+    assert ffmpeg.duration_tolerance(1000) == pytest.approx(2.0)
+    assert ffmpeg.duration_tolerance(7200) == pytest.approx(14.4)
+
+
+@pytest.mark.parametrize(
+    ("source", "audio", "ok"),
+    [
+        # short source: flat 0.5 s
+        (60.0, 60.0, True),
+        (60.0, 60.5, True),
+        (60.0, 59.5, True),
+        (60.0, 60.6, False),
+        (60.0, 59.4, False),
+        # long source: 0.2 % wins (3600 s -> 7.2 s)
+        (3600.0, 3607.0, True),
+        (3600.0, 3592.8, True),
+        (3600.0, 3607.5, False),
+        (3600.0, 3592.0, False),
+    ],
+)
+def test_audio_duration_tolerance_boundaries(source: float, audio: float, ok: bool) -> None:
+    media = info("wav").model_copy(update={"duration_seconds": audio})
+    if ok:
+        ffmpeg.verify_audio(media, source_duration_seconds=source)
+    else:
+        with pytest.raises(MediaError, match="allowed difference"):
+            ffmpeg.verify_audio(media, source_duration_seconds=source)
+
+
+def test_verify_audio_requires_a_duration() -> None:
+    media = info("wav").model_copy(update={"duration_seconds": None})
+    with pytest.raises(MediaError, match="no duration"):
+        ffmpeg.verify_audio(media, source_duration_seconds=2.0)

@@ -214,3 +214,102 @@ def check_source(info: MediaInfo, limits: FetchConfig) -> float:
             f"{limits.max_duration_minutes:g} min (fetch.max_duration_minutes)"
         )
     return duration
+
+
+# --- audio extraction ---------------------------------------------------------------------
+
+AUDIO_SAMPLE_RATE = 16000
+AUDIO_CODEC = "pcm_s16le"
+VERSION_TIMEOUT_SECONDS = 10
+EXTRACT_BASE_TIMEOUT_SECONDS = 120
+EXTRACT_TIMEOUT_PER_SOURCE_SECOND = 0.5
+DURATION_TOLERANCE_SECONDS = 0.5
+DURATION_TOLERANCE_FRACTION = 0.002  # 0.2 % of the source duration
+MAX_ERROR_LINE_CHARS = 200
+
+
+def extract_args(source: Path, temp_wav: Path) -> list[str]:
+    """16 kHz mono 16-bit WAV of the first audio stream: the one meta.json records."""
+    return [
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-v",
+        "error",
+        "-protocol_whitelist",
+        "file",
+        "-i",
+        input_url(source),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        str(AUDIO_SAMPLE_RATE),
+        "-c:a",
+        AUDIO_CODEC,
+        "-f",
+        "wav",
+        "-y",
+        str(temp_wav.resolve()),
+    ]
+
+
+def extract_timeout(source_duration_seconds: float) -> float:
+    return (
+        EXTRACT_BASE_TIMEOUT_SECONDS + EXTRACT_TIMEOUT_PER_SOURCE_SECOND * source_duration_seconds
+    )
+
+
+def _last_line(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return "no details from ffmpeg"
+    cleaned = "".join(ch if ch.isprintable() else " " for ch in lines[-1])
+    return cleaned[:MAX_ERROR_LINE_CHARS]
+
+
+def extract_audio(source: Path, temp_wav: Path, source_duration_seconds: float) -> None:
+    """Write temp_wav from source. The caller owns the temp file and the os.replace."""
+    result = run_tool(extract_args(source, temp_wav), extract_timeout(source_duration_seconds))
+    if result.returncode != 0:
+        raise MediaError(f"audio extraction failed: {_last_line(result.stderr)}")
+
+
+def duration_tolerance(source_duration_seconds: float) -> float:
+    return max(DURATION_TOLERANCE_SECONDS, DURATION_TOLERANCE_FRACTION * source_duration_seconds)
+
+
+def verify_audio(audio: MediaInfo, source_duration_seconds: float) -> None:
+    """Check the extracted WAV is what transcription expects and as long as the source."""
+    stream = audio.audio
+    if stream is None or audio.video is not None:
+        raise MediaError("extracted audio is not a plain audio file")
+    if (stream.codec, stream.sample_rate, stream.channels) != (
+        AUDIO_CODEC,
+        AUDIO_SAMPLE_RATE,
+        1,
+    ):
+        raise MediaError(
+            f"extracted audio is {stream.codec} {stream.sample_rate} Hz {stream.channels} ch, "
+            f"expected {AUDIO_CODEC} {AUDIO_SAMPLE_RATE} Hz 1 ch"
+        )
+    if audio.duration_seconds is None:
+        raise MediaError("extracted audio has no duration")
+    tolerance = duration_tolerance(source_duration_seconds)
+    gap = abs(audio.duration_seconds - source_duration_seconds)
+    if gap > tolerance:
+        raise MediaError(
+            f"extracted audio is {audio.duration_seconds:.1f} s but the source is "
+            f"{source_duration_seconds:.1f} s (allowed difference {tolerance:.1f} s)"
+        )
+
+
+def ffmpeg_version() -> str:
+    """First line of `ffmpeg -version`."""
+    result = run_tool(["ffmpeg", "-version"], VERSION_TIMEOUT_SECONDS)
+    lines = result.stdout.splitlines()
+    if result.returncode != 0 or not lines or not lines[0].strip():
+        raise MediaError("could not read the ffmpeg version")
+    return lines[0].strip()
