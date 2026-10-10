@@ -6,7 +6,7 @@ clip:
 models:
   find: claude-haiku-5-5     # cheap pass
   score: claude-sonnet-5-5   # quality pass
-transcribe:
+transcribe:                  # defaults chosen in D-011 from the Brief 3 benchmark (setting B)
   model: small               # tiny base small medium large-v3 turbo distil-large-v3 ...
   device: auto               # auto / cpu / cuda
   compute_type: auto         # auto (cuda: int8_float16, cpu: int8) / float16 / int8_float16 / int8 / float32
