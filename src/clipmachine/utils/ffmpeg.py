@@ -13,7 +13,7 @@ import re
 import subprocess
 import tempfile
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from fractions import Fraction
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any
@@ -339,20 +339,35 @@ def _filter_path(path: str, what: str) -> str:
     return path
 
 
-def video_filter(
-    crop: CropBox, width: int, height: int, subtitles_rel: str, fontsdir_rel: str
-) -> str:
-    """crop -> scale -> setsar -> subtitles, all numbers plain integers.
+def crop_commands(path: Sequence[tuple[float, int]]) -> str:
+    """The text of a `sendcmd` file that moves the crop: one `<time> crop x <x>;` line for every
+    change point after the first (the first x goes into the crop filter itself). Times are
+    seconds from the seek point. Empty when the crop never moves."""
+    return "".join(f"{t:.6f} crop x {x};\n" for t, x in path[1:])
 
-    The two paths must be relative to the directory ffmpeg runs in, so no drive letter ever
-    reaches the filter parser.
+
+def video_filter(
+    crop: CropBox,
+    width: int,
+    height: int,
+    subtitles_rel: str,
+    fontsdir_rel: str,
+    sendcmd_rel: str | None = None,
+) -> str:
+    """[sendcmd ->] crop -> scale -> setsar -> subtitles, all numbers plain integers.
+
+    The paths must be relative to the directory ffmpeg runs in, so no drive letter ever reaches
+    the filter parser. `sendcmd_rel` is a command file made from crop_commands.
     """
     ass = _filter_path(subtitles_rel, "subtitle file path")
     fonts = _filter_path(fontsdir_rel, "font folder path")
-    return (
+    chain = (
         f"crop={crop.w}:{crop.h}:{crop.x}:{crop.y},scale={width}:{height},setsar=1,"
         f"subtitles=filename={ass}:fontsdir={fonts}"
     )
+    if sendcmd_rel is None:
+        return chain
+    return f"sendcmd=f={_filter_path(sendcmd_rel, 'crop command file path')},{chain}"
 
 
 def render_args(

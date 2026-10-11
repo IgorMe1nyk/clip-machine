@@ -144,3 +144,36 @@ def test_wrong_size_and_codecs_are_refused() -> None:
     audio = AudioStreamInfo(codec="mp3", sample_rate=44100, channels=2)
     with pytest.raises(ffmpeg.MediaError, match="mp3"):
         verify(good_info(audio=audio))
+
+
+# --- the crop command file ----------------------------------------------------------------
+
+
+def test_crop_commands_are_one_line_per_change_after_the_first() -> None:
+    text = ffmpeg.crop_commands([(0.0, 218), (1.5, 60), (4.123456789, 380)])
+    assert text == "1.500000 crop x 60;\n4.123457 crop x 380;\n"
+
+
+def test_crop_commands_are_empty_for_a_path_that_never_moves() -> None:
+    assert ffmpeg.crop_commands([(0.0, 218)]) == ""
+    assert ffmpeg.crop_commands([]) == ""
+
+
+def test_filter_chain_with_a_command_file_starts_with_sendcmd() -> None:
+    plain = ffmpeg.video_filter(CROP, 1080, 1920, "clips/c04.ass", "../../assets/fonts")
+    vf = ffmpeg.video_filter(
+        CROP, 1080, 1920, "clips/c04.ass", "../../assets/fonts", "clips/c04.crop.cmd"
+    )
+    assert vf == "sendcmd=f=clips/c04.crop.cmd," + plain
+    assert (
+        ffmpeg.video_filter(CROP, 1080, 1920, "clips/c04.ass", "../../assets/fonts", None) == plain
+    )
+    assert not DRIVE_OR_BACKSLASH.search(vf)
+
+
+@pytest.mark.parametrize(
+    "bad", [r"C:\x\c.cmd", "C:/x/c.cmd", "/abs/c.cmd", r"clips\c.cmd", "a,b.cmd", "a b.cmd", ""]
+)
+def test_unsafe_command_file_paths_are_refused(bad: str) -> None:
+    with pytest.raises(ffmpeg.MediaError, match="cannot be used inside an ffmpeg filter"):
+        ffmpeg.video_filter(CROP, 1080, 1920, "clips/c04.ass", "../../assets/fonts", bad)
