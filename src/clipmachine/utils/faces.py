@@ -33,9 +33,9 @@ MODEL_URL = (
 )
 MODEL_DIR = Path("models") / "mediapipe"  # relative to the project root
 MODEL_NAME = "face_landmarker.task"
-# SHA-256 of the model file. None until Igor has approved the first download and seen the hash
-# (Google publishes none); once set, a different file is an error, never a silent re-download.
-EXPECTED_SHA256: str | None = None
+# SHA-256 of the model file, taken at the first download Igor approved on 2026-10-11 (3,758,596
+# bytes; Google publishes none). A different file is an error, never a silent re-download.
+EXPECTED_SHA256: str | None = "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"
 
 DOWNLOAD_TIMEOUT_SECONDS = 60
 DOWNLOAD_CHUNK_BYTES = 1 << 16

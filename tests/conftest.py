@@ -63,6 +63,13 @@ def _no_tools_needed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
 
 
 @pytest.fixture(autouse=True)
+def _no_pinned_model_hash(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests write tiny fake model files; the real model's pinned SHA-256 must not apply to them.
+    Tests of the hash check pass `expected_sha256` explicitly."""
+    monkeypatch.setattr("clipmachine.utils.faces.EXPECTED_SHA256", None)
+
+
+@pytest.fixture(autouse=True)
 def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may build the real API client: tests that need one replace claude.new_client."""
 
