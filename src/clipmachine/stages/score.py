@@ -53,6 +53,7 @@ from clipmachine.utils.snapping import (
     EPSILON,
     SentenceIndex,
     build_index,
+    edge_flags,
     locate,
     span_times,
     words_text,
@@ -65,6 +66,8 @@ TEMP_PATTERN = f".{SCORED_JSON}.*.tmp"
 PROMPT_FILE = Path("prompts") / "score_clip.md"
 PURPOSE = "score"
 CANDIDATE_TAG_RE = re.compile(r"<\s*/?\s*candidates?[^>]*>?", re.IGNORECASE)
+CONTEXT_BEFORE = 2  # sentences shown before a clip, as context only
+CONTEXT_AFTER = 1
 MAX_HOOK_WORDS = 10
 MAX_REASON_WORDS = 25
 MAX_PROBLEM_IDS = 5
@@ -77,6 +80,8 @@ class Located:
     candidate: Candidate
     first: int
     last: int
+    start_at_segment_edge: bool = False  # from the candidate's snap notes
+    end_at_segment_edge: bool = False
 
     @property
     def count(self) -> int:
@@ -130,7 +135,8 @@ def locate_all(
             a, b = span
             text = words_text(index, index.sentences[a].first, index.sentences[b].last)
             if text == candidate.text:
-                found.append(Located(candidate, a, b))
+                start_edge, end_edge = edge_flags(candidate.snap_notes)
+                found.append(Located(candidate, a, b, start_edge, end_edge))
                 continue
         raise RunError(
             f"{CANDIDATES_JSON} does not match transcript.json (candidate {candidate.id}): "
@@ -139,26 +145,55 @@ def locate_all(
     return found
 
 
-def candidate_block(located: Located, index: SentenceIndex) -> str:
-    """One <candidate> element: numbered sentences, each with [start-end] seconds.
+def _sentence_text(index: SentenceIndex, number: int) -> str:
+    """One sentence as single-line data with candidate-tag look-alikes removed."""
+    sentence = index.sentences[number]
+    return CANDIDATE_TAG_RE.sub(
+        "[tag removed]", _one_line(words_text(index, sentence.first, sentence.last))
+    )
 
-    The text is data, so it is made single-line and anything that looks like a candidate tag is
-    removed.
+
+def context_sentences(index: SentenceIndex, located: Located) -> tuple[list[int], list[int]]:
+    """Sentence indices of the context: up to CONTEXT_BEFORE before the clip and CONTEXT_AFTER
+    after it, clipped at the ends of the transcript. Never a sentence of the clip itself."""
+    before = list(range(max(located.first - CONTEXT_BEFORE, 0), located.first))
+    after = list(
+        range(located.last + 1, min(located.last + 1 + CONTEXT_AFTER, len(index.sentences)))
+    )
+    return before, after
+
+
+def candidate_block(located: Located, index: SentenceIndex) -> str:
+    """One <candidate> element: context before, the clip's numbered sentences (each with
+    [start-end] seconds), context after.
+
+    The context is not numbered, so it cannot be chosen by keep_sentences. All text is data: made
+    single-line, and anything that looks like a candidate tag is removed.
     """
     candidate = located.candidate
+    before, after = context_sentences(index, located)
     lines = [
         f'<candidate id="{candidate.id}" seconds="{candidate.duration:.1f}" '
-        f'sentences="{located.count}">'
+        f'sentences="{located.count}" '
+        f'start_at_segment_edge="{str(located.start_at_segment_edge).lower()}" '
+        f'end_at_segment_edge="{str(located.end_at_segment_edge).lower()}">',
+        "<before>",
+        *(f"- {_sentence_text(index, i)}" for i in before),
+        *([] if before else ["- (none: the recording starts here)"]),
+        "</before>",
     ]
     for number, i in enumerate(range(located.first, located.last + 1), start=1):
         sentence = index.sentences[i]
         start = index.words[sentence.first].start
         end = index.words[sentence.last].end
-        text = CANDIDATE_TAG_RE.sub(
-            "[tag removed]", _one_line(words_text(index, sentence.first, sentence.last))
-        )
-        lines.append(f"{number} [{start:.2f}-{end:.2f}] {text}")
-    lines.append("</candidate>")
+        lines.append(f"{number} [{start:.2f}-{end:.2f}] {_sentence_text(index, i)}")
+    lines += [
+        "<after>",
+        *(f"- {_sentence_text(index, i)}" for i in after),
+        *([] if after else ["- (none: the recording ends here)"]),
+        "</after>",
+        "</candidate>",
+    ]
     return "\n".join(lines)
 
 
