@@ -5,16 +5,25 @@ output. Inputs are absolute resolved paths with the `file:` prefix plus
 `-protocol_whitelist file`, so a crafted container cannot make ffmpeg open URLs or other files.
 """
 
+import contextlib
 import json
 import math
+import os
 import re
 import subprocess
+import tempfile
+import time
+from collections.abc import Iterable, Iterator
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import IO, TYPE_CHECKING, Any
 
 from clipmachine.models import AudioStreamInfo, FetchConfig, MediaInfo, VideoStreamInfo
-from clipmachine.utils.crop import CropBox
+from clipmachine.utils.crop import CropBox, display_size
+
+if TYPE_CHECKING:  # numpy is imported lazily, inside read_frames
+    import numpy as np
+    from numpy.typing import NDArray
 
 PROBE_TIMEOUT_SECONDS = 60
 MAX_PROBE_OUTPUT_CHARS = 10_000_000
@@ -441,3 +450,249 @@ def ffmpeg_version() -> str:
     if result.returncode != 0 or not lines or not lines[0].strip():
         raise MediaError("could not read the ffmpeg version")
     return lines[0].strip()
+
+
+# --- frames for analysis and the debug preview ---------------------------------------------
+
+FRAMES_BASE_TIMEOUT_SECONDS = 60
+FRAMES_TIMEOUT_PER_CLIP_SECOND = 10.0
+RGB_CHANNELS = 3
+KILL_WAIT_SECONDS = 5
+
+
+def frame_args(source: Path, *, start: float, duration: float, fps: float, width: int) -> list[str]:
+    """Decode only [start, start + duration) of the first video stream to raw RGB on stdout.
+
+    Frames are resampled to `fps` and scaled to `width` (height from the aspect ratio, made even).
+    ffmpeg's default auto-rotation applies, so frames are upright like the render stage's crop.
+    Seeking before the input is accurate when decoding, as in render_args.
+    """
+    return [
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-v",
+        "error",
+        "-protocol_whitelist",
+        "file",
+        "-ss",
+        f"{start:.3f}",
+        "-i",
+        input_url(source),
+        "-t",
+        f"{duration:.3f}",
+        "-map",
+        "0:v:0",
+        "-an",
+        "-vf",
+        f"fps={fps:g},scale={width}:-2",
+        "-pix_fmt",
+        "rgb24",
+        "-f",
+        "rawvideo",
+        "-",
+    ]
+
+
+def frame_size_after_scale(
+    width: int, height: int, rotation: int, target_width: int
+) -> tuple[int, int]:
+    """The (width, height) of the frames frame_args produces for a stored source size: the upright
+    size scaled to target_width, with the height rounded to the nearest even number like
+    ffmpeg's `scale=W:-2`."""
+    frame_w, frame_h = display_size(width, height, rotation)
+    scaled = target_width * frame_h / frame_w
+    return target_width, max(2, int(round(scaled / 2)) * 2)
+
+
+def frames_timeout(duration_seconds: float) -> float:
+    return FRAMES_BASE_TIMEOUT_SECONDS + FRAMES_TIMEOUT_PER_CLIP_SECOND * duration_seconds
+
+
+def _stderr_sink(scratch_dir: Path | None) -> IO[bytes] | int:
+    """Where a streaming ffmpeg's stderr goes: an unnamed temp file inside scratch_dir (never a
+    pipe that could fill and deadlock the stream), or nowhere."""
+    if scratch_dir is None:
+        return subprocess.DEVNULL
+    return tempfile.TemporaryFile(dir=scratch_dir)
+
+
+def _stderr_text(sink: IO[bytes] | int) -> str:
+    if isinstance(sink, int):
+        return ""
+    sink.seek(0)
+    return sink.read(MAX_PROBE_OUTPUT_CHARS).decode("utf-8", errors="replace")
+
+
+def _stop(proc: "subprocess.Popen[bytes]") -> None:
+    if proc.poll() is None:
+        proc.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):  # a killed process does not linger
+        proc.wait(timeout=KILL_WAIT_SECONDS)
+
+
+def read_frames(
+    args: list[str],
+    frame_w: int,
+    frame_h: int,
+    timeout: float,
+    *,
+    scratch_dir: Path | None = None,
+) -> Iterator["NDArray[np.uint8]"]:
+    """Run a command that writes raw rgb24 frames of frame_w x frame_h to stdout and yield each as
+    a writable (frame_h, frame_w, 3) uint8 array.
+
+    The command is an argument list, never a shell string. ffmpeg's stderr goes to a temp file in
+    scratch_dir (or nowhere), so it cannot block the stream. A non-zero exit raises MediaError
+    with ffmpeg's last stderr line; so does passing `timeout` seconds. The process is always
+    killed when the iterator ends, even if the caller stops early.
+    """
+    import numpy as np
+
+    size = frame_w * frame_h * RGB_CHANNELS
+    sink = _stderr_sink(scratch_dir)
+    try:
+        try:
+            proc = subprocess.Popen(
+                args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=sink
+            )
+        except OSError as exc:
+            raise MediaError(f"could not run {args[0]}: {exc.strerror or exc}") from exc
+        deadline = time.monotonic() + timeout
+        try:
+            stdout = proc.stdout
+            if stdout is None:  # pragma: no cover - PIPE always gives one
+                raise MediaError("could not read frames from ffmpeg")
+            while True:
+                chunk = stdout.read(size)
+                if len(chunk) < size:  # end of stream (a partial frame is dropped)
+                    break
+                if time.monotonic() > deadline:
+                    raise MediaError(f"{args[0]} timed out after {timeout:g} s")
+                yield np.frombuffer(chunk, dtype=np.uint8).reshape(frame_h, frame_w, 3).copy()
+            try:
+                code = proc.wait(timeout=KILL_WAIT_SECONDS)
+            except subprocess.TimeoutExpired as exc:
+                raise MediaError(f"{args[0]} did not finish after its last frame") from exc
+            if code != 0:
+                raise MediaError(f"frame extraction failed: {_last_line(_stderr_text(sink))}")
+        finally:
+            _stop(proc)
+            if proc.stdout is not None:
+                proc.stdout.close()
+    finally:
+        if not isinstance(sink, int):
+            sink.close()
+
+
+def preview_args(
+    source: Path,
+    temp_out: Path,
+    *,
+    start: float,
+    duration: float,
+    fps: float,
+    width: int,
+    height: int,
+) -> list[str]:
+    """Encode raw rgb24 frames from stdin (width x height at fps) into a small H.264 MP4, with the
+    clip's own audio taken from the source (seek and length before that input). The output ends
+    with the shorter of the two. No -nostdin: stdin carries the frames."""
+    return [
+        "ffmpeg",
+        "-hide_banner",
+        "-v",
+        "error",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        f"{width}x{height}",
+        "-r",
+        f"{fps:g}",
+        "-i",
+        "pipe:0",
+        "-protocol_whitelist",
+        "file",
+        "-ss",
+        f"{start:.3f}",
+        "-t",
+        f"{duration:.3f}",
+        "-vn",
+        "-i",
+        input_url(source),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0?",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "30",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "96k",
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        "-f",
+        "mp4",
+        "-y",
+        str(temp_out.resolve()),
+    ]
+
+
+def write_preview(
+    frames: Iterable["NDArray[np.uint8]"],
+    args: list[str],
+    temp_out: Path,
+    out: Path,
+    timeout: float,
+    *,
+    scratch_dir: Path | None = None,
+) -> None:
+    """Pipe frames into the command built by preview_args, then move temp_out to out in one step.
+    The temp file is removed on any failure."""
+    sink = _stderr_sink(scratch_dir)
+    try:
+        try:
+            proc = subprocess.Popen(
+                args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=sink
+            )
+        except OSError as exc:
+            raise MediaError(f"could not run {args[0]}: {exc.strerror or exc}") from exc
+        try:
+            deadline = time.monotonic() + timeout
+            stdin = proc.stdin
+            if stdin is None:  # pragma: no cover - PIPE always gives one
+                raise MediaError("could not write frames to ffmpeg")
+            try:
+                for frame in frames:
+                    stdin.write(frame.tobytes())
+                    if time.monotonic() > deadline:
+                        raise MediaError(f"{args[0]} timed out after {timeout:g} s")
+                stdin.close()
+            except OSError:  # BrokenPipeError: ffmpeg stopped reading
+                _stop(proc)
+                raise MediaError(
+                    f"preview encode failed: {_last_line(_stderr_text(sink))}"
+                ) from None
+            try:
+                code = proc.wait(timeout=max(deadline - time.monotonic(), KILL_WAIT_SECONDS))
+            except subprocess.TimeoutExpired as exc:
+                raise MediaError(f"{args[0]} timed out after {timeout:g} s") from exc
+            if code != 0:
+                raise MediaError(f"preview encode failed: {_last_line(_stderr_text(sink))}")
+            os.replace(temp_out, out)
+        finally:
+            _stop(proc)
+            temp_out.unlink(missing_ok=True)
+    finally:
+        if not isinstance(sink, int):
+            sink.close()
