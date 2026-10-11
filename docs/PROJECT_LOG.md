@@ -2,6 +2,93 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-11 — Brief 8.1: small faces in wide shots, camera reset at shot cuts (stopped at the checkpoint)
+
+**Why:** Part A's checkpoint on the T3 run failed in wide shots. The Face Landmarker found no
+faces there (c15: 0% face time) and "no face, keep last position" carried a close-up's crop x
+into the next wide shot.
+
+**Measured before choosing** (T3, 10 samples per second; frames stayed in memory, numbers only)
+
+| Option | c15 (wide): 1+ faces / 2 faces | c17 (mixed): 1+ / 2 faces | Detect time per sample |
+|---|---|---|---|
+| Before: landmarker on the whole frame, 640 wide | 0% / 0% | 15.5% / 0% | 4–6 ms |
+| Same at 1920 wide | 0% / 0% | 20.6% / 0% | 5–7 ms |
+| (a) Tiling: 8 tiles of 648 px plus the whole frame | 96.0% / 7.7% | 100% / 52.8% | 53 ms |
+| (b) YuNet at 960 wide, score 0.7 | 100% / 99.4% | 100% / 99.7% | 22 ms + about 10 ms per face |
+| (c) MediaPipe BlazeFace full-range, score 0.5 | 97.5% / 23.0% | 100% / 52.0% | 6.4 ms |
+
+- Chosen: **(b)**, D-016. Close-up clip c09: face 100%, mouth read 100%.
+- Wide-shot faces measure 12–16% of the frame height (the brief guessed 8–10%).
+- Cut detection, colour-histogram change between samples: 0.37–0.42 at the five cuts, at most
+  0.031 anywhere else. Threshold 0.12.
+
+**Done** (6 commits plus this one, nothing pushed)
+- `opencv-contrib-python` declared as a direct dependency (already installed and locked at
+  5.0.0.93 through mediapipe; nothing new downloaded).
+- **`utils/faces.py`:** YuNet finds face boxes on the frame at `detect_width`; the Face Landmarker
+  (IMAGE mode) reads the mouth on a crop of the full frame around each face. Faces below
+  `min_face_height` are ignored. A face whose mouth cannot be read is still tracked
+  (`mouth: None`). Two pinned model files; `fetch-face-model` fetches whichever is missing.
+- **`utils/camera.py`:** `find_cuts` (a one-sample flash and a slow drift are not cuts) and
+  `follow_segments`: every camera shot is followed on its own, so tracks, hysteresis and the crop
+  position never cross a cut. Fresh choice: the speaker, else the largest face (ties: the most
+  central), else centre.
+- **`tracking.py`:** decodes once at `landmark_width` (never above the source), records cuts in
+  `track.json`, new summary numbers (cuts, faces per sample, mouth read %), a yellow border in
+  the preview after each cut. A track made with another detector file or OpenCV version is stale.
+- **Config:** `speaker.detect_width` 960, `landmark_width` 1920, `detect_score` 0.7,
+  `face_crop_scale` 2.0, `cut_threshold` 0.12. `analysis_width` is still accepted but unused.
+- Built by a Sonnet 5.5 (Medium) subagent; each diff reviewed by the planner, who re-ran the
+  checks. **Review caught one bug:** after a cut the speaker was chosen from clip-relative times
+  instead of times counted from the cut; fixed with a regression test.
+- Tests: 980 passed, 2 skipped. ruff, format, mypy and pip-audit clean. The opt-in real
+  detector-plus-landmarker test passes with both model files present.
+- YuNet model fetched with Igor's approval: 229,738 bytes, SHA-256 matches the pin.
+
+**Real run** (`track runs/2026-10-11_t3 --preview`, local, $0)
+
+| Clip | Face time (was) | Faces per sample | Cuts (s) | Switches | Mouth read | Analysis |
+|---|---|---|---|---|---|---|
+| c05 | 100% (14–45%) | 1.25 | 16.4 | 0 | 72% | 23.6 s |
+| c06 | 100% (14–45%) | 1.57 | 8.3 | 0 | 58% | 12.8 s |
+| c09 | 100% (96%) | 1.00 | none | 0 | 100% | 14.2 s |
+| c13 | 100% (14–45%) | 1.83 | 34.9 | 0 | 53% | 23.3 s |
+| c15 | 100% (0%) | 1.99 | none | 0 | 50% | 19.2 s |
+| c17 | 100% (14–45%) | 1.63 | 9.5, 23.5 | 3 | 94% | 19.8 s |
+
+- Targets met: c15 face time at least 80%; c09 at least 90%; cuts found in c05, c06, c13 and c17
+  and none in c09 and c15.
+- At every cut the crop x jumps on the first sample of the new shot (for example 1002 to 674 in
+  c05, 270 to 974 in c17).
+- c15 follows the person at 0.68 of the frame width for the whole clip: the one whose mouth is
+  readable (98% of samples; the other person 3%).
+
+**Gaps and risks**
+- **A person turned away from the camera gives no mouth signal.** The landmarker reads only
+  50–72% of faces in c05, c06, c13 and c15, even on a tight crop and at lower confidence settings.
+  Such a person is framed correctly but can never win the speaker choice; if they speak, the
+  camera shows the listener. Igor accepted this for now.
+- In wide shots the mouth signal is weaker: where both mouths are readable, the leader beats the
+  other by a median factor of 3.9–5.8, and by 1.5 or more in 31 of 39 speech windows.
+- The cut threshold comes from one video (five cuts). A cut between two similar-looking angles
+  could score lower.
+- The YuNet download URL is pinned to a commit of a GitHub repository; the pinned SHA-256 is what
+  protects against a changed file.
+
+**Parked**
+- Framing width: 9:16 crop cuts gesturing arms; Igor: not too bad; judge on finished clips
+  (zoom-out + blurred fill vs tighter face framing).
+- Possible Brief 8.2: pixel movement around the mouth as a speaker signal that needs no
+  landmarks. Measured once: it ranked the camera-facing speaker first in 53 of 62 speech windows
+  in c15, and one person led in 68 of 70 in c13's wide shot.
+- Tiny background faces (3.6% of the frame height, mouth variance near zero, present in every
+  sample of one shot in c06 and c17) are dropped by `min_face_height`; a still picture of a larger
+  face would not be.
+
+**Next:** Igor re-watches the previews, c15 and c17 first. Checkpoint pass: the right person at
+least 90% of the time, no crop left on empty space after a cut, no flicker. Part B waits for it.
+
 ## 2026-10-11 — Brief 9: Boundary repair (built; real run not done yet)
 
 **Done** (not committed yet; real-run results to be added)
