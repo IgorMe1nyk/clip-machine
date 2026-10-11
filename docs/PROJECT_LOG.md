@@ -2,6 +2,30 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-11 — Brief 6.1: Caption timing offset
+
+**Evidence:** in the Brief 6 real run Igor watched c04 and the yellow highlight landed on a word
+before it was spoken (rubric C5, sync, failed). Whisper word start times probably run early.
+
+**Done**
+- `captions.offset_seconds` (float, default 0.0, range -1.0 to 1.0; positive = captions appear
+  later). Applied to every finished caption event, rounded to ms and clamped to [0, clip length];
+  events left with no length are dropped. Offset 0 gives the same events as before.
+- It is a render setting: recorded in `clips/<id>.json` (`caption_offset_seconds`) and part of the
+  "valid output" check, so a changed offset re-renders a clip on resume. Brief 6 JSON files without
+  the field load as 0.0.
+- Tests: 709 passed, 1 skipped (was 693). ruff, mypy, pip-audit clean.
+
+**Tuning (one clip, by eye)**
+- Value chosen: **0.15 s**, set only in that run's `config.resolved.yaml`
+  (`runs/2026-10-10_source`). Igor judged it by watching c04; the highlight is now in sync.
+- Render 7.1 s, 82 caption events (none dropped), ledger unchanged (8 lines).
+- `config/default.yaml` stays at 0.0: one clip from one video is not enough to change a default.
+
+**Parked**
+- Confirm 0.15 on a second video before it becomes the default; if it varies a lot between videos,
+  the D-013 fallback (WhisperX alignment) is the next step, not more offset logic.
+
 ## 2026-10-10 — Brief 6: Render (cut, 9:16 crop, burned-in captions)
 
 **Done**
