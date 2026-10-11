@@ -2,6 +2,45 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-10 — Brief 6: Render (cut, 9:16 crop, burned-in captions)
+
+**Done**
+- Stage 5 renders every `kept` clip of `scored.json` to `clips/<id>.mp4` (1080×1920, H.264 +
+  AAC), `<id>.ass` and `<id>.json` (times, crop box, source size/rotation/CFR-VFR, settings,
+  ffprobe summary; no text). One ffmpeg pass per clip, always re-encoded.
+- Crop math is a pure function (`utils/crop.py`): largest centred 9:16 box, even integers, rotation
+  90/270 swaps width and height. Captions are pure functions (`utils/captions.py`): word groups of 3
+  (or to `. ? !`), one event per word with the current word highlighted, gaps under 0.5 s filled,
+  `{ } \` removed from words.
+- Windows paths: ffmpeg runs with the run folder as working directory; the subtitle file and font
+  folder are relative forward-slash paths and are checked before use (no drive letter or backslash
+  can reach `-vf`).
+- Font: static Montserrat Bold plus `OFL.txt` from the upstream release tag v9.000 in
+  `assets/fonts/`; a missing font fails the stage, there is no fallback.
+- Restart: `--from-stage render` is a forced redo of every kept clip; only a render stage that
+  failed or was interrupted earlier is resumed, rendering just the clips without a valid output
+  (JSON matches times, crop and settings, and ffprobe agrees). The pipeline tells the stage which
+  case it is (`RunContext.resuming`).
+- D-013 recorded (keep faster-whisper word timestamps).
+- Tests: 693 passed, 1 skipped (was 598); `-m ffmpeg`: 9 passed, 1 skipped. ruff, mypy, pip-audit
+  clean.
+
+**Real run (same 15.4-min test interview, `general` client, 1 kept clip)**
+- Source 640×360, rotation 0, 30 fps CFR; crop 202×360 at x=218; output 1080×1920, 26.8 s, 4.7 MB,
+  render 7.6 s. Ledger unchanged (8 lines); rerun printed "nothing to do".
+- libass log (verbose) shows it loaded `assets/fonts/Montserrat-Bold.ttf` and matched
+  `(Montserrat, 700) -> Montserrat-Bold`; no system copy of Montserrat is installed.
+
+**Observed**
+- The 640×360 source is upscaled about 5.3× to 1080×1920, so the picture is soft.
+- A centre crop of a two-speaker interview can cut a speaker off; a frame near the start of c04
+  has the speaker at the right edge of the crop. Rubric C6 is Igor's to judge by watching.
+
+**Parked**
+- Face-aware crop (Phase 2) is the fix if C6 fails for this kind of footage.
+- `video:` and `render:` both hold output settings; `video.width/height` is what render reads.
+- Caption wrapping of very long words at size 80 is not tuned.
+
 ## 2026-10-10 — Brief 5.1: Score fixes (context, trim-first, more candidates)
 
 **Evidence (Igor's re-listen after Brief 5):** the Brief 5 c08 start at 12:00 was clean, so Sonnet's
