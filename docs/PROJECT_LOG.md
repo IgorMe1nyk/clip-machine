@@ -22,9 +22,20 @@ Dated entries, newest first. Numbers come from real runs only.
 - Grew backward: 0 of 8.
 - No moments were invalid, dropped or duplicates.
 
-**Cost:** $0.0013 for the re-run (2 calls); the stage 3 run before it was $0.0013 too.
+**Cost:** $0.0013 for the re-run (2 calls); the earlier Brief 4 run cost $0.0013 too.
 
-**Open:** the 2 remaining segment-edge ends and 1 start are fallback boundaries; Igor spot-checks 4 new candidates before this brief is closed.
+**Igor's spot check of the new candidates (rubric terms)**
+- **c08:** clean. C1, C2 and C4 pass.
+- **c01:** OK, but starts slightly late (a padding issue, parked for Brief 6). It is an intro moment.
+- **c03 and c07:** start mid-sentence (C1 fail) but are understandable.
+- Only 4 of the 8 new candidates were checked (c01, c03, c07, c08); c03 and c07 are open C1 failures to look at in Brief 5/6.
+
+**Caught along the way**
+- Claude Code copied `candidates.json` (private transcript text) to `%TEMP%` as a backup, outside the repo. It disclosed this; Igor deleted the file. Fix: CLAUDE.md now says scratch and backup files go only in `runs/_scratch/` (git-ignored).
+- Claude Code used bare `python` for some file edits. Fix: CLAUDE.md now says always run Python through `uv run`.
+- A path typed with backslashes (`runs\...`) was not recognised as a run folder in Git Bash. Use forward slashes.
+
+**Parked:** start padding (Brief 6, when real clips can be heard); abbreviation handling.
 
 ## 2026-10-10 — Brief 4: Claude client and candidates stage
 

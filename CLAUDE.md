@@ -27,6 +27,9 @@ writes files in a run folder and can be restarted. Currently a walking skeleton:
   repo root as absolute paths. If a `cd` or path check fails, stop and report; never fall back
   to creating folders.
 - Stage outputs go only inside the current run folder.
+- Scratch and backup files go only in `<repo>/runs/_scratch/` (git-ignored), never %TEMP% or any
+  folder outside the repo.
+- Always run Python through `uv run`, never bare `python`.
 - One brief at a time; small commits; out-of-scope ideas go to `docs/PROJECT_LOG.md`.
 
 ## Secrets
