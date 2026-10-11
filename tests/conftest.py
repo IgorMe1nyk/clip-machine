@@ -47,10 +47,21 @@ def _no_tools_needed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
         monkeypatch.setitem(pipeline.STAGES, "transcribe", silent)
 
 
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may build the real API client: tests that need one replace claude.new_client."""
+
+    def refuse(api_key: str) -> object:
+        raise AssertionError("a test tried to create the real API client; fake claude.new_client")
+
+    monkeypatch.setattr("clipmachine.utils.claude.new_client", refuse)
+
+
 @pytest.fixture
 def project(tmp_path: Path) -> Path:
-    """A throwaway project root holding copies of the real config and example client."""
+    """A throwaway project root holding copies of the real config, clients and prompts."""
     shutil.copytree(REPO_ROOT / "config", tmp_path / "config")
     shutil.copytree(REPO_ROOT / "clients", tmp_path / "clients")
+    shutil.copytree(REPO_ROOT / "prompts", tmp_path / "prompts")
     (tmp_path / "runs").mkdir()
     return tmp_path

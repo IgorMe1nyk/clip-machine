@@ -301,13 +301,14 @@ class ClientRules(StrictModel):
 
 
 class FoundMoment(StrictModel):
-    """One moment as the model returns it. No Field constraints on purpose: the API schema may
-    not carry them, and ranges are checked by the candidates stage afterwards."""
+    """One candidate clip moment."""
 
-    start: float
-    end: float
-    hook: str
-    reason: str
+    # Docstrings and descriptions here are sent to the API as part of the schema. No numeric or
+    # length constraints: the API schema may not carry them, so the candidates stage checks ranges.
+    start: float = Field(description="Start of the moment in seconds, from the line timestamps")
+    end: float = Field(description="End of the moment in seconds, from the line timestamps")
+    hook: str = Field(description="The first sentence of the moment, quoted exactly")
+    reason: str = Field(description="Why this works as a clip, at most 25 words")
     type: MomentType
 
     @field_validator("type", mode="before")
@@ -318,7 +319,7 @@ class FoundMoment(StrictModel):
 
 
 class FoundMoments(StrictModel):
-    """The structured output of the find-moments call."""
+    """Candidate moments found in one block of a transcript."""
 
     moments: list[FoundMoment]
 
@@ -371,6 +372,7 @@ class CandidatesFile(StrictModel):
 
 
 CostStatus = Literal["ok", "refused", "failed", "unconfirmed"]
+EstimateSource = Literal["count_tokens", "chars_div_3", "none"]
 
 
 class CostRecord(StrictModel):
@@ -390,7 +392,7 @@ class CostRecord(StrictModel):
     cache_creation_tokens: int = 0
     cache_read_tokens: int = 0
     estimated_input_tokens: int = 0
-    estimate_source: Literal["count_tokens", "chars_div_3", "none"] = "none"
+    estimate_source: EstimateSource = "none"
     estimated_usd: float = 0.0  # worst case before the call
     actual_usd: float = 0.0
     booked_usd: float = 0.0
