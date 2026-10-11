@@ -2,6 +2,77 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-11 — Brief 8, Part B: moving-crop render (`video.crop: speaker`)
+
+**Before it:** Igor watched all six Brief 8.1 previews on T3 and passed the checkpoint (faces
+found in wide shots, the right person most of the time, cuts reset correctly).
+
+**Done** (4 commits plus this one, nothing pushed)
+- **Render approach:** ffmpeg `sendcmd` drives the existing `crop` filter in the same single pass
+  (`sendcmd=f=clips/<id>.crop.cmd,crop=…,scale=…,setsar=1,subtitles=…`). Audio, captions, encoder
+  settings and the ffprobe check are unchanged. Centre mode is byte-for-byte as before.
+  `video.crop` still defaults to `center`.
+- **Checked on ffmpeg 9.0.1 before building:** with `-ss` before the input, command times count
+  from the clip start, and a command takes effect on the first frame at or after its time (no
+  one-frame lag).
+- **Frame-exact cuts:** the 10-per-second samples place a cut only to within a few frames, and a
+  crop jump at the sample time would have been one frame late on 3 of T3's 5 cuts. For each cut
+  the track now also stores the exact time (`cuts_exact`), found from the source's own frames and
+  timestamps around it. Track files are schema 2; older ones are recomputed.
+- **`utils/crop.py` `frame_path`:** the crop x at every frame: linear between samples inside a
+  shot, a hard jump at every shot boundary (a camera cut at its exact time, a speaker switch at
+  its own time). `ffmpeg.crop_commands` writes the changes as sendcmd lines.
+- **Render stage:** reuses a valid `clips/<id>.track.json`, else analyses the clip; a track with a
+  fallback reason renders as the centre crop; both model files are checked first and never
+  downloaded. `clips/<id>.json` records `crop_mode`, `track_sha256`, `track_fallback`,
+  `crop_changes`. On a resume a speaker clip is kept only while its track is valid and is the
+  file it was rendered from.
+- Built by a Sonnet 5.5 (Medium) subagent; each diff reviewed by the planner, who re-ran the
+  checks. Tests: 1051 passed, 2 skipped. ruff, format, mypy and pip-audit clean. A real-ffmpeg
+  pixel test renders a two-colour source and checks the colour on the frames either side of each
+  crop change (with a non-zero seek).
+
+**Real run** (T3, `video.crop: speaker`, `captions.offset_seconds: 0.15`, `--from-stage score`;
+the files from before are in `runs/_scratch/`)
+- **Score** (Brief 9's boundary repair on the frozen candidates): 1 call, 13,840 input and 2,316
+  output tokens, **$0.0508**. 7 kept of 18 (was 6): 2 trims and 1 extension applied, none
+  ignored, no overlaps.
+  - Kept before and after: c05, c13, c15 (same times) and c09 (now 7.3 s longer at the start).
+  - Newly kept: c07 (trimmed), c11 (start extended by one sentence, end trimmed), c12.
+  - No longer kept: c06 (`too_long_or_rambling`) and c17 (`needs_context`).
+- **Render:**
+
+| Clip | Length | Cuts (exact time) | Switches | Crop changes | Mouth read | Analysis | Analysis + render | Size |
+|---|---|---|---|---|---|---|---|---|
+| c05 | 43.1 s | 16.4125 s | 0 | 20 | 72% | 24.4 s | 38.9 s | 13.7 MB |
+| c07 | 29.9 s | 2.9945 s | 0 | 131 | 91% | 14.0 s | 26.4 s | 14.4 MB |
+| c09 | 36.6 s | none | 0 | 12 | 100% | 16.9 s | 30.1 s | 14.1 MB |
+| c15 | 32.6 s | none | 0 | 104 | 50% | 17.6 s | 28.7 s | 11.2 MB |
+| c11 | 23.8 s | none | 0 | 15 | 100% | 11.1 s | 19.7 s | 8.6 MB |
+| c12 | 35.6 s | none | 0 | 31 | 100% | 16.7 s | 29.2 s | 12.6 MB |
+| c13 | 42.0 s | 34.852 s | 0 | 39 | 53% | 24.5 s | 41.3 s | 15.3 MB |
+
+  - All seven: speaker mode, no fallback, face time 100%, 1080x1920 H.264 + AAC. Every track was
+    analysed here (the older track files were schema 1).
+  - **Cut frames checked in the rendered files:** at each of the three cuts, the three frames
+    before it match the source cropped at the old x and the three from it on match the new x
+    (mean grey difference about 1 against 27–45 for the other position).
+
+**Gaps and risks**
+- **No speaker switch was rendered.** The only clip with switches in the 8.1 run (c17) was
+  rejected by the re-score, so a switch inside a camera shot is covered by unit tests and the
+  pixel test only, not by real footage yet.
+- Exact cut times rely on the source's frame timestamps; if they cannot be read the sample time
+  is used (up to 3 frames late at 30 fps).
+- The crop path is worked out at the source's reported frame rate, capped at 60 per second.
+
+**Parked for a possible Brief 8.2** (seen by Igor on the 8.1 previews; not fixed here)
+- The switch to a new speaker lags by a couple of seconds.
+- A laugh or chuckle can steal the camera.
+- A speaker turned away from the camera gives no mouth signal (see the 8.1 entry).
+
+**Next:** Igor watches the seven clips and rates C6.
+
 ## 2026-10-11 — Brief 8.1: small faces in wide shots, camera reset at shot cuts (stopped at the checkpoint)
 
 **Why:** Part A's checkpoint on the T3 run failed in wide shots. The Face Landmarker found no
