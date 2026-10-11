@@ -83,7 +83,7 @@ Column key:
 | Whisper model files in `<repo>/models/` | Speech models | Free. Disk: tiny 75 MB, small 464 MB, turbo 1.6 GB [measured] | MIT | n/a | — | $0 |
 | Claude API: Haiku 5.5 `claude-haiku-5-5` | Stage 3: cheap candidate pass | $0.10 input / $0.50 output per million tokens, for prompts up to 100K tokens [fact] | API commercial terms | Credits run out → requests stop, no charge [fact] | Skip this stage; use Sonnet only (section 5) | ~$0.004–0.01 [estimate] |
 | Claude API: Sonnet 5.5 `claude-sonnet-5-5` | Stage 4: scoring | $2 input / $10 output per million tokens. Batch API is 50% off. [fact] | API commercial terms | Same as above | Haiku for testing | ~$0.16–0.56 [estimate] |
-| anthropic Python SDK | API client, structured output via `messages.parse()` + Pydantic | Free | Open-source SDK (license not checked; check in Brief 5) [gap] | n/a | — | $0 |
+| anthropic Python SDK 1.13.0 | API client; we call `messages.create` with `output_config.format` and the SDK's `transform_schema()`, then validate with Pydantic | Free | **MIT** [fact, package metadata]. New transitive packages: docstring-parser (MIT), jiter (MIT), sniffio (MIT or Apache-2.0); httpx2, anyio and typing-extensions were already installed | n/a | — | $0 |
 | Montserrat font | Captions | Free [fact] | SIL OFL 1.1. Burning it into video needs no permission or credit. [fact] | n/a | Any OFL font | $0 |
 
 **Model IDs:** read from the live models page on 2026-10-10. These IDs are pinned snapshots, not moving aliases. [fact] The plan's `claude-haiku` and `claude-sonnet` are placeholders; config will use the exact IDs.
@@ -209,4 +209,4 @@ Re-open this file and tell Igor before continuing if:
 - [YouTube Terms](https://www.youtube.com/t/terms): couldn't be opened with the normal fetch tool, so treat it as reported; please read the "Permissions and Restrictions" section yourself.
 - [TED usage policy](https://www.ted.com/about/our-organization/our-policies-terms/ted-talks-usage-policy) · [Wikimedia Commons licensing](https://commons.wikimedia.org/wiki/Commons:Licensing) · [Internet Archive rights](https://help.archive.org/help/rights/)
 
-**Gaps still open:** Internet Archive Terms of Use text; Google One billing period; OpusClip credit value and commercial terms; Console minimum credit purchase (moot if we buy none); anthropic SDK and FastAPI/Streamlit licenses.
+**Gaps still open:** Internet Archive Terms of Use text; Google One billing period; OpusClip credit value and commercial terms; Console minimum credit purchase (moot if we buy none); FastAPI/Streamlit licenses (the anthropic SDK is MIT, checked in Brief 4).
