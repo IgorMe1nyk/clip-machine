@@ -119,27 +119,27 @@ def _one_line(text: str) -> str:
     return " ".join(CONTROL_CHARS_RE.sub(" ", text).split())
 
 
-def load_prompt(root: Path) -> tuple[str, str]:
-    """(system, user) templates from prompts/find_moments.md."""
-    path = root / PROMPT_FILE
+def load_prompt(root: Path, prompt_file: Path = PROMPT_FILE) -> tuple[str, str]:
+    """(system, user) templates from a prompt file (default prompts/find_moments.md)."""
+    path = root / prompt_file
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise RunError(f"cannot read {PROMPT_FILE}: {type(exc).__name__}") from exc
+        raise RunError(f"cannot read {prompt_file}: {type(exc).__name__}") from exc
     parts = SECTION_RE.split(text)
     # ['', 'SYSTEM', body, 'USER', body]
     if len(parts) != 5 or parts[0].strip() or [parts[1], parts[3]] != ["SYSTEM", "USER"]:
-        raise RunError(f"{PROMPT_FILE} must contain one SYSTEM: section, then one USER: section")
+        raise RunError(f"{prompt_file} must contain one SYSTEM: section, then one USER: section")
     return parts[2].strip(), parts[4].strip()
 
 
-def fill(template: str, values: dict[str, str]) -> str:
+def fill(template: str, values: dict[str, str], prompt_file: Path = PROMPT_FILE) -> str:
     """Replace {name} placeholders in one pass: inserted values are never scanned again."""
 
     def replace(match: re.Match[str]) -> str:
         name = match.group(1)
         if name not in values:
-            raise RunError(f"{PROMPT_FILE} uses an unknown placeholder {{{name}}}")
+            raise RunError(f"{prompt_file} uses an unknown placeholder {{{name}}}")
         return values[name]
 
     return PLACEHOLDER_RE.sub(replace, template)
