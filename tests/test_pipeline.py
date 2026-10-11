@@ -67,10 +67,10 @@ def test_stubs_log_not_implemented(project: Path, caplog: pytest.LogCaptureFixtu
     run_dir = new_run(project)
     with caplog.at_level(logging.INFO, logger="clipmachine"):
         run_pipeline(run_dir)
-    # fetch and transcribe are real now (and replaced by silent no-ops in unit tests)
-    for name in STAGE_NAMES[2:]:
+    # fetch, transcribe and candidates are real now (silent no-ops in unit tests)
+    for name in STAGE_NAMES[3:]:
         assert f"stage {name} not implemented yet" in caplog.text
-    for name in STAGE_NAMES[:2]:
+    for name in STAGE_NAMES[:3]:
         assert f"stage {name} not implemented yet" not in caplog.text
 
 

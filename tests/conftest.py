@@ -30,7 +30,8 @@ WHISPER_ENV = "CLIPMACHINE_WHISPER_TESTS"
 
 @pytest.fixture(autouse=True)
 def _no_tools_needed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unit tests never need ffmpeg or a Whisper model: those stages are stubbed in the pipeline.
+    """Unit tests never need ffmpeg, a Whisper model or the API: those stages are stubbed in the
+    pipeline.
 
     Tests marked `ffmpeg` get the real tool check and the real fetch stage; tests marked `whisper`
     also get the real transcribe stage. Tests of a stage itself call its `run` directly, so they
@@ -45,6 +46,9 @@ def _no_tools_needed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
         monkeypatch.setitem(pipeline.STAGES, "fetch", silent)
     if request.node.get_closest_marker("whisper") is None:
         monkeypatch.setitem(pipeline.STAGES, "transcribe", silent)
+    # candidates calls the API: pipeline tests never reach it. Tests of the stage itself call
+    # candidates.run directly (or put it back) with a faked client.
+    monkeypatch.setitem(pipeline.STAGES, "candidates", silent)
 
 
 @pytest.fixture(autouse=True)
