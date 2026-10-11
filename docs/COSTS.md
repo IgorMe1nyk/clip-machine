@@ -145,13 +145,14 @@ Measured on one 15.4-minute, two-speaker interview with these settings: GTX 1660
 | Transcribe, GPU (D-011) | 48–55 s (≈17–19× realtime) | $0 |
 | Transcribe, CPU fallback | 173–236 s (≈4–5× realtime) | $0 |
 | Candidates, Haiku 5.5 (Brief 4; 2 calls, 8,810 in / 830 out tokens) | about 7 s | $0.0013 (worst-case estimate $0.0030) |
+| Score, Sonnet 5.5 (Brief 5; 8 candidates, 1 call, 4,298 in / 1,043 out / 0 thinking tokens; `between_tools`, effort `medium`) | 8.9 s | $0.019 (worst-case estimate $0.089) |
 
 Local disk used:
 - Models: 2.1 GB
 - uv package cache: 2.4 GB (in the user folder)
 - Each run folder: roughly 75 MB per 15 min of 640×360 video
 
-Stage 3 measured: $0.0013 for 15.4 minutes, about $0.005 per hour of video (the estimate was $0.004–0.01). Stage 4 (Sonnet) is still an estimate until Brief 5.
+Stage 3 measured: $0.0013 for 15.4 minutes, about $0.005 per hour of video (the estimate was $0.004–0.01). Stage 4 measured: $0.019 for 15.4 minutes (8 candidates), about $0.074 per hour of video (the estimate was $0.16–0.56). It was lower because Sonnet 5.5's lowest thinking setting (`between_tools`, Sonnet 5.5 rejects `disabled`) produced 0 thinking tokens at effort `medium`, and only 8 candidates were judged. Both stages together: about $0.08 per hour, under the $1 re-check trigger.
 
 ### Per client per month [estimate, using the plan's own estimates]
 

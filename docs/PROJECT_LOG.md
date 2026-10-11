@@ -2,6 +2,44 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-10 — Brief 5: Score stage
+
+**Facts**
+- Commits: 6 feature/test commits plus this log entry. Tests: 582 passed, 1 skipped. ruff, mypy and
+  pip-audit clean. No new dependency.
+- Sonnet 5.5 rejects `thinking: disabled` with a 400; its lowest setting is `between_tools`
+  (accepted at low, medium and high effort). Config: `score.thinking: between_tools`,
+  `score.effort: medium`. Default effort for the model is `high`, so it is set explicitly.
+- `call_structured` gained an optional `check` hook and a `repairs` count (0 or 1), so the id check
+  uses the client's one repair call and the guard, ledger and cost log as before.
+- Real run (15.4-min interview, `general` client, 8 candidates): 1 call, 1 chunk, no repair.
+  4,298 input and 1,043 output tokens, 0 thinking tokens. Actual $0.019026 against a worst-case
+  estimate of $0.089456 (the 8,000-token output ceiling). 8.9 s. About $0.074 per hour of video
+  for stage 4. Rerun: "nothing to do", ledger unchanged (5 lines).
+- Result: 1 kept, 7 rejected, 0 dropped by `min_score`, 0 dropped by `top_n`, 0 trimmed.
+  Model reject reasons: needs_context 4, weak_hook 1, off_brand 1, below_threshold 1,
+  no_payoff 0, too_long_or_rambling 0.
+- Model vs Igor (c01, c03, c07, c08, from the Brief 4.1 spot check): **agreement 2 of 4**.
+  - c03 and c07: both sides see a start mid-sentence (C1 fail). Agree on the defect; the model is
+    harsher on "understandable".
+  - c01: Igor rated it OK; the model rejected it under the client's "avoid intros" rule. Disagree.
+  - c08: Igor rated it clean; the model rejected it as starting mid-sentence. Disagree, **pending
+    Igor's re-listen**: its snap notes say the start is a segment edge with no sentence
+    punctuation before it, and it starts exactly where c07 ends, which fits the model's claim.
+
+**Observed**
+- The model never used `keep_sentences`, so the trim path has only been exercised by tests, not by
+  a real answer.
+- 1 of 8 kept is strict but matches the brief ("it is normal to keep only a few"); neither
+  `min_score` nor `keep_top` was the limit.
+- The model's `below_threshold` reason is recorded as its own word; our own cuts are `dropped_by`
+  (`min_score` / `top_n`) and are never written into `reject_reason`.
+
+**Parked**
+- Tell Sonnet which candidates start or end at a fallback segment edge (from `snap_notes`); may
+  help with the c03/c07/c08 kind of C1 failure.
+- Store word indices in `candidates.json` so the score stage need not locate candidates by time.
+
 ## 2026-10-10 — Brief 4.1: Candidate quality fixes
 
 **Evidence (Igor's spot check of 4 of 8 candidates):** 2 of 4 were understandable alone. One had its payoff cut short; two started mid-sentence.
