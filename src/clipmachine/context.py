@@ -12,3 +12,6 @@ class RunContext:
     config: ResolvedConfig
     input_path: Path  # the original media file; only the fetch stage reads it
     project_root: Path | None = None  # holds models/ and tools/; None = this checkout
+    # True only when this stage failed or was interrupted on an earlier run and is being resumed.
+    # A stage may then keep outputs it can prove are good; otherwise it redoes everything.
+    resuming: bool = False

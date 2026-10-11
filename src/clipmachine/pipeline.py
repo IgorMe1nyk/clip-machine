@@ -3,7 +3,7 @@
 import logging
 import shutil
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -137,13 +137,16 @@ def run_pipeline(
         stage = state.stages[name]
         if stage.status == "done":
             continue
+        # "failed" here means an earlier run died in this stage; "pending" is a first run or a
+        # forced redo (--from-stage), which must not reuse old outputs.
+        stage_ctx = replace(ctx, resuming=stage.status == "failed")
         stage.status = "running"
         stage.started_at = _now()
         stage.finished_at = None
         stage.error = None
         save_state(run_dir, state)
         try:
-            stage_fn(ctx)
+            stage_fn(stage_ctx)
         except Exception as exc:
             stage.status = "failed"
             stage.finished_at = _now()

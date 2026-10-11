@@ -50,6 +50,9 @@ def _no_tools_needed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
     # candidates.run directly (or put it back) with a faked client.
     monkeypatch.setitem(pipeline.STAGES, "candidates", silent)
     monkeypatch.setitem(pipeline.STAGES, "score", silent)
+    # render needs a real run folder (scored.json, source video): its own tests call render.run
+    # with a faked ffmpeg, and the ffmpeg-marked test uses real tools.
+    monkeypatch.setitem(pipeline.STAGES, "render", silent)
 
 
 @pytest.fixture(autouse=True)
@@ -68,5 +71,6 @@ def project(tmp_path: Path) -> Path:
     shutil.copytree(REPO_ROOT / "config", tmp_path / "config")
     shutil.copytree(REPO_ROOT / "clients", tmp_path / "clients")
     shutil.copytree(REPO_ROOT / "prompts", tmp_path / "prompts")
+    shutil.copytree(REPO_ROOT / "assets", tmp_path / "assets")
     (tmp_path / "runs").mkdir()
     return tmp_path

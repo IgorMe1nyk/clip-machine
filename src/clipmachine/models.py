@@ -604,6 +604,69 @@ class ScoredFile(StrictModel):
     warnings: list[str]
 
 
+class ClipCropBox(StrictModel):
+    w: int
+    h: int
+    x: int
+    y: int
+
+
+class RenderedSource(StrictModel):
+    """The source video as the render stage saw it (from meta.json)."""
+
+    width: int
+    height: int
+    rotation: int
+    r_frame_rate: str
+    avg_frame_rate: str
+    variable_frame_rate: bool
+
+
+class RenderedSettings(StrictModel):
+    """Everything that shapes a clip's pixels; a change makes an old output stale."""
+
+    width: int
+    height: int
+    crf: int
+    preset: str
+    audio_bitrate: str
+    font: str
+    font_file: str
+    font_size: int
+    margin_v: int
+    words_per_line: int
+    highlight_color: str
+
+
+class RenderedOutput(StrictModel):
+    """The output file as ffprobe reports it."""
+
+    width: int
+    height: int
+    video_codec: str
+    audio_codec: str
+    duration_seconds: float
+    size_bytes: int
+
+
+class RenderedClip(StrictModel):
+    """The contents of clips/<id>.json. Holds no transcript text, hook or title."""
+
+    schema_version: int = 1
+    id: str
+    rank: int | None
+    score: int
+    start: float
+    end: float
+    duration: float
+    source: RenderedSource
+    crop: ClipCropBox
+    settings: RenderedSettings
+    caption_events: int
+    output: RenderedOutput
+    render_seconds: float
+
+
 CostStatus = Literal["ok", "refused", "failed", "unconfirmed"]
 EstimateSource = Literal["count_tokens", "chars_div_3", "none"]
 

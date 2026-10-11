@@ -83,7 +83,7 @@ def test_from_stage_reruns_only_render_and_report(
     assert run_main(project, "run", str(run_dir), "--from-stage", "render") == 0
 
     out = capsys.readouterr().out
-    assert "stage render not implemented yet" in out
+    assert "stage render not implemented yet" not in out  # real stage (silent in unit tests)
     assert "stage report not implemented yet" in out
     assert "stage score not implemented yet" not in out
     after = read_run_json(run_dir)["stages"]
