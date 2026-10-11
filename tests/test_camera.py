@@ -1,6 +1,7 @@
 """Track linking, speaker choice, shots and the camera path. All data is synthetic."""
 
 from collections.abc import Callable
+from dataclasses import replace
 
 import pytest
 
@@ -12,6 +13,7 @@ from clipmachine.utils.camera import (
     FaceSample,
     Shot,
     Track,
+    _variance,
     build_shots,
     camera_path,
     choose_speakers,
@@ -148,6 +150,28 @@ def choices(
 
 def test_the_track_with_the_moving_mouth_is_the_speaker() -> None:
     frames = two_people(6, a_talks=lambda w: False, b_talks=lambda w: True)
+    assert choices(frames, [True] * 6) == [1] * 6
+
+
+def test_unreadable_mouths_are_left_out_of_the_variance() -> None:
+    samples = [face(0.0, 0.5, mouth=0.4), face(0.1, 0.5, mouth=0.0)]
+    unreadable = [
+        FaceSample(t=0.05, cx=0.5, cy=0.5, w=0.15, h=0.3, mouth=None),
+        FaceSample(t=0.15, cx=0.5, cy=0.5, w=0.15, h=0.3, mouth=None),
+    ]
+    assert _variance(samples + unreadable) == _variance(samples) > 0
+
+
+def test_fewer_than_two_readable_mouths_have_no_variance() -> None:
+    unreadable = FaceSample(t=0.0, cx=0.5, cy=0.5, w=0.15, h=0.3, mouth=None)
+    assert _variance([unreadable, unreadable, face(0.1, 0.5, mouth=0.4)]) == 0.0
+    assert _variance([unreadable, unreadable]) == 0.0
+
+
+def test_a_track_with_unreadable_mouths_never_beats_one_that_talks() -> None:
+    frames = two_people(6, a_talks=lambda w: False, b_talks=lambda w: True)
+    # A is the larger face but its mouth cannot be read; B talks
+    frames = [[replace(left, mouth=None, h=0.5), right] for left, right in frames]
     assert choices(frames, [True] * 6) == [1] * 6
 
 

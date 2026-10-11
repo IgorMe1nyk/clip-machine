@@ -3,9 +3,11 @@ The one `mediapipe` test runs the real landmarker on a generated blank image."""
 
 import hashlib
 import io
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import TracebackType
+from typing import Any
 
 import numpy as np
 import pytest
@@ -405,6 +407,146 @@ def test_mediapipe_version_reads_metadata_without_importing() -> None:
     assert ("mediapipe" in sys.modules) == before
 
 
+# --- find_faces (detector and landmarker replaced) ----------------------------------------
+
+
+@dataclass
+class FakeFinding:
+    """Scripted detector boxes and landmarker answers; records the crops it was asked about."""
+
+    boxes: list[FaceBox]
+    crop_faces: Callable[[int, int], list[RawFace]] = lambda w, h: []
+    crops: list[tuple[int, int]] = field(default_factory=list)
+
+
+@pytest.fixture
+def finding(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[FaceBox]], FakeFinding]:
+    def install(boxes: list[FaceBox]) -> FakeFinding:
+        fake = FakeFinding(boxes=boxes)
+
+        def detect_boxes(finder: object, frame: object) -> list[FaceBox]:
+            return fake.boxes
+
+        def crop_landmarks(finder: object, crop: "np.ndarray[Any, Any]") -> list[RawFace]:
+            assert crop.flags["C_CONTIGUOUS"]
+            fake.crops.append((crop.shape[1], crop.shape[0]))
+            return fake.crop_faces(crop.shape[1], crop.shape[0])
+
+        monkeypatch.setattr(faces, "_detect_boxes", detect_boxes)
+        monkeypatch.setattr(faces, "_crop_landmarks", crop_landmarks)
+        return fake
+
+    return install
+
+
+def finder_for(*, min_face_height: float = 0.02, max_faces: int = 2) -> faces.FaceFinder:
+    return faces.FaceFinder(
+        detector=None,
+        landmarker=None,
+        detect_width=640,
+        crop_scale=2.5,
+        min_face_height=min_face_height,
+        max_faces=max_faces,
+    )
+
+
+FRAME = np.zeros((800, 1000, 3), dtype=np.uint8)
+
+
+def test_find_faces_returns_one_face_per_box_with_the_boxs_own_position(
+    finding: Callable[[list[FaceBox]], FakeFinding],
+) -> None:
+    fake = finding([box(0.7, 0.4, 0.06, 0.1), box(0.3, 0.5, 0.05, 0.08)])
+    fake.crop_faces = lambda w, h: [RawFace(0.5, 0.5, 0.3, 0.4, 0.2)]  # centred in each crop
+
+    found = faces.find_faces(finder_for(), FRAME)
+
+    assert [(f.cx, f.cy, f.w, f.h) for f in found.faces] == [
+        (0.3, 0.5, 0.05, 0.08),
+        (0.7, 0.4, 0.06, 0.1),
+    ]
+    assert [f.mouth for f in found.faces] == [0.2, 0.2]
+
+
+def test_find_faces_maps_the_mouth_from_the_crop_back_to_the_frame(
+    finding: Callable[[list[FaceBox]], FakeFinding],
+) -> None:
+    # box centre (500, 400) px, side 2.5 * 120 = 300, so the crop starts at (350, 250); a face at
+    # the crop's centre is the box's face
+    fake = finding([box(0.5, 0.5, 0.1, 0.15)])
+    fake.crop_faces = lambda w, h: [RawFace(0.5, 0.5, 0.3, 0.4, 0.17)]
+    assert faces.find_faces(finder_for(), FRAME).faces[0].mouth == 0.17
+
+
+def test_find_faces_gives_none_when_the_landmarker_finds_nothing(
+    finding: Callable[[list[FaceBox]], FakeFinding],
+) -> None:
+    finding([box(0.5, 0.5, 0.1, 0.15)])
+    found = faces.find_faces(finder_for(), FRAME)
+    assert len(found.faces) == 1
+    assert found.faces[0].mouth is None
+    assert found.faces[0].h == 0.15
+
+
+def test_find_faces_does_not_use_a_neighbours_face_inside_the_crop(
+    finding: Callable[[list[FaceBox]], FakeFinding],
+) -> None:
+    fake = finding([box(0.5, 0.5, 0.1, 0.15)])
+    # the crop spans x 350..650, y 250..550; the only face the landmarker finds is at its right
+    # edge (x = 640 px, 0.14 frame widths from the box), far from the box
+    fake.crop_faces = lambda w, h: [RawFace(0.97, 0.5, 0.2, 0.3, 0.9)]
+    assert faces.find_faces(finder_for(), FRAME).faces[0].mouth is None
+
+
+def test_find_faces_picks_the_face_at_the_box_when_a_neighbour_is_in_the_crop(
+    finding: Callable[[list[FaceBox]], FakeFinding],
+) -> None:
+    fake = finding([box(0.5, 0.5, 0.1, 0.15)])
+    fake.crop_faces = lambda w, h: [
+        RawFace(0.95, 0.5, 0.2, 0.3, 0.9),  # the neighbour
+        RawFace(0.5, 0.5, 0.3, 0.4, 0.1),  # the box's face
+    ]
+    assert faces.find_faces(finder_for(), FRAME).faces[0].mouth == 0.1
+
+
+def test_find_faces_drops_small_boxes_but_still_reports_the_tallest_height(
+    finding: Callable[[list[FaceBox]], FakeFinding],
+) -> None:
+    fake = finding([box(0.2, 0.5, 0.01, 0.02), box(0.8, 0.5, 0.015, 0.03)])
+    found = faces.find_faces(finder_for(min_face_height=0.05), FRAME)
+    assert found.faces == []
+    assert found.largest_height == 0.03
+    assert fake.crops == []  # no crop was read for a dropped box
+
+
+def test_find_faces_with_no_boxes_has_zero_largest_height(
+    finding: Callable[[list[FaceBox]], FakeFinding],
+) -> None:
+    finding([])
+    found = faces.find_faces(finder_for(), FRAME)
+    assert (found.faces, found.largest_height) == ([], 0.0)
+
+
+def test_find_faces_keeps_only_max_faces_but_reports_the_tallest(
+    finding: Callable[[list[FaceBox]], FakeFinding],
+) -> None:
+    fake = finding([box(0.2, 0.5, 0.05, 0.1), box(0.5, 0.5, 0.1, 0.2), box(0.8, 0.5, 0.06, 0.12)])
+    found = faces.find_faces(finder_for(max_faces=2), FRAME)
+    assert [f.cx for f in found.faces] == [0.5, 0.8]
+    assert len(fake.crops) == 2
+    assert found.largest_height == 0.2
+
+
+def test_find_faces_hands_the_landmarker_the_crop_crop_square_describes(
+    finding: Callable[[list[FaceBox]], FakeFinding],
+) -> None:
+    target = box(0.98, 0.5, 0.06, 0.1)
+    fake = finding([target])
+    faces.find_faces(finder_for(), FRAME)
+    _, _, side = faces.crop_square(target, 1000, 800, 2.5)
+    assert fake.crops == [(side, side)]
+
+
 # --- the real landmarker (opt in) ---------------------------------------------------------
 
 
@@ -421,3 +563,25 @@ def test_real_landmarker_finds_no_face_in_a_blank_image() -> None:
         assert faces.detect(handle, blank, 0) == []  # same timestamp: bumped, not an error
     finally:
         faces.close_landmarker(handle)
+
+
+@pytest.mark.mediapipe
+def test_real_finder_finds_no_face_in_a_blank_image() -> None:
+    landmarker = REPO_ROOT / faces.LANDMARKER.folder / faces.LANDMARKER.name
+    detector = REPO_ROOT / faces.DETECTOR.folder / faces.DETECTOR.name
+    if not landmarker.is_file() or not detector.is_file():
+        pytest.skip(f"face models not present; run: {faces.FETCH_COMMAND}")
+    finder = faces.open_finder(
+        ensure_model(detector.parent, spec=faces.DETECTOR),
+        ensure_model(landmarker.parent),
+        detect_width=640,
+        detect_score=0.6,
+        crop_scale=2.5,
+        min_face_height=0.02,
+        max_faces=2,
+    )
+    try:
+        found = faces.find_faces(finder, np.zeros((360, 640, 3), dtype=np.uint8))
+        assert (found.faces, found.largest_height) == ([], 0.0)
+    finally:
+        faces.close_finder(finder)

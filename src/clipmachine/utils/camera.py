@@ -29,14 +29,15 @@ FALLBACK_SOURCE_NOT_WIDER = "source_not_wider_than_crop"
 
 @dataclass(frozen=True)
 class FaceSample:
-    """One face in one sampled frame. `mouth` is the mouth openness divided by the face height."""
+    """One face in one sampled frame. `mouth` is the mouth openness divided by the face height, or
+    None when the face was found but its mouth could not be read."""
 
     t: float
     cx: float
     cy: float
     w: float
     h: float
-    mouth: float
+    mouth: float | None
 
 
 @dataclass
@@ -156,9 +157,11 @@ def _window_values(track: Track, window: float, count: int) -> dict[int, list[Fa
 
 
 def _variance(samples: Sequence[FaceSample]) -> float:
-    if len(samples) < 2:
+    """Variance of the readable mouth openings; 0.0 with fewer than two of them."""
+    mouths = [s.mouth for s in samples if s.mouth is not None]
+    if len(mouths) < 2:
         return 0.0
-    return statistics.pvariance([s.mouth for s in samples])
+    return statistics.pvariance(mouths)
 
 
 def _mean_height(track: Track) -> float:

@@ -1,11 +1,12 @@
-"""MediaPipe Face Landmarker wrapper: model file check, detection, mouth openness, face boxes.
+"""Face finding: model file checks, YuNet face boxes, MediaPipe mouth openness, crop geometry.
 
-This is the only module that touches mediapipe, and it imports it inside functions, so the CLI
-starts fast and unit tests can replace the three seams marked SEAM below (and never need the
-library or the model file).
+This is the only module that touches opencv and mediapipe, and it imports them inside functions,
+so the CLI starts fast and unit tests can replace the seams marked SEAM below (and never need the
+libraries or the model files).
 
-The model file lives in <project>/models/mediapipe/ (git-ignored). The track command never
-downloads it: a missing file is an error that names the explicit command, `fetch-face-model`.
+The model files live in <project>/models/mediapipe/ and <project>/models/yunet/ (git-ignored). The
+track command never downloads them: a missing file is an error that names the explicit command,
+`fetch-face-model`.
 """
 
 import hashlib
@@ -83,6 +84,9 @@ CHIN = 152
 MIN_LANDMARKS = CHIN + 1
 MIN_FACE_HEIGHT = 1e-6  # a face this flat in y has no usable size
 MIN_CROP_PIXELS = 64  # the landmarker needs some pixels to work with, even for a tiny face
+YUNET_NMS_THRESHOLD = 0.3  # YuNet boxes overlapping more than this are merged
+YUNET_TOP_K = 5000  # boxes kept before merging
+CROP_LANDMARK_FACES = 2  # a crop may hold a neighbour; the matching step picks the right face
 MATCH_FRACTION = 0.5  # a landmarker face is the detector's if its centre is this close (x height)
 
 
@@ -103,13 +107,39 @@ class Landmark(Protocol):
 @dataclass(frozen=True)
 class RawFace:
     """One detected face, normalised to the frame: centre, size, and mouth openness divided by the
-    face height."""
+    face height (None: the face was found but its mouth could not be read)."""
 
     cx: float
     cy: float
     w: float
     h: float
-    mouth: float
+    mouth: float | None
+
+
+@dataclass(frozen=True)
+class FoundFaces:
+    """The faces of one frame, and the height of the tallest face the detector saw before small
+    ones were dropped (0.0 when it saw none), so "faces too small" is judged from all of them."""
+
+    faces: list[RawFace]
+    largest_height: float
+
+
+@dataclass
+class FaceFinder:
+    """The open YuNet detector and landmarker, and the settings find_faces needs."""
+
+    detector: Any
+    landmarker: Any
+    detect_width: int
+    crop_scale: float
+    min_face_height: float
+    max_faces: int
+
+    def close(self) -> None:
+        close = getattr(self.landmarker, "close", None)
+        if callable(close):
+            close()
 
 
 @dataclass
@@ -392,3 +422,152 @@ def detect(handle: Any, frame_rgb: "NDArray[np.uint8]", t_ms: int) -> list[RawFa
 
 def close_landmarker(handle: Any) -> None:  # SEAM
     handle.close()
+
+
+# --- SEAMS for the finder: YuNet finds faces, the landmarker reads mouths on crops ---------------
+
+
+def _cv2() -> Any:
+    try:
+        import cv2
+    except Exception as exc:  # ImportError, or a missing system library
+        raise FacesError(
+            f"opencv could not be imported ({_one_line(exc)}); run: uv sync --locked"
+        ) from exc
+    return cv2
+
+
+def open_finder(  # SEAM
+    detector_path: Path,
+    landmarker_path: Path,
+    *,
+    detect_width: int,
+    detect_score: float,
+    crop_scale: float,
+    min_face_height: float,
+    max_faces: int,
+) -> FaceFinder:
+    """Open the YuNet detector and an IMAGE-mode Face Landmarker. Close with close_finder."""
+    import numpy as np
+
+    cv2 = _cv2()
+    mp = _mediapipe()
+    try:
+        data = detector_path.read_bytes()
+    except OSError as exc:
+        raise FacesError(
+            f"could not read the {DETECTOR.label} at {detector_path}: {_one_line(exc)}"
+        ) from exc
+    if DETECTOR.sha256 is not None:
+        actual = hashlib.sha256(data).hexdigest()
+        if actual != DETECTOR.sha256:
+            raise FacesError(
+                f"{DETECTOR.label} at {detector_path} has SHA-256 {actual}, expected "
+                f"{DETECTOR.sha256}; the file changed or is damaged"
+            )
+    try:
+        detector = cv2.FaceDetectorYN.create(
+            "onnx",
+            np.frombuffer(data, np.uint8),
+            np.empty(0, np.uint8),
+            (detect_width, detect_width),  # replaced per frame by setInputSize
+            detect_score,
+            YUNET_NMS_THRESHOLD,
+            YUNET_TOP_K,
+        )
+    except Exception as exc:
+        raise FacesError(f"could not start the face detector: {_one_line(exc)}") from exc
+    try:
+        vision = mp.tasks.vision
+        options = vision.FaceLandmarkerOptions(
+            base_options=mp.tasks.BaseOptions(model_asset_path=str(landmarker_path)),
+            running_mode=vision.RunningMode.IMAGE,
+            num_faces=CROP_LANDMARK_FACES,
+            output_face_blendshapes=False,
+            output_facial_transformation_matrixes=False,
+            min_face_detection_confidence=0.5,
+            min_face_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        landmarker = vision.FaceLandmarker.create_from_options(options)
+    except Exception as exc:
+        raise FacesError(f"could not start the face landmarker: {_one_line(exc)}") from exc
+    return FaceFinder(
+        detector=detector,
+        landmarker=landmarker,
+        detect_width=detect_width,
+        crop_scale=crop_scale,
+        min_face_height=min_face_height,
+        max_faces=max_faces,
+    )
+
+
+def _detect_boxes(finder: FaceFinder, frame_rgb: "NDArray[np.uint8]") -> list[FaceBox]:
+    """Every face YuNet finds in the frame, as fractions of the frame (cv2 is touched here)."""
+    import numpy as np
+
+    cv2 = _cv2()
+    height, width = frame_rgb.shape[:2]
+    small_w = min(finder.detect_width, width)
+    small_h = max(2, int(round(small_w * height / width / 2)) * 2)  # even, like ffmpeg's -2
+    try:
+        small = cv2.resize(frame_rgb, (small_w, small_h), interpolation=cv2.INTER_AREA)
+        bgr = np.ascontiguousarray(small[..., ::-1])  # the detector wants BGR
+        finder.detector.setInputSize((small_w, small_h))
+        _, rows = finder.detector.detect(bgr)
+    except Exception as exc:
+        raise FacesError(f"face detection failed: {_one_line(exc)}") from exc
+    boxes: list[FaceBox] = []
+    for row in [] if rows is None else rows:
+        left, top = max(float(row[0]), 0.0), max(float(row[1]), 0.0)
+        right = min(float(row[0]) + float(row[2]), float(small_w))
+        bottom = min(float(row[1]) + float(row[3]), float(small_h))
+        if right <= left or bottom <= top:
+            continue
+        boxes.append(
+            FaceBox(
+                cx=(left + right) / 2 / small_w,
+                cy=(top + bottom) / 2 / small_h,
+                w=(right - left) / small_w,
+                h=(bottom - top) / small_h,
+                score=float(row[14]),
+            )
+        )
+    return boxes
+
+
+def _crop_landmarks(finder: FaceFinder, crop_rgb: "NDArray[np.uint8]") -> list[RawFace]:
+    """Faces the landmarker finds in a crop, as fractions of the crop (mediapipe is touched
+    here)."""
+    mp = _mediapipe()
+    try:
+        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=crop_rgb)
+        result = finder.landmarker.detect(image)
+    except Exception as exc:
+        raise FacesError(f"face landmarks failed: {_one_line(exc)}") from exc
+    return [raw_face(landmarks) for landmarks in result.face_landmarks]
+
+
+def find_faces(finder: FaceFinder, frame_rgb: "NDArray[np.uint8]") -> FoundFaces:
+    """The faces in one RGB frame: one RawFace per kept YuNet box, with the box's own position and
+    size and the mouth read from a crop around it (None if the landmarker found no matching face).
+    """
+    import numpy as np
+
+    height, width = frame_rgb.shape[:2]
+    detected = _detect_boxes(finder, frame_rgb)
+    largest = max((box.h for box in detected), default=0.0)
+    out: list[RawFace] = []
+    for box in keep_boxes(detected, finder.min_face_height, finder.max_faces):
+        x0, y0, side = crop_square(box, width, height, finder.crop_scale)
+        crop = np.ascontiguousarray(frame_rgb[y0 : y0 + side, x0 : x0 + side])
+        found = [
+            to_frame(raw, x0, y0, side, width, height) for raw in _crop_landmarks(finder, crop)
+        ]
+        mouth = match_mouth(box, found, width, height)
+        out.append(RawFace(cx=box.cx, cy=box.cy, w=box.w, h=box.h, mouth=mouth))
+    return FoundFaces(faces=out, largest_height=largest)
+
+
+def close_finder(finder: FaceFinder) -> None:  # SEAM
+    finder.close()
