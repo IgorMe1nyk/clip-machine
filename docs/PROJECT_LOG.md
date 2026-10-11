@@ -2,6 +2,37 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-11 — Brief 9: Boundary repair (built; real run not done yet)
+
+**Done** (not committed yet; real-run results to be added)
+- **Score stage can repair boundaries:** `keep_sentences` may now start earlier or end later,
+  not only trim. Each candidate shows up to `score.extend_before` (4) sentences before and
+  `score.extend_after` (3) after, numbered continuously: before = ... -1, 0; clip = 1..n;
+  after = n+1.... Times still come from word timestamps plus the snapping padding.
+- **Rules:** the range must lie inside the shown numbers and include at least one of the clip's
+  own sentences; the repaired clip must stay within `clip.min_seconds`..`max_seconds`. Otherwise
+  the adjustment is ignored and noted, and a clip the model kept is dropped as `adjust_ignored`
+  (`trim_ignored` stays readable in old files).
+- **Overlap rule (added by Igor):** after `min_score` and `adjust_ignored`, before the `keep_top`
+  cut, clips are walked best score first (ties to the earlier candidate). A clip whose final
+  times overlap an already accepted clip by more than 50% of the shorter one is dropped as
+  `overlap`; exactly 50% is kept. A dropped overlap takes no rank.
+- **scored.json:** per clip `extended_start`, `extended_end`; summary `extensions_applied`,
+  `adjust_ignored`, `dropped_overlap`. Old files load.
+- **Prompts:** `score_clip.md` "Repair first, reject second" with the numbered context;
+  `find_moments.md` gets the one setup/finished-point line.
+- **Report:** "extended" badge; "dropped adjust_ignored" (counts old `trim_ignored` too) and
+  "dropped overlap" in the summary.
+- **Captions:** `captions.offset_seconds` default 0.0 -> 0.15 (config and model).
+- **Tests:** 888 passed, 2 skipped; ruff, format and mypy clean.
+  `tests/test_render.py` pins the offset to 0.0 in its helper so those tests keep checking
+  caption timing at the spoken time.
+
+**Not done yet**
+- The real run on `runs/2026-10-11_t1` (`--from-stage score`, candidates frozen) and its
+  before/after table.
+- `pip-audit`.
+
 ## 2026-10-11 — Brief 8, Part A: speaker-following crop analysis (stopped at the checkpoint)
 
 **Done** (7 commits, nothing pushed)
