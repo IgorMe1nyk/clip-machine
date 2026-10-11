@@ -2,6 +2,62 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-10 — Brief 5.1: Score fixes (context, trim-first, more candidates)
+
+**Evidence (Igor's re-listen after Brief 5):** the Brief 5 c08 start at 12:00 was clean, so Sonnet's
+reject of it was a **false reject**.
+
+**Root causes (judgment, from the brief)**
+1. Sonnet judged "standalone" and "payoff complete" without seeing the text just before and after
+   the clip, and a segment-edge start has no punctuation to go by.
+2. The prompt let it reject rather than repair; `keep_sentences` was never used.
+3. Too few candidates went in for a strict judge.
+
+**Done**
+- Context: up to 2 sentences `<before>` and 1 `<after>` per candidate (unnumbered, clipped at the
+  transcript ends, never overlapping the clip), plus `start_at_segment_edge` / `end_at_segment_edge`
+  from the snap notes. Prompt: trim first, reject second; score and verdict describe the trimmed clip.
+- `candidates.per_block_max` 5 -> 8 (`candidates_target` stays 20). The existing run folder's
+  `config.resolved.yaml` was edited for that one value so the real run used it.
+- `scored.json`: edge flags, `sentences`, `kept_sentences`, and trim counts (`trims_applied`,
+  `trims_ignored`, `trims_out_of_range`, `dropped_trim_ignored`); all with defaults, so Brief 5 files load.
+- A clip the model kept whose trim was ignored (outside `clip_length`, or sentence numbers out of
+  range) is not kept: `dropped_by: "trim_ignored"`. Precedence: `min_score` first.
+- Commits: 4 feature commits. Tests: 598 passed, 1 skipped (was 582). ruff, mypy, pip-audit clean.
+
+**Before vs after (same 15.4-min interview, `general` client)**
+
+| | Brief 5 | Brief 5.1 |
+|---|---|---|
+| Candidates requested / returned / in | 10 / 8 / 8 | 16 / 7 / 7 |
+| Kept | 1 | 1 |
+| Rejected by the model | 7 | 6 |
+| Trims used (applied / ignored) | 0 | 1 / 0 |
+| Reject reasons | needs_context 4, weak_hook 1, off_brand 1, below_threshold 1 | needs_context 3, no_payoff 2, off_brand 1 |
+
+**Cost:** candidates 2 calls, 9,020 in / 651 out, $0.0012 (worst-case estimate $0.0030); score 1
+call, 4,770 in / 872 out / 0 thinking, $0.0183 (estimate $0.0905). Total $0.0195. Rerun: "nothing to
+do", ledger unchanged (8 lines).
+
+**Outcome: stop rule reached (1 kept, 2 or fewer).** No tuning was done: prompt, `min_score` and
+`keep_top` are as in Brief 5.
+
+**Observed**
+- The quota was not the limit: Haiku returned 7 of the 16 moments asked for (0 invalid, 0 dropped,
+  0 duplicates), so raising `per_block_max` added nothing here.
+- The candidate set changed between runs: of the 7, only one span is identical to a Brief 5
+  candidate (684.19-720.39 s); candidate ids are reassigned each run. No candidate now starts
+  near 12:00, so Igor's clean start was not re-judged.
+- First real use of `keep_sentences`: 1 trim applied (the kept clip, sentences 2-8 of 8). It scored
+  exactly `min_score` (6).
+- The same 684.19-720.39 s span was rejected again as `needs_context` although its start flag is
+  false; the end flag is true. Whisper punctuation at that boundary may be wrong.
+
+**Parked**
+- Candidate pool size and run-to-run variation belong to the candidates stage (out of scope here).
+- A way to extend a clip when the payoff falls just after its end (the model signals this; today it
+  can only trim).
+
 ## 2026-10-10 — Brief 5: Score stage
 
 **Facts**
