@@ -15,6 +15,12 @@ zero context; it has a payoff (a point, punchline, insight, story ending or emot
 peak); it fits the client's rules. Skip sponsor reads, intros, outros, small talk and
 anything that needs earlier context. Fewer, better moments beat filling the quota.
 
+Start where a new thought starts. Never start on a continuation (and, so, but,
+because, which...) that depends on what came before.
+End only after the payoff is complete. If the moment is a question, include the full
+answer. If it's a story, include its ending. Prefer {preferred_min}-{preferred_max}
+seconds. Never cut a payoff just to stay short.
+
 For each moment give: start and end in seconds (use the timestamps shown on the
 lines), the hook (the first sentence, quoted exactly), a reason (max 25 words), and
 a type: story | opinion | tip | insight | funny | emotional.

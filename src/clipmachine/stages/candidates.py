@@ -220,6 +220,7 @@ def _find(ctx: RunContext, run_dir: Path) -> None:
     root = ctx.project_root if ctx.project_root is not None else REPO_ROOT
     transcript = _load_transcript(run_dir)
     min_length, max_length = app.clip.min_seconds, app.clip.max_seconds
+    preferred_min, preferred_max = app.preferred_range()
 
     blocks = split_blocks(transcript.segments, cfg.block_minutes * 60)
     k = moments_per_block(app.clip.candidates_target, len(blocks), cfg.per_block_max)
@@ -232,13 +233,15 @@ def _find(ctx: RunContext, run_dir: Path) -> None:
     system_template, user_template = load_prompt(root)
     client = ClaudeClient(run_dir, root, app)
     summary_rules = rules_summary(ctx.config.rules)
-    index = build_index(transcript.segments)
+    index = build_index(transcript.segments, cfg.fallback_max_words)
 
     for block in blocks:
         values = {
             "rules_summary": summary_rules,
             "min_seconds": f"{min_length:g}",
             "max_seconds": f"{max_length:g}",
+            "preferred_min": f"{preferred_min:g}",
+            "preferred_max": f"{preferred_max:g}",
             "block_start": f"{block.start:.1f}",
             "block_end": f"{block.end:.1f}",
             "k": str(k),
@@ -274,6 +277,7 @@ def _find(ctx: RunContext, run_dir: Path) -> None:
                 duration=transcript.audio_duration_seconds,
                 min_length=min_length,
                 max_length=max_length,
+                preferred_min=preferred_min,
             )
             if isinstance(result, Dropped):
                 dropped += 1
@@ -320,6 +324,7 @@ def _find(ctx: RunContext, run_dir: Path) -> None:
         final=len(candidates),
         segment_edge_starts=sum(1 for s in survivors if s.snapped.edge_start),
         segment_edge_ends=sum(1 for s in survivors if s.snapped.edge_end),
+        grew_backward=sum(1 for s in survivors if s.snapped.grew_backward),
         calls=totals.calls,
         input_tokens=totals.input_tokens,
         output_tokens=totals.output_tokens,
