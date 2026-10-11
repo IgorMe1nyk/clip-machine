@@ -11,6 +11,7 @@ downloads it: a missing file is an error that names the explicit command, `fetch
 import hashlib
 import importlib.metadata
 import logging
+import math
 import os
 import urllib.request
 from collections.abc import Sequence
@@ -27,15 +28,47 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("clipmachine")
 
-MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/"
-    "float16/latest/face_landmarker.task"
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """One model file the face code needs: where it lives, where it comes from, how to check it."""
+
+    folder: Path  # relative to the project root
+    name: str
+    url: str
+    sha256: str | None  # None: any present file is accepted
+    label: str  # for messages, e.g. "face model"
+
+
+# SHA-256 of the file, taken at the first download Igor approved on 2026-10-11 (3,758,596 bytes;
+# Google publishes none). A different file is an error, never a silent re-download.
+LANDMARKER = ModelSpec(
+    folder=Path("models") / "mediapipe",
+    name="face_landmarker.task",
+    url=(
+        "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/"
+        "float16/latest/face_landmarker.task"
+    ),
+    sha256="64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
+    label="face model",
 )
-MODEL_DIR = Path("models") / "mediapipe"  # relative to the project root
-MODEL_NAME = "face_landmarker.task"
-# SHA-256 of the model file, taken at the first download Igor approved on 2026-10-11 (3,758,596
-# bytes; Google publishes none). A different file is an error, never a silent re-download.
-EXPECTED_SHA256: str | None = "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"
+# YuNet face detector from the OpenCV model zoo (pinned commit). 229,738 bytes, MIT licence. The
+# hash is the repository's Git LFS id and matched the bytes fetched on 2026-10-11.
+DETECTOR = ModelSpec(
+    folder=Path("models") / "yunet",
+    name="face_detection_yunet_2026may.onnx",
+    url=(
+        "https://github.com/opencv/opencv_zoo/raw/26cc381e4d2594bb9f47a26eb8fd96c94a13660d/"
+        "models/face_detection_yunet/face_detection_yunet_2026may.onnx"
+    ),
+    sha256="ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0",
+    label="face detector model",
+)
+
+# The landmarker's old names, still used by tracking and the tests.
+MODEL_URL = LANDMARKER.url
+MODEL_DIR = LANDMARKER.folder
+MODEL_NAME = LANDMARKER.name
 
 DOWNLOAD_TIMEOUT_SECONDS = 60
 DOWNLOAD_CHUNK_BYTES = 1 << 16
@@ -49,6 +82,8 @@ FOREHEAD_TOP = 10
 CHIN = 152
 MIN_LANDMARKS = CHIN + 1
 MIN_FACE_HEIGHT = 1e-6  # a face this flat in y has no usable size
+MIN_CROP_PIXELS = 64  # the landmarker needs some pixels to work with, even for a tiny face
+MATCH_FRACTION = 0.5  # a landmarker face is the detector's if its centre is this close (x height)
 
 
 class FacesError(Exception):
@@ -138,11 +173,74 @@ def to_samples(faces: Sequence[RawFace], t: float) -> list[FaceSample]:
     return [FaceSample(t=t, cx=f.cx, cy=f.cy, w=f.w, h=f.h, mouth=f.mouth) for f in ordered]
 
 
+@dataclass(frozen=True)
+class FaceBox:
+    """A face found by the detector: centre and size as fractions of the frame, and its score."""
+
+    cx: float
+    cy: float
+    w: float
+    h: float
+    score: float
+
+
+def keep_boxes(boxes: Sequence[FaceBox], min_height: float, max_faces: int) -> list[FaceBox]:
+    """Drop boxes shorter than min_height, keep the max_faces tallest (ties: leftmost first), and
+    return them left to right."""
+    big = [b for b in boxes if b.h >= min_height]
+    tallest = sorted(big, key=lambda b: (-b.h, b.cx))[: max(max_faces, 0)]
+    return sorted(tallest, key=lambda b: b.cx)
+
+
+def crop_square(box: FaceBox, frame_w: int, frame_h: int, scale: float) -> tuple[int, int, int]:
+    """(x0, y0, side) in pixels of the square to read this face's landmarks from.
+
+    The side is `scale` times the box's longer side, at least MIN_CROP_PIXELS and at most the
+    frame's shorter side. The square is centred on the box and shifted to stay inside the frame.
+    """
+    wanted = scale * max(box.w * frame_w, box.h * frame_h)
+    side = int(round(min(max(wanted, MIN_CROP_PIXELS), min(frame_w, frame_h))))
+    x0 = int(round(box.cx * frame_w - side / 2))
+    y0 = int(round(box.cy * frame_h - side / 2))
+    return min(max(x0, 0), frame_w - side), min(max(y0, 0), frame_h - side), side
+
+
+def to_frame(raw: RawFace, x0: int, y0: int, side: int, frame_w: int, frame_h: int) -> RawFace:
+    """A face measured as fractions of a crop, as fractions of the whole frame (mouth unchanged)."""
+    return RawFace(
+        cx=(x0 + raw.cx * side) / frame_w,
+        cy=(y0 + raw.cy * side) / frame_h,
+        w=raw.w * side / frame_w,
+        h=raw.h * side / frame_h,
+        mouth=raw.mouth,
+    )
+
+
+def match_mouth(box: FaceBox, found: Sequence[RawFace], frame_w: int, frame_h: int) -> float | None:
+    """The mouth of the landmarker face (in full-frame fractions) that is this box's face.
+
+    That is the one whose centre is nearest the box centre, if it is within half the larger of the
+    two face heights (distance in units of frame height). Otherwise None, so a neighbour's face
+    that happens to be inside the crop is never used.
+    """
+    aspect = frame_w / frame_h
+    best: RawFace | None = None
+    best_distance = 0.0
+    for face in found:
+        distance = math.hypot((face.cx - box.cx) * aspect, face.cy - box.cy)
+        if best is None or distance < best_distance:
+            best, best_distance = face, distance
+    if best is None or best_distance > MATCH_FRACTION * max(box.h, best.h):
+        return None
+    return best.mouth
+
+
 # --- the model file -----------------------------------------------------------------------
 
 
-def model_dir(root: Path) -> Path:
-    return root / MODEL_DIR
+def model_dir(root: Path, spec: ModelSpec | None = None) -> Path:
+    """The folder that holds the model file (default: the landmarker's)."""
+    return root / (LANDMARKER if spec is None else spec).folder
 
 
 def file_sha256(path: Path) -> str:
@@ -153,27 +251,33 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def ensure_model(directory: Path, expected_sha256: str | None = None) -> Path:
+def ensure_model(
+    directory: Path, expected_sha256: str | None = None, *, spec: ModelSpec | None = None
+) -> Path:
     """The model file's path, checked.
 
-    `directory` is the folder that holds the file (model_dir(root)). A missing file is a
+    `directory` is the folder that holds the file (model_dir(root, spec)). A missing file is a
     FacesError naming the command that fetches it; this function never downloads. When a hash is
-    expected (default: EXPECTED_SHA256) a file with another hash is a FacesError too.
+    expected (default: the spec's) a file with another hash is a FacesError too. `spec` defaults
+    to the landmarker.
     """
-    expected = EXPECTED_SHA256 if expected_sha256 is None else expected_sha256
-    path = directory / MODEL_NAME
+    spec = LANDMARKER if spec is None else spec
+    expected = spec.sha256 if expected_sha256 is None else expected_sha256
+    path = directory / spec.name
     if not path.is_file():
-        raise FacesError(f"face model not found at {path}; run: {FETCH_COMMAND}")
+        raise FacesError(f"{spec.label} not found at {path}; run: {FETCH_COMMAND}")
     if expected is not None:
         try:
             actual = file_sha256(path)
         except OSError as exc:
-            raise FacesError(f"could not read the face model at {path}: {_one_line(exc)}") from exc
+            raise FacesError(
+                f"could not read the {spec.label} at {path}: {_one_line(exc)}"
+            ) from exc
         if actual != expected:
             raise FacesError(
-                f"face model at {path} has SHA-256 {actual}, expected {expected}; the file "
+                f"{spec.label} at {path} has SHA-256 {actual}, expected {expected}; the file "
                 "changed or is damaged. Delete it and run the fetch command again, or update "
-                "EXPECTED_SHA256 after checking the new file"
+                "the pinned hash in utils/faces.py after checking the new file"
             )
     return path
 
@@ -181,23 +285,27 @@ def ensure_model(directory: Path, expected_sha256: str | None = None) -> Path:
 def download_model(
     directory: Path,
     *,
-    url: str = MODEL_URL,
+    spec: ModelSpec | None = None,
+    url: str | None = None,
     expected_sha256: str | None = None,
     timeout: float = DOWNLOAD_TIMEOUT_SECONDS,
 ) -> DownloadedModel:
-    """Download the model into `directory`; only the explicit fetch-face-model command calls this.
+    """Download a model into `directory`; only the explicit fetch-face-model command calls this.
 
-    The file is written to a temp name and moved into place once complete. An existing file is
-    never replaced. Returns the size and SHA-256 so the caller can show them.
+    `spec` defaults to the landmarker; `url` and `expected_sha256` default to the spec's. The file
+    is written to a temp name and moved into place once complete. An existing file is never
+    replaced. Returns the size and SHA-256 so the caller can show them.
     """
-    expected = EXPECTED_SHA256 if expected_sha256 is None else expected_sha256
+    spec = LANDMARKER if spec is None else spec
+    expected = spec.sha256 if expected_sha256 is None else expected_sha256
+    url = spec.url if url is None else url
     if urlparse(url).scheme != "https":
-        raise FacesError("the face model URL must be https")
-    target = directory / MODEL_NAME
+        raise FacesError(f"the {spec.label} URL must be https")
+    target = directory / spec.name
     if target.exists():
         raise FacesError(f"{target} already exists; delete it first to download it again")
     directory.mkdir(parents=True, exist_ok=True)
-    temp = directory / f".{MODEL_NAME}.tmp"
+    temp = directory / f".{spec.name}.tmp"
     digest = hashlib.sha256()
     size = 0
     try:
@@ -211,16 +319,16 @@ def download_model(
                 out.write(chunk)
         sha256 = digest.hexdigest()
         if size == 0:
-            raise FacesError("the face model download was empty")
+            raise FacesError(f"the {spec.label} download was empty")
         if expected is not None and sha256 != expected:
             raise FacesError(
-                f"downloaded face model has SHA-256 {sha256}, expected {expected}; not saved"
+                f"downloaded {spec.label} has SHA-256 {sha256}, expected {expected}; not saved"
             )
         os.replace(temp, target)
     except FacesError:
         raise
     except (OSError, ValueError) as exc:  # URLError and timeouts are OSErrors
-        raise FacesError(f"could not download the face model: {_one_line(exc)}") from exc
+        raise FacesError(f"could not download the {spec.label}: {_one_line(exc)}") from exc
     finally:
         temp.unlink(missing_ok=True)
     return DownloadedModel(path=target, size_bytes=size, sha256=sha256)

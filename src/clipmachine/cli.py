@@ -69,7 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser(
         "fetch-face-model",
-        help="download the MediaPipe Face Landmarker model into models/mediapipe/ (once)",
+        help="download the face models still missing: the MediaPipe Face Landmarker into "
+        "models/mediapipe/ and the YuNet face detector into models/yunet/ (once)",
     )
     return parser
 
@@ -154,11 +155,19 @@ def _cmd_track(args: argparse.Namespace, root: Path) -> int:
 
 
 def _cmd_fetch_face_model(root: Path) -> int:
-    """The only place the face model is downloaded; the track command never does it."""
-    downloaded = faces.download_model(faces.model_dir(root))
-    print(f"saved: {downloaded.path}")
-    print(f"size: {downloaded.size_bytes} bytes")
-    print(f"sha256: {downloaded.sha256}")
+    """The only place the face models are downloaded; the track command never does it.
+
+    A file that is already there and has the right hash is left alone; one with the wrong hash is
+    an error."""
+    for spec in (faces.LANDMARKER, faces.DETECTOR):
+        folder = faces.model_dir(root, spec)
+        if (folder / spec.name).exists():
+            print(f"already present: {faces.ensure_model(folder, spec=spec)}")
+            continue
+        downloaded = faces.download_model(folder, spec=spec)
+        print(f"saved: {downloaded.path}")
+        print(f"size: {downloaded.size_bytes} bytes")
+        print(f"sha256: {downloaded.sha256}")
     return EXIT_OK
 
 

@@ -3,7 +3,7 @@ The one `mediapipe` test runs the real landmarker on a generated blank image."""
 
 import hashlib
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 
@@ -13,6 +13,7 @@ import pytest
 from clipmachine import cli
 from clipmachine.utils import faces
 from clipmachine.utils.faces import (
+    FaceBox,
     FacesError,
     RawFace,
     download_model,
@@ -85,6 +86,98 @@ def test_face_box_of_nothing_is_an_error() -> None:
         face_box([])
 
 
+def box(cx: float, cy: float, w: float, h: float) -> FaceBox:
+    return FaceBox(cx=cx, cy=cy, w=w, h=h, score=0.9)
+
+
+def test_keep_boxes_drops_small_ones_and_returns_left_to_right() -> None:
+    boxes = [box(0.8, 0.5, 0.04, 0.08), box(0.2, 0.5, 0.01, 0.02), box(0.5, 0.5, 0.05, 0.1)]
+    kept = faces.keep_boxes(boxes, min_height=0.05, max_faces=4)
+    assert [b.cx for b in kept] == [0.5, 0.8]
+
+
+def test_keep_boxes_keeps_the_tallest_when_there_are_too_many() -> None:
+    boxes = [box(0.1, 0.5, 0.1, 0.2), box(0.5, 0.5, 0.2, 0.4), box(0.9, 0.5, 0.15, 0.3)]
+    kept = faces.keep_boxes(boxes, min_height=0.0, max_faces=2)
+    assert [b.cx for b in kept] == [0.5, 0.9]
+
+
+def test_keep_boxes_breaks_height_ties_by_keeping_the_leftmost() -> None:
+    boxes = [box(0.9, 0.5, 0.1, 0.2), box(0.1, 0.5, 0.1, 0.2), box(0.5, 0.5, 0.1, 0.2)]
+    kept = faces.keep_boxes(boxes, min_height=0.0, max_faces=2)
+    assert [b.cx for b in kept] == [0.1, 0.5]
+
+
+def test_keep_boxes_of_nothing_is_nothing() -> None:
+    assert faces.keep_boxes([], min_height=0.05, max_faces=2) == []
+
+
+def test_crop_square_is_centred_on_the_face_and_scaled() -> None:
+    # a face 100 px wide and 120 px tall in a 1000 x 800 frame, crop 2.5x the longer side
+    x0, y0, side = faces.crop_square(box(0.5, 0.5, 0.1, 0.15), 1000, 800, 2.5)
+    assert side == 300
+    assert (x0, y0) == (350, 250)
+
+
+@pytest.mark.parametrize(
+    ("cx", "cy", "expected"),
+    [
+        (0.01, 0.5, (0, 250)),  # left edge
+        (0.99, 0.5, (700, 250)),  # right edge
+        (0.5, 0.01, (350, 0)),  # top edge
+        (0.5, 0.99, (350, 500)),  # bottom edge
+    ],
+)
+def test_crop_square_stays_inside_the_frame(
+    cx: float, cy: float, expected: tuple[int, int]
+) -> None:
+    x0, y0, side = faces.crop_square(box(cx, cy, 0.1, 0.15), 1000, 800, 2.5)
+    assert side == 300
+    assert (x0, y0) == expected
+
+
+def test_crop_square_is_never_larger_than_the_frame() -> None:
+    x0, y0, side = faces.crop_square(box(0.5, 0.5, 0.6, 0.9), 1000, 800, 2.5)
+    assert (x0, y0, side) == (100, 0, 800)
+
+
+def test_crop_square_is_at_least_64_pixels() -> None:
+    x0, y0, side = faces.crop_square(box(0.5, 0.5, 0.005, 0.01), 1000, 800, 2.5)
+    assert side == 64
+    assert (x0, y0) == (468, 368)
+
+
+def test_to_frame_maps_a_crop_face_back_to_the_frame() -> None:
+    raw = RawFace(cx=0.5, cy=0.25, w=0.4, h=0.5, mouth=0.07)
+    mapped = faces.to_frame(raw, x0=200, y0=100, side=400, frame_w=1000, frame_h=800)
+    assert (mapped.cx, mapped.cy) == pytest.approx((0.4, 0.25))
+    assert (mapped.w, mapped.h) == pytest.approx((0.16, 0.25))
+    assert mapped.mouth == 0.07
+
+
+def test_match_mouth_takes_the_face_nearest_the_box() -> None:
+    target = box(0.5, 0.5, 0.05, 0.1)
+    found = [RawFace(0.58, 0.5, 0.05, 0.1, 0.9), RawFace(0.505, 0.5, 0.05, 0.1, 0.3)]
+    assert faces.match_mouth(target, found, 1000, 1000) == 0.3
+
+
+def test_match_mouth_is_none_when_the_only_face_is_far_away() -> None:
+    target = box(0.5, 0.5, 0.05, 0.1)
+    assert faces.match_mouth(target, [RawFace(0.7, 0.5, 0.05, 0.1, 0.3)], 1000, 1000) is None
+
+
+def test_match_mouth_is_none_when_nothing_was_found() -> None:
+    assert faces.match_mouth(box(0.5, 0.5, 0.05, 0.1), [], 1000, 1000) is None
+
+
+def test_match_mouth_measures_horizontal_distance_in_frame_heights() -> None:
+    # 0.04 apart in x is 0.071 frame heights in a 1600 x 900 frame: outside half of 0.1
+    target = box(0.5, 0.5, 0.05, 0.1)
+    far = [RawFace(0.54, 0.5, 0.05, 0.1, 0.3)]
+    assert faces.match_mouth(target, far, 1600, 900) is None
+    assert faces.match_mouth(target, far, 900, 900) == 0.3  # square frame: 0.04 <= half of 0.1
+
+
 def test_to_samples_orders_faces_left_to_right() -> None:
     raw = [RawFace(0.8, 0.5, 0.1, 0.2, 0.1), RawFace(0.2, 0.5, 0.1, 0.2, 0.3)]
     samples = to_samples(raw, 1.5)
@@ -123,6 +216,44 @@ def test_without_a_pinned_hash_any_present_file_is_accepted(tmp_path: Path) -> N
 
 def test_model_dir_is_inside_the_project() -> None:
     assert faces.model_dir(Path("/p")) == Path("/p") / "models" / "mediapipe"
+    assert faces.model_dir(Path("/p"), faces.DETECTOR) == Path("/p") / "models" / "yunet"
+
+
+def test_the_detector_spec_pins_the_zoo_file() -> None:
+    assert faces.DETECTOR.name == "face_detection_yunet_2026may.onnx"
+    assert faces.DETECTOR.url.startswith("https://")
+    assert "26cc381e4d2594bb9f47a26eb8fd96c94a13660d" in faces.DETECTOR.url
+
+
+def test_missing_detector_is_an_error_that_names_the_fetch_command(tmp_path: Path) -> None:
+    with pytest.raises(FacesError, match="detector model not found at .*fetch-face-model"):
+        ensure_model(tmp_path, spec=faces.DETECTOR)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_detector_with_the_wrong_hash_is_an_error(tmp_path: Path) -> None:
+    (tmp_path / faces.DETECTOR.name).write_bytes(b"tiny fake detector")
+    with pytest.raises(FacesError, match="SHA-256"):
+        ensure_model(tmp_path, expected_sha256="0" * 64, spec=faces.DETECTOR)
+    assert (tmp_path / faces.DETECTOR.name).read_bytes() == b"tiny fake detector"
+
+
+def test_detector_with_the_right_hash_is_returned(tmp_path: Path) -> None:
+    data = b"tiny fake detector"
+    (tmp_path / faces.DETECTOR.name).write_bytes(data)
+    path = ensure_model(
+        tmp_path, expected_sha256=hashlib.sha256(data).hexdigest(), spec=faces.DETECTOR
+    )
+    assert path == tmp_path / faces.DETECTOR.name
+
+
+def test_a_spec_with_a_pinned_hash_is_checked_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(faces, "DETECTOR", replace(faces.DETECTOR, sha256="0" * 64))
+    (tmp_path / faces.DETECTOR.name).write_bytes(b"x")
+    with pytest.raises(FacesError, match="SHA-256"):
+        ensure_model(tmp_path, spec=faces.DETECTOR)
 
 
 # --- download (urllib faked) --------------------------------------------------------------
@@ -201,25 +332,68 @@ def test_download_refuses_a_non_https_url(tmp_path: Path) -> None:
         download_model(tmp_path, url="http://example.invalid/model.task")
 
 
-def test_the_fetch_command_prints_path_size_and_hash(
+def test_download_of_the_detector_uses_its_own_url_and_file_name(
+    tmp_path: Path, served: list[str]
+) -> None:
+    result = download_model(tmp_path, spec=faces.DETECTOR)
+    assert served == [faces.DETECTOR.url]
+    assert result.path == tmp_path / faces.DETECTOR.name
+
+
+def test_the_fetch_command_prints_path_size_and_hash_for_each_model(
     tmp_path: Path, served: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert cli.main(["fetch-face-model"], root=tmp_path) == 0
 
     out = capsys.readouterr().out
     data = b"model bytes" * 1000
-    assert str(tmp_path / "models" / "mediapipe" / faces.MODEL_NAME) in out
-    assert f"size: {len(data)} bytes" in out
-    assert f"sha256: {hashlib.sha256(data).hexdigest()}" in out
+    assert served == [faces.LANDMARKER.url, faces.DETECTOR.url]
+    assert str(tmp_path / "models" / "mediapipe" / faces.LANDMARKER.name) in out
+    assert str(tmp_path / "models" / "yunet" / faces.DETECTOR.name) in out
+    assert out.count(f"size: {len(data)} bytes") == 2
+    assert out.count(f"sha256: {hashlib.sha256(data).hexdigest()}") == 2
 
 
-def test_the_fetch_command_reports_a_failure_as_a_usage_error(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_the_fetch_command_fetches_only_the_missing_model_and_reports_the_other(
+    tmp_path: Path, served: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:
+    folder = tmp_path / "models" / "mediapipe"
+    folder.mkdir(parents=True)
+    (folder / faces.LANDMARKER.name).write_bytes(b"x")
+
+    assert cli.main(["fetch-face-model"], root=tmp_path) == 0
+
+    out = capsys.readouterr().out
+    assert served == [faces.DETECTOR.url]
+    assert f"already present: {folder / faces.LANDMARKER.name}" in out
+    assert (folder / faces.LANDMARKER.name).read_bytes() == b"x"  # left alone
+    assert (tmp_path / "models" / "yunet" / faces.DETECTOR.name).is_file()
+
+
+def test_the_fetch_command_with_both_present_downloads_nothing(
+    tmp_path: Path, served: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    for spec in (faces.LANDMARKER, faces.DETECTOR):
+        folder = tmp_path / spec.folder
+        folder.mkdir(parents=True)
+        (folder / spec.name).write_bytes(b"x")
+    assert cli.main(["fetch-face-model"], root=tmp_path) == 0
+    assert served == []
+    assert capsys.readouterr().out.count("already present") == 2
+
+
+def test_the_fetch_command_reports_a_present_file_with_the_wrong_hash_as_an_error(
+    tmp_path: Path,
+    served: list[str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(faces, "LANDMARKER", replace(faces.LANDMARKER, sha256="0" * 64))
     (tmp_path / "models" / "mediapipe").mkdir(parents=True)
-    (tmp_path / "models" / "mediapipe" / faces.MODEL_NAME).write_bytes(b"x")
+    (tmp_path / "models" / "mediapipe" / faces.LANDMARKER.name).write_bytes(b"x")
     assert cli.main(["fetch-face-model"], root=tmp_path) == 2
-    assert "already exists" in capsys.readouterr().err
+    assert "SHA-256" in capsys.readouterr().err
+    assert served == []
 
 
 def test_mediapipe_version_reads_metadata_without_importing() -> None:

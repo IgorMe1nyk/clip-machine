@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import shutil
 from pathlib import Path
@@ -6,6 +7,7 @@ import pytest
 
 from clipmachine import pipeline
 from clipmachine.context import RunContext
+from clipmachine.utils import faces
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FFMPEG_AVAILABLE = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
@@ -64,9 +66,11 @@ def _no_tools_needed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
 
 @pytest.fixture(autouse=True)
 def _no_pinned_model_hash(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Tests write tiny fake model files; the real model's pinned SHA-256 must not apply to them.
+    """Tests write tiny fake model files; the real models' pinned SHA-256 must not apply to them.
     Tests of the hash check pass `expected_sha256` explicitly."""
-    monkeypatch.setattr("clipmachine.utils.faces.EXPECTED_SHA256", None)
+    for name in ("LANDMARKER", "DETECTOR"):
+        spec = getattr(faces, name)
+        monkeypatch.setattr(faces, name, dataclasses.replace(spec, sha256=None))
 
 
 @pytest.fixture(autouse=True)
