@@ -579,6 +579,18 @@ def test_a_pending_challenger_does_not_complete_after_a_cut() -> None:
     assert split.shots[1].start == 2.0
 
 
+def test_the_speaker_changes_inside_a_segment_that_starts_after_a_cut() -> None:
+    first = [[face(time_of(k), 0.5)] for k in range(20)]
+    second = two_people(8, a_talks=lambda w: w < 4, b_talks=lambda w: w >= 4)
+    second = [[replace(f, t=round(f.t + 2.0, 3)) for f in faces] for faces in second]
+    done = follow(first + second, cuts=[20], words=[(2.0, 6.0)])
+    # the windows of the second segment are counted from the cut, not from the clip start
+    assert done.shots == [Shot(0.0, 2.0, 0), Shot(2.0, 4.0, 1), Shot(4.0, 6.0, 2)]
+    assert done.switches == 1
+    assert done.crop_xs[20:40] == [150] * 20
+    assert done.crop_xs[40:] == [650] * 20
+
+
 def test_switches_count_changes_inside_segments_only() -> None:
     frames = two_people(8, a_talks=lambda w: w < 3, b_talks=lambda w: w >= 3)
     words = [(0.0, 4.0)]

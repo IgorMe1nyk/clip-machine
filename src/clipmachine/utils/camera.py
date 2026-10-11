@@ -21,7 +21,7 @@ start fresh in each segment, and a cut is never counted as a speaker switch.
 import math
 import statistics
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from clipmachine.models import SpeakerConfig
 
@@ -473,7 +473,16 @@ def follow_segments(
         length = end - start
         local_times = [round(t - start, 3) for t in times[a:b]]
         local_words = [(w0 - start, w1 - start) for w0, w1 in words]
-        local_tracks = link_tracks(frames[a:b], cfg.link_max_distance)
+        # the speaker is chosen per window from each sample's own time, so those shift too
+        local_frames = [
+            [replace(f, t=round(f.t - start, 3)) for f in faces] for faces in frames[a:b]
+        ]
+        originals = {
+            id(local): original
+            for local_faces, faces in zip(local_frames, frames[a:b], strict=True)
+            for local, original in zip(local_faces, faces, strict=True)
+        }
+        local_tracks = link_tracks(local_frames, cfg.link_max_distance)
         speech = speech_windows(
             local_words, length, cfg.window_seconds, cfg.min_speech_words_per_window
         )
@@ -486,7 +495,10 @@ def follow_segments(
         offset = len(tracks)
         for t in local_tracks:
             tracks.append(
-                Track(id=offset + t.id, by_frame={a + k: s for k, s in t.by_frame.items()})
+                Track(
+                    id=offset + t.id,
+                    by_frame={a + k: originals[id(s)] for k, s in t.by_frame.items()},
+                )
             )
         if not local_shots:  # keep the shots gap-free
             shots.append(Shot(start, end, None))
