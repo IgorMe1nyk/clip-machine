@@ -85,6 +85,16 @@ Column key:
 | Claude API: Sonnet 5.5 `claude-sonnet-5-5` | Stage 4: scoring | $2 input / $10 output per million tokens. Batch API is 50% off. [fact] | API commercial terms | Same as above | Haiku for testing | ~$0.16–0.56 [estimate] |
 | anthropic Python SDK 1.13.0 | API client; we call `messages.create` with `output_config.format` and the SDK's `transform_schema()`, then validate with Pydantic | Free | **MIT** [fact, package metadata]. New transitive packages: docstring-parser (MIT), jiter (MIT), sniffio (MIT or Apache-2.0); httpx2, anyio and typing-extensions were already installed | n/a | — | $0 |
 | Montserrat font | Captions | Free [fact] | SIL OFL 1.1. Burning it into video needs no permission or credit. [fact] | n/a | Any OFL font | $0 |
+| mediapipe 1.1.0 (Brief 8, approved 2026-10-11) | Face Landmarker: finds faces and mouth movement for the speaker-following crop | Free. Windows wheel 22.4 MB, Linux 40.6 MB [fact, PyPI]. PyPI classifier "Alpha" [fact]. **Telemetry: see the note below this table** | Apache-2.0 [fact, PyPI] | n/a | Centre crop (the fallback, always available) | $0 |
+| opencv-contrib-python 5.0.0.93, matplotlib, sounddevice, absl-py (transitive packages of mediapipe) | Installed because mediapipe requires them. Our code imports none of them | Free. OpenCV wheel 53.8 MB Windows, 79–82 MB Linux [fact, PyPI] | OpenCV: Apache-2.0 [fact, PyPI]. Others: not re-checked [gap] | n/a | — | $0 |
+| `face_landmarker.task` in `<repo>/models/mediapipe/` | Face detector + 478-point face mesh + blendshape model, float16 | Free. Size: about 3.7 MB [gap: confirmed at the download] | **[gap] Licence not confirmed:** the model cards are PDFs the fetch tool could not read. Google's docs pages are CC BY 4.0 and code samples Apache-2.0 [fact], which is not the model's licence. **Must be confirmed before any client work.** | n/a | — | $0 |
+
+**mediapipe telemetry [fact, with gaps]:**
+- Google's MediaPipe Tasks privacy notice: "MediaPipe Tasks APIs send metrics about the performance and utilization of the APIs in your app to Google". It states that input data (images, video) is not sent to Google.
+- It **cannot be switched off.** A Google collaborator wrote in google-ai-edge/mediapipe issue #6291 (2026-07-06): "We are not adding an official API to disable this data collection." The only routes named are building from source or blocking the host (`play.googleapis.com`, as observed by users).
+- Igor decided on 2026-10-11 (D-014) to accept this and make no hosts-file change.
+- Which fields are sent is not documented [gap]. Versions 0.10.21 and older did not send it (reported by users, not verified here).
+- Where it applies: only when speaker crop or the `track` command runs. The import is lazy, so centre-crop runs, tests and CI never load mediapipe.
 
 **Model IDs:** read from the live models page on 2026-10-10. These IDs are pinned snapshots, not moving aliases. [fact] The plan's `claude-haiku` and `claude-sonnet` are placeholders; config will use the exact IDs.
 
@@ -92,7 +102,6 @@ Column key:
 
 | Item | Phase | Purpose | Price / limits | License | Free tier ends? | Alt. |
 |---|---|---|---|---|---|---|
-| MediaPipe / OpenCV | 2 | Face-tracked crop | Free [fact] | Apache-2.0 [fact] | n/a | — |
 | yt-dlp | Optional | URL download | Free [fact] | Unlicense. Its Windows `.exe` bundles GPL code; the pip version doesn't. [fact] | n/a | **Client-sent files (default)** |
 | Remotion | 3+ | Animated captions | Free for individuals and companies of 1–3 people. Company license after that: Creators $25/seat/mo; Automators $0.01/render with a $100/mo minimum. [fact] | Remotion license | You must pay once the business has 4+ people [fact] | FFmpeg `.ass` captions (our default) |
 | SQLite | 4 | Clients, runs, results | Free (built into Python) | Public domain [judgment: well known, not re-checked] | n/a | — |
@@ -171,6 +180,7 @@ Stage 3 measured: $0.0013 for 15.4 minutes, about $0.005 per hour of video (the 
 ## 6. Data and privacy facts that affect cost decisions
 
 - **What leaves your machine:** only transcript text goes to the API. Video and audio never do. [design rule]
+- **Face analysis (Brief 8):** video frames are analysed locally and never leave the machine. [design rule] The MediaPipe library itself reports usage metrics to Google and this cannot be disabled (section 4.2, D-014). Google states that input data is not sent. [fact] A client's footage is therefore processed by software that contacts Google; say so if a client asks.
 - **Training:** API inputs and outputs aren't used for training by default. [fact]
 - **Retention:** API inputs and outputs are deleted within 30 days, with exceptions such as policy enforcement and legal requirements. Content flagged by safety systems can be kept up to 2 years. [fact]
 - **Local retention** (decide in PRODUCT.md): proposed default is to delete `source.mp4` and `audio.wav` 14 days after delivery, and keep transcripts and scores for the clip brain. [judgment]
@@ -198,7 +208,7 @@ Re-open this file and tell Igor before continuing if:
 **Open-source licenses**
 - [faster-whisper](https://raw.githubusercontent.com/SYSTRAN/faster-whisper/master/LICENSE) · [faster-whisper README](https://raw.githubusercontent.com/SYSTRAN/faster-whisper/master/README.md) · [CTranslate2](https://raw.githubusercontent.com/OpenNMT/CTranslate2/master/LICENSE) · [Whisper README](https://raw.githubusercontent.com/openai/whisper/main/README.md) · [HF faster-whisper-small](https://huggingface.co/api/models/Systran/faster-whisper-small)
 - [FFmpeg legal](https://ffmpeg.org/legal.html) · [gyan.dev builds](https://www.gyan.dev/ffmpeg/builds/) · [GPL FAQ](https://www.gnu.org/licenses/gpl-faq.html#InternalDistribution) · [yt-dlp license](https://raw.githubusercontent.com/yt-dlp/yt-dlp/master/LICENSE)
-- [MediaPipe](https://raw.githubusercontent.com/google-ai-edge/mediapipe/master/LICENSE) · [OpenCV](https://opencv.org/license/) · [uv](https://raw.githubusercontent.com/astral-sh/uv/main/LICENSE-MIT) · [pydantic](https://raw.githubusercontent.com/pydantic/pydantic/main/LICENSE) · [Montserrat OFL](https://raw.githubusercontent.com/google/fonts/main/ofl/montserrat/OFL.txt) · [OFL FAQ](https://openfontlicense.org/ofl-faq/)
+- [MediaPipe](https://raw.githubusercontent.com/google-ai-edge/mediapipe/master/LICENSE) · [mediapipe 1.1.0 on PyPI](https://pypi.org/pypi/mediapipe/1.1.0/json) · [Face Landmarker guide](https://developers.google.com/edge/mediapipe/solutions/vision/face_landmarker) · [MediaPipe Tasks privacy notice](https://developers.google.com/edge/mediapipe/solutions/tasks) · [telemetry issue #6291](https://github.com/google-ai-edge/mediapipe/issues/6291) · [OpenCV](https://opencv.org/license/) · [uv](https://raw.githubusercontent.com/astral-sh/uv/main/LICENSE-MIT) · [pydantic](https://raw.githubusercontent.com/pydantic/pydantic/main/LICENSE) · [Montserrat OFL](https://raw.githubusercontent.com/google/fonts/main/ofl/montserrat/OFL.txt) · [OFL FAQ](https://openfontlicense.org/ofl-faq/)
 - [Remotion license](https://raw.githubusercontent.com/remotion-dev/remotion/main/LICENSE.md) · [Remotion pricing](https://www.remotion.dev/docs/license/pricing) · [NVIDIA CUDA on WSL](https://docs.nvidia.com/cuda/wsl-user-guide/index.html) · [Microsoft WSL GPU](https://learn.microsoft.com/en-us/windows/wsl/tutorials/gpu-compute) · [PSF license](https://docs.python.org/3/license.html)
 
 **Services**
