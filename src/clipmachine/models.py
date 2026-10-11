@@ -75,6 +75,27 @@ class CandidatesConfig(StrictModel):
     # setting is thinking off at low effort. Sonnet 5.5 rejects "disabled" (Brief 5).
     thinking: Literal["disabled", "adaptive"] = "disabled"
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    # A segment edge is a sentence boundary only after this many unpunctuated words.
+    fallback_max_words: int = Field(default=40, gt=0)
+    # The length the model is asked for and snapping grows short moments toward. None = the
+    # defaults below, clamped into clip.min_seconds..max_seconds (see AppConfig.preferred_range).
+    preferred_min_seconds: float | None = Field(default=None, gt=0)
+    preferred_max_seconds: float | None = Field(default=None, gt=0)
+
+
+DEFAULT_PREFERRED_MIN = 30.0
+DEFAULT_PREFERRED_MAX = 50.0
+
+
+def clamp_preferred(
+    preferred_min: float, preferred_max: float, min_seconds: float, max_seconds: float
+) -> tuple[float, float]:
+    """Move a preferred range into min_seconds..max_seconds; the whole range if none is left."""
+    low = max(preferred_min, min_seconds)
+    high = min(preferred_max, max_seconds)
+    if low >= high:
+        return min_seconds, max_seconds
+    return low, high
 
 
 # Names faster-whisper 1.2.1 accepts (faster_whisper.utils.available_models()); a unit test
@@ -180,6 +201,34 @@ class AppConfig(StrictModel):
     pricing: PricingConfig = Field(default_factory=PricingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     candidates: CandidatesConfig = Field(default_factory=CandidatesConfig)
+
+    @model_validator(mode="after")
+    def _check_preferred(self) -> "AppConfig":
+        low = self.candidates.preferred_min_seconds
+        high = self.candidates.preferred_max_seconds
+        if (low is None) != (high is None):
+            raise ValueError(
+                "candidates.preferred_min_seconds and preferred_max_seconds must be set together"
+            )
+        if (
+            low is not None
+            and high is not None
+            and not self.clip.min_seconds <= low < high <= self.clip.max_seconds
+        ):
+            raise ValueError(
+                f"candidates preferred range {low:g}-{high:g} must satisfy "
+                f"min_seconds ({self.clip.min_seconds:g}) <= preferred_min_seconds < "
+                f"preferred_max_seconds <= max_seconds ({self.clip.max_seconds:g})"
+            )
+        return self
+
+    def preferred_range(self) -> tuple[float, float]:
+        """The preferred length range in effect: configured, or the defaults clamped into range."""
+        low = self.candidates.preferred_min_seconds
+        high = self.candidates.preferred_max_seconds
+        if low is None or high is None:
+            low, high = DEFAULT_PREFERRED_MIN, DEFAULT_PREFERRED_MAX
+        return clamp_preferred(low, high, self.clip.min_seconds, self.clip.max_seconds)
 
 
 StageStatus = Literal["pending", "running", "done", "failed"]
@@ -351,6 +400,7 @@ class CandidatesSummary(StrictModel):
     final: int
     segment_edge_starts: int  # final candidates starting at a segment edge, not a sentence start
     segment_edge_ends: int
+    grew_backward: int = 0  # final candidates that had to grow at the start to reach min_seconds
     calls: int
     input_tokens: int
     output_tokens: int

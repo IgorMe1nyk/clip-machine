@@ -28,6 +28,9 @@ candidates:
   dedupe_overlap: 0.5        # overlap / shorter length; above this the later one is dropped
   thinking: disabled         # disabled / adaptive (Haiku 5.5 accepts both)
   effort: low                # low / medium / high / xhigh / max
+  fallback_max_words: 40     # a segment edge is a sentence boundary only after this many unpunctuated words
+  preferred_min_seconds: 30  # min_seconds <= preferred_min < preferred_max <= max_seconds
+  preferred_max_seconds: 50  # asked of the model; short moments grow toward preferred_min
 transcribe:                  # defaults chosen in D-011 from the Brief 3 benchmark (setting B)
   model: small               # tiny base small medium large-v3 turbo distil-large-v3 ...
   device: auto               # auto / cpu / cuda

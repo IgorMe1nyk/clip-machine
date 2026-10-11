@@ -62,6 +62,18 @@ def test_client_without_clip_length_keeps_defaults(project: Path) -> None:
         (lambda d: d["captions"].update(highlight_color="#FFD40"), "highlight_color"),
         (lambda d: d["captions"].update(highlight_color="#GGGGGG"), "highlight_color"),
         (lambda d: d["clip"].update(min_second=20), "min_second"),  # typo: unknown key
+        (lambda d: d["candidates"].update(preferred_min_seconds=10), "preferred"),  # < min
+        (lambda d: d["candidates"].update(preferred_max_seconds=70), "preferred"),  # > max
+        (
+            lambda d: d["candidates"].update(preferred_min_seconds=50, preferred_max_seconds=50),
+            "preferred",
+        ),
+        (
+            lambda d: d["candidates"].update(preferred_min_seconds=45, preferred_max_seconds=35),
+            "preferred",
+        ),
+        (lambda d: d["candidates"].pop("preferred_max_seconds"), "set together"),
+        (lambda d: d["candidates"].update(fallback_max_words=0), "fallback_max_words"),
         (lambda d: d.update(extra_section={}), "extra_section"),
         (lambda d: d["video"].update(crop="zoom"), "video.crop"),
         (lambda d: d["fetch"].update(max_size_gb=0), "fetch.max_size_gb"),
@@ -81,6 +93,66 @@ def test_default_config_validation_rules(
     _default(project, mutate)
     with pytest.raises(ConfigError, match=expected):
         load_app_config(project)
+
+
+def test_preferred_range_in_the_default_config(project: Path) -> None:
+    app = load_app_config(project)
+    assert (app.candidates.preferred_min_seconds, app.candidates.preferred_max_seconds) == (30, 50)
+    assert app.candidates.fallback_max_words == 40
+    assert app.preferred_range() == (30, 50)
+
+
+def test_preferred_range_may_equal_the_clip_range(project: Path) -> None:
+    _default(
+        project,
+        lambda d: d["candidates"].update(preferred_min_seconds=20, preferred_max_seconds=60),
+    )
+    assert load_app_config(project).preferred_range() == (20, 60)
+
+
+def test_client_clip_length_clamps_the_preferred_range(project: Path) -> None:
+    # example-client is 25-50: 30-50 already fits
+    assert load_resolved(project, "example-client").app.preferred_range() == (30, 50)
+    edit_yaml(
+        project / "clients" / "example-client" / "rules.yaml",
+        lambda d: d.update(clip_length={"min": 40, "max": 70}),
+    )
+    app = load_resolved(project, "example-client").app
+    assert (app.candidates.preferred_min_seconds, app.candidates.preferred_max_seconds) == (40, 50)
+
+
+def test_client_range_outside_the_preferred_range_uses_the_whole_range(project: Path) -> None:
+    edit_yaml(
+        project / "clients" / "example-client" / "rules.yaml",
+        lambda d: d.update(clip_length={"min": 10, "max": 20}),
+    )
+    app = load_resolved(project, "example-client").app
+    assert (app.candidates.preferred_min_seconds, app.candidates.preferred_max_seconds) == (10, 20)
+
+
+def test_missing_preferred_keys_use_clamped_defaults(project: Path) -> None:
+    def drop(d: dict[str, Any]) -> None:
+        d["candidates"].pop("preferred_min_seconds")
+        d["candidates"].pop("preferred_max_seconds")
+        d["candidates"].pop("fallback_max_words")
+
+    _default(project, drop)
+    app = load_app_config(project)
+    assert app.candidates.preferred_min_seconds is None
+    assert app.candidates.fallback_max_words == 40
+    assert app.preferred_range() == (30, 50)
+
+
+def test_resolved_file_from_before_preferred_range_still_loads(
+    project: Path, tmp_path: Path
+) -> None:
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "example-client"), target)
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    for key in ("preferred_min_seconds", "preferred_max_seconds", "fallback_max_words"):
+        del data["config"]["candidates"][key]
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert load_resolved_file(target).app.preferred_range() == (30, 50)
 
 
 def test_fetch_section_values(project: Path) -> None:

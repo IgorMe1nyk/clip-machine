@@ -8,7 +8,7 @@ from typing import Any, TypeVar
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from clipmachine.models import AppConfig, ClientRules
+from clipmachine.models import AppConfig, ClientRules, clamp_preferred
 
 CLIENT_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
 
@@ -75,12 +75,20 @@ def load_client_rules(root: Path, name: str) -> ClientRules:
 
 
 def merge_client(app: AppConfig, rules: ClientRules) -> AppConfig:
-    """Client clip_length.min/max override clip.min_seconds/max_seconds."""
+    """Client clip_length.min/max override clip.min_seconds/max_seconds. The preferred range is
+    clamped into the new range, so a client's length never makes the default preferred range
+    invalid."""
     if rules.clip_length is None:
         return app
     data = app.model_dump()
     data["clip"]["min_seconds"] = rules.clip_length.min
     data["clip"]["max_seconds"] = rules.clip_length.max
+    preferred_min, preferred_max = app.preferred_range()
+    low, high = clamp_preferred(
+        preferred_min, preferred_max, rules.clip_length.min, rules.clip_length.max
+    )
+    data["candidates"]["preferred_min_seconds"] = low
+    data["candidates"]["preferred_max_seconds"] = high
     return _validate(AppConfig, data, f"config merged with client {rules.name!r}")
 
 
