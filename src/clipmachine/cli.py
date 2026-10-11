@@ -6,8 +6,10 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from clipmachine.config import ConfigError
+from clipmachine import tracking
+from clipmachine.config import ConfigError, load_resolved_file
 from clipmachine.pipeline import (
+    RESOLVED_CONFIG,
     STAGE_NAMES,
     is_run_folder,
     run_pipeline,
@@ -18,6 +20,7 @@ from clipmachine.runs import RunError
 from clipmachine.stages.report import REPORT_HTML
 from clipmachine.utils import faces
 from clipmachine.utils.faces import FacesError
+from clipmachine.utils.ffmpeg import MediaError
 
 EXIT_OK = 0
 EXIT_STAGE_FAILED = 1
@@ -30,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Turn a long video into short vertical clips.",
     )
     sub = parser.add_subparsers(
-        dest="command", required=True, metavar="{run,report,fetch-face-model}"
+        dest="command", required=True, metavar="{run,report,track,fetch-face-model}"
     )
 
     run = sub.add_parser(
@@ -52,6 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     report = sub.add_parser("report", help="print the path of a run folder's report.html")
     report.add_argument("run_folder", type=Path)
+
+    track = sub.add_parser(
+        "track",
+        help="find the active speaker in a run's kept clips (writes clips/<id>.track.json)",
+    )
+    track.add_argument("run_folder", type=Path)
+    track.add_argument(
+        "--preview",
+        action="store_true",
+        help="also write clips/<id>.track.preview.mp4 (or set speaker.debug_preview)",
+    )
 
     sub.add_parser(
         "fetch-face-model",
@@ -118,6 +132,27 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_track(args: argparse.Namespace, root: Path) -> int:
+    """Analyse the kept clips; run.json and the stage states are not touched."""
+    run_folder: Path = args.run_folder
+    if not is_run_folder(run_folder):
+        raise RunError(f"{run_folder} is not a run folder (no run.json)")
+    app = load_resolved_file(run_folder / RESOLVED_CONFIG).app
+    results = tracking.run_track(
+        run_folder, root, app, preview=bool(args.preview) or app.speaker.debug_preview
+    )
+    if not results:
+        print("no kept clips in this run; nothing to track")
+        return EXIT_OK
+    for result in results:
+        print(
+            f"{result.clip_id}: {result.fallback_reason or 'ok'}, "
+            f"faces {result.faces_seen}, switches {result.switches}, "
+            f"face time {result.face_time_pct:.0f}%, {result.analysis_seconds:.1f} s"
+        )
+    return EXIT_OK
+
+
 def _cmd_fetch_face_model(root: Path) -> int:
     """The only place the face model is downloaded; the track command never does it."""
     downloaded = faces.download_model(faces.model_dir(root))
@@ -135,9 +170,11 @@ def main(argv: Sequence[str] | None = None, root: Path | None = None) -> int:
     try:
         if args.command == "run":
             return _cmd_run(args, project_root)
+        if args.command == "track":
+            return _cmd_track(args, project_root)
         if args.command == "fetch-face-model":
             return _cmd_fetch_face_model(project_root)
         return _cmd_report(args)
-    except (ConfigError, RunError, MissingToolError, FacesError) as exc:
+    except (ConfigError, RunError, MissingToolError, FacesError, MediaError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE

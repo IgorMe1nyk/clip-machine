@@ -53,6 +53,9 @@ CLIPS_DIR = "clips"
 FONTS_DIR = Path("assets") / "fonts"
 TEMP_SUFFIX = ".tmp.mp4"
 OUTPUT_SUFFIXES = (".mp4", ".ass", ".json", ".tmp")  # ".tmp": atomic-write leftovers
+TRACK_JSON_SUFFIX = ".track.json"  # written by `clipmachine track` (tracking.py)
+TRACK_PREVIEW_SUFFIX = ".track.preview.mp4"
+TRACK_SUFFIXES = (TRACK_JSON_SUFFIX, TRACK_PREVIEW_SUFFIX)
 CLIP_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,40}")
 
 
@@ -102,6 +105,15 @@ def _sweep(clips_dir: Path, keep_ids: set[str], *, everything: bool) -> None:
         if not path.is_file() or not name.endswith(OUTPUT_SUFFIXES):
             continue
         is_temp = name.endswith((TEMP_SUFFIX, ".tmp"))
+        # <id>.track.json and <id>.track.preview.mp4 belong to the track command, not to this
+        # stage: a clip that is still kept keeps them, even on a forced redo.
+        track_owner = next(
+            (name[: -len(s)] for s in TRACK_SUFFIXES if name.endswith(s) and not is_temp), None
+        )
+        if track_owner is not None:
+            if track_owner not in keep_ids:
+                path.unlink(missing_ok=True)
+            continue
         stem = path.stem
         if everything or is_temp or stem not in keep_ids:
             path.unlink(missing_ok=True)
