@@ -13,6 +13,7 @@ dependencies = [
     "faster-whisper>=1.2.1",
     "mediapipe>=1.1.0",
     "numpy>=2.4.6",
+    "opencv-contrib-python>=5.0.0.93",
     "pydantic>=2.14.0",
     "pyyaml>=6.0.3",
 ]
