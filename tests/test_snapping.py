@@ -469,3 +469,48 @@ def test_touching_spans_do_not_overlap() -> None:
 
 def test_dedupe_of_nothing() -> None:
     assert dedupe([], 0.5) == []
+
+
+# --- span_times and locate (used by the score stage) ---------------------------------------------
+
+
+def _index_of_three_sentences() -> tuple[object, float]:
+    spec = ["one two three four.", "five six seven eight.", "nine ten eleven twelve."]
+    segments = build(spec)
+    return build_index(segments), segments[-1].end + 1.0
+
+
+def test_span_times_matches_what_snap_produced() -> None:
+    from clipmachine.utils.snapping import span_times
+
+    index, duration = _index_of_three_sentences()
+    snapped = snap(
+        index,  # type: ignore[arg-type]
+        0.0,
+        100.0,
+        padding=0.2,
+        duration=duration,  # type: ignore[arg-type]
+        min_length=1.0,
+        max_length=500.0,
+    )
+    assert isinstance(snapped, Snapped)
+    start, end = span_times(index, 0, 2, padding=0.2, duration=duration)  # type: ignore[arg-type]
+    assert (start, end) == (snapped.start, snapped.end)
+
+
+def test_locate_recovers_the_sentences_of_every_span() -> None:
+    from clipmachine.utils.snapping import locate, span_times
+
+    index, duration = _index_of_three_sentences()
+    for a in range(3):
+        for b in range(a, 3):
+            start, end = span_times(index, a, b, padding=0.2, duration=duration)  # type: ignore[arg-type]
+            found = locate(index, start, end, padding=0.2, duration=duration)  # type: ignore[arg-type]
+            assert found == (a, b)
+
+
+def test_locate_returns_none_for_times_that_are_not_a_snapped_span() -> None:
+    from clipmachine.utils.snapping import locate
+
+    index, duration = _index_of_three_sentences()
+    assert locate(index, 0.123, 4.567, padding=0.2, duration=duration) is None  # type: ignore[arg-type]

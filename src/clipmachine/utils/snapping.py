@@ -136,6 +136,39 @@ def _padded_bounds(
     return max(round(start, ROUND), 0.0), min(round(end, ROUND), duration)
 
 
+def span_times(
+    index: SentenceIndex, a: int, b: int, *, padding: float, duration: float
+) -> tuple[float, float]:
+    """Start and end of sentences a..b (indices into index.sentences) with padding: the same
+    rule snap() applies, so a sub-range of a snapped span is cut the same way."""
+    return _padded_bounds(index, a, b, padding, duration)
+
+
+def locate(
+    index: SentenceIndex, start: float, end: float, *, padding: float, duration: float
+) -> tuple[int, int] | None:
+    """The sentences a..b whose padded span is exactly (start, end), or None.
+
+    Inverse of span_times for spans that snap() produced: used to recover which sentences of the
+    transcript a stored candidate covers. Times compare equal within a millisecond.
+    """
+    tolerance = 0.5 * 10**-ROUND
+    count = len(index.sentences)
+    starts = [
+        a
+        for a in range(count)
+        if abs(span_times(index, a, a, padding=padding, duration=duration)[0] - start) <= tolerance
+    ]
+    for a in starts:
+        for b in range(a, count):
+            high = span_times(index, a, b, padding=padding, duration=duration)[1]
+            if abs(high - end) <= tolerance:
+                return a, b
+            if high > end:
+                break
+    return None
+
+
 def _can_add(
     index: SentenceIndex,
     a: int,
