@@ -563,6 +563,47 @@ def test_invalid_output_twice_fails_the_call_and_books_both(rig: Rig) -> None:
     assert rig.costs().totals.calls == 2
 
 
+def test_check_failure_uses_the_one_repair_call(rig: Rig) -> None:
+    seen: list[int] = []
+
+    def check(parsed: FoundMoments) -> str | None:
+        seen.append(len(parsed.moments))
+        return "missing ids: c03" if len(seen) == 1 else None
+
+    fake = rig.script([answer(), answer()])
+    parsed, record = rig.call(check=check)
+    assert parsed.moments and record.purpose.endswith(":repair")
+    assert len(fake.create_calls) == 2
+    second = fake.create_calls[1]["messages"][0]["content"]
+    assert "rejected" in second and "missing ids: c03" in second
+
+
+def test_check_failing_twice_raises_and_books_both(rig: Rig) -> None:
+    fake = rig.script([answer(), answer()])
+    with pytest.raises(InvalidModelOutput, match="still invalid after one retry: bad ids"):
+        rig.call(check=lambda parsed: "bad ids")
+    assert len(fake.create_calls) == 2
+    assert rig.costs().totals.calls == 2
+
+
+def test_check_that_passes_costs_no_extra_call(rig: Rig) -> None:
+    fake = rig.script([answer()])
+    rig.call(check=lambda parsed: None)
+    assert len(fake.create_calls) == 1
+
+
+def test_zero_repairs_means_one_call_and_then_failure(rig: Rig) -> None:
+    fake = rig.script([answer("not json"), answer()])
+    with pytest.raises(InvalidModelOutput, match="was invalid"):
+        rig.call(repairs=0)
+    assert len(fake.create_calls) == 1
+
+
+def test_repairs_other_than_zero_or_one_is_refused(rig: Rig) -> None:
+    with pytest.raises(ValueError, match="repairs"):
+        rig.call(repairs=2)
+
+
 def test_truncated_or_refused_answers_are_invalid(rig: Rig) -> None:
     rig.script([answer(VALID, stop_reason="max_tokens"), answer(VALID, stop_reason="refusal")])
     with pytest.raises(InvalidModelOutput, match="refused"):

@@ -486,28 +486,39 @@ class ClaudeClient:
         *,
         thinking: str | None = None,
         effort: str | None = None,
+        check: Callable[[T], str | None] | None = None,
+        repairs: int = 1,
     ) -> tuple[T, CostRecord]:
         """Ask for JSON matching `schema`; return it parsed, plus the record of the call.
 
-        An answer that is not valid (refusal, cut off, bad JSON, schema mismatch) gets exactly
-        one more call that names the problem; then InvalidModelOutput is raised. Every call, and
-        every refusal to call, is recorded.
+        An answer that is not valid (refusal, cut off, bad JSON, schema mismatch, or rejected by
+        `check`) gets up to `repairs` (0 or 1) more calls that name the problem; then
+        InvalidModelOutput is raised. Every call, and every refusal to call, is recorded.
+
+        `check` sees the parsed answer and returns None when it is fine, or a one-line problem.
+        The problem is sent to the model and logged, so it must never contain the model's own
+        text or any transcript text.
         """
+        if repairs not in (0, 1):
+            raise ValueError("repairs must be 0 or 1")
         prompt = user
         problem = ""
-        for round_number in range(2):
+        for round_number in range(1 + repairs):
             label = purpose if round_number == 0 else f"{purpose}:repair"
             record, text = self._one_call(
                 label, model, system, prompt, schema, max_tokens, thinking, effort
             )
             parsed, problem = self._parse(schema, text, record.stop_reason)
+            if parsed is not None and check is not None:
+                found = check(parsed)
+                if found:
+                    parsed, problem = None, found
             if parsed is not None:
                 return parsed, record
             log.info(f"claude: {label} gave an invalid answer ({problem})")
             prompt = user + REPAIR_NOTE.format(problem=problem)
-        raise InvalidModelOutput(
-            f"the model's answer for {purpose} was still invalid after one retry: {problem}"
-        )
+        retried = "was still invalid after one retry" if repairs else "was invalid"
+        raise InvalidModelOutput(f"the model's answer for {purpose} {retried}: {problem}")
 
     @staticmethod
     def _parse(schema: type[T], text: str, stop_reason: str | None) -> tuple[T | None, str]:
