@@ -1,11 +1,12 @@
 """Stage 4: candidates.json -> scored.json.
 
 Claude Sonnet judges all candidates of a run together (in chunks of score.max_per_call): a score,
-keep/reject, one fixed reject reason, a hook line, a title and, optionally, a tighter range of the
-candidate's own sentences. We validate every answer, map a sentence range to times from the word
-timestamps (the model never supplies a time), then keep the best clip.keep_top. scored.json is
-the only output and is written last, so its presence means the stage finished; a rerun of a
-finished stage is skipped by the pipeline and makes no API call.
+keep/reject, one fixed reject reason, a hook line, a title and, optionally, a new range of
+sentences (the candidate's own, trimmed, or extended into the numbered context around it). We
+validate every answer, map a sentence range to times from the word timestamps (the model
+never supplies a time), drop clips that overlap a better one, then keep the best clip.keep_top.
+scored.json is the only output and is written last, so its presence means the stage
+finished; a rerun of a finished stage is skipped by the pipeline and makes no API call.
 
 Sentence numbering is the snapping rules by construction: the stage rebuilds the same sentence
 index the candidates stage used and finds each candidate's sentences in it, so the numbers Sonnet
@@ -54,6 +55,7 @@ from clipmachine.utils.snapping import (
     EPSILON,
     SentenceIndex,
     build_index,
+    dedupe,
     edge_flags,
     locate,
     span_times,
@@ -67,8 +69,7 @@ TEMP_PATTERN = f".{SCORED_JSON}.*.tmp"
 PROMPT_FILE = Path("prompts") / "score_clip.md"
 PURPOSE = "score"
 CANDIDATE_TAG_RE = re.compile(r"<\s*/?\s*candidates?[^>]*>?", re.IGNORECASE)
-CONTEXT_BEFORE = 2  # sentences shown before a clip, as context only
-CONTEXT_AFTER = 1
+MAX_OVERLAP = 0.5  # a clip is dropped when it overlaps a better one by more than this fraction
 MAX_HOOK_WORDS = 10
 MAX_REASON_WORDS = 25
 MAX_PROBLEM_IDS = 5
@@ -90,13 +91,15 @@ class Located:
 
 
 @dataclass(frozen=True)
-class Trim:
+class Adjust:
     start: float
     end: float
-    trimmed: bool
+    trimmed: bool  # a sentence of the candidate was removed
     note: str | None
     ignored: Literal["range", "length"] | None = None  # why the model's keep_sentences was not used
-    keep: KeepSentences | None = None  # the range that was applied, when trimmed
+    keep: KeepSentences | None = None  # the range that was applied, when changed
+    extended_start: int = 0  # sentences added before the candidate's first
+    extended_end: int = 0  # sentences added after the candidate's last
 
 
 @dataclass
@@ -106,7 +109,7 @@ class Draft:
     position: int  # index in candidates.json: the tie-break, earlier first
     candidate: Candidate
     clip: ClipScore
-    trim: Trim
+    adjust: Adjust
     notes: list[str]
     sentences: int = 0  # sentences in the candidate
     start_at_segment_edge: bool = False
@@ -159,44 +162,49 @@ def _sentence_text(index: SentenceIndex, number: int) -> str:
     )
 
 
-def context_sentences(index: SentenceIndex, located: Located) -> tuple[list[int], list[int]]:
-    """Sentence indices of the context: up to CONTEXT_BEFORE before the clip and CONTEXT_AFTER
+def context_sentences(
+    index: SentenceIndex, located: Located, before: int, after: int
+) -> tuple[list[int], list[int]]:
+    """Sentence indices of the context: up to `before` sentences before the clip and `after`
     after it, clipped at the ends of the transcript. Never a sentence of the clip itself."""
-    before = list(range(max(located.first - CONTEXT_BEFORE, 0), located.first))
-    after = list(
-        range(located.last + 1, min(located.last + 1 + CONTEXT_AFTER, len(index.sentences)))
-    )
-    return before, after
+    earlier = list(range(max(located.first - before, 0), located.first))
+    later = list(range(located.last + 1, min(located.last + 1 + after, len(index.sentences))))
+    return earlier, later
 
 
-def candidate_block(located: Located, index: SentenceIndex) -> str:
-    """One <candidate> element: context before, the clip's numbered sentences (each with
-    [start-end] seconds), context after.
+def _numbered(index: SentenceIndex, i: int, number: int) -> str:
+    sentence = index.sentences[i]
+    start = index.words[sentence.first].start
+    end = index.words[sentence.last].end
+    return f"{number} [{start:.2f}-{end:.2f}] {_sentence_text(index, i)}"
 
-    The context is not numbered, so it cannot be chosen by keep_sentences. All text is data: made
-    single-line, and anything that looks like a candidate tag is removed.
+
+def candidate_block(located: Located, index: SentenceIndex, before: int, after: int) -> str:
+    """One <candidate> element: context before, the clip's sentences, context after, all numbered
+    continuously with [start-end] seconds: the context before is ... -1, 0, the clip is 1..n,
+    the context after is n+1... keep_sentences may use any of these numbers.
+
+    All text is data: made single-line, and anything that looks like a candidate tag is removed.
     """
     candidate = located.candidate
-    before, after = context_sentences(index, located)
+    earlier, later = context_sentences(index, located, before, after)
+    n = located.count
     lines = [
         f'<candidate id="{candidate.id}" seconds="{candidate.duration:.1f}" '
-        f'sentences="{located.count}" '
+        f'sentences="{n}" '
         f'start_at_segment_edge="{str(located.start_at_segment_edge).lower()}" '
         f'end_at_segment_edge="{str(located.end_at_segment_edge).lower()}">',
         "<before>",
-        *(f"- {_sentence_text(index, i)}" for i in before),
-        *([] if before else ["- (none: the recording starts here)"]),
+        *(_numbered(index, i, number) for number, i in enumerate(earlier, start=1 - len(earlier))),
+        *([] if earlier else ["- (none: the recording starts here)"]),
         "</before>",
     ]
     for number, i in enumerate(range(located.first, located.last + 1), start=1):
-        sentence = index.sentences[i]
-        start = index.words[sentence.first].start
-        end = index.words[sentence.last].end
-        lines.append(f"{number} [{start:.2f}-{end:.2f}] {_sentence_text(index, i)}")
+        lines.append(_numbered(index, i, number))
     lines += [
         "<after>",
-        *(f"- {_sentence_text(index, i)}" for i in after),
-        *([] if after else ["- (none: the recording ends here)"]),
+        *(_numbered(index, i, number) for number, i in enumerate(later, start=n + 1)),
+        *([] if later else ["- (none: the recording ends here)"]),
         "</after>",
         "</candidate>",
     ]
@@ -237,35 +245,43 @@ def ids_problem(expected: list[str]) -> Callable[[ScoreBatch], str | None]:
     return check
 
 
-def resolve_trim(
+def resolve_adjust(
     index: SentenceIndex,
     located: Located,
     keep: KeepSentences | None,
     *,
+    before: int,
+    after: int,
     padding: float,
     duration: float,
     min_length: float,
     max_length: float,
-) -> Trim:
+) -> Adjust:
     """Times for the model's keep_sentences, or the candidate's own times with a note.
 
-    first and last are the candidate's own sentence numbers (1..n). The new times come from those
-    sentences' word times plus the same padding snapping uses. A range that is out of bounds, or
-    that lands outside the clip length, is ignored and noted: the model never supplies a time.
+    first and last use the numbers the model was shown: the clip is 1..n, the context before it
+    is ... -1, 0 and the context after it is n+1.... The new times come from those sentences'
+    word times plus the same padding snapping uses. A range outside the shown numbers, one that
+    contains none of the clip's own sentences, or one that lands outside the clip length is
+    ignored and noted: the model never supplies a time.
     """
     candidate = located.candidate
-    whole = Trim(candidate.start, candidate.end, False, None)
+    whole = Adjust(candidate.start, candidate.end, False, None)
     if keep is None:
         return whole
     n = located.count
-    if not 1 <= keep.first <= keep.last <= n:
-        return Trim(
-            candidate.start,
-            candidate.end,
-            False,
-            f"trim ignored: sentences {keep.first}-{keep.last} are outside 1-{n}",
-            ignored="range",
+    earlier, later = context_sentences(index, located, before, after)
+    low, high = 1 - len(earlier), n + len(later)
+    note = ""
+    if not low <= keep.first <= keep.last <= high:
+        note = f"adjustment ignored: sentences {keep.first}-{keep.last} are outside {low}-{high}"
+    elif keep.first > n or keep.last < 1:
+        note = (
+            f"adjustment ignored: sentences {keep.first}-{keep.last} contain none of the "
+            f"clip's own sentences 1-{n}"
         )
+    if note:
+        return Adjust(candidate.start, candidate.end, False, note, ignored="range")
     if keep.first == 1 and keep.last == n:
         return whole
     start, end = span_times(
@@ -281,18 +297,34 @@ def resolve_trim(
     elif length > max_length + EPSILON:
         reason = f"{length:.1f} s is over the {max_length:g} s maximum"
     else:
-        return Trim(
+        trimmed = keep.first > 1 or keep.last < n
+        extended_start = max(0, 1 - keep.first)
+        extended_end = max(0, keep.last - n)
+        if trimmed and not extended_start and not extended_end:
+            text = f"trimmed to sentences {keep.first}-{keep.last} of {n}"
+        else:
+            parts = []
+            if extended_start:
+                parts.append(f"start extended by {extended_start}")
+            if extended_end:
+                parts.append(f"end extended by {extended_end}")
+            if trimmed:
+                parts.append("trimmed")
+            text = f"adjusted to sentences {keep.first}-{keep.last} of {n}: " + ", ".join(parts)
+        return Adjust(
             start,
             end,
-            True,
-            f"trimmed to sentences {keep.first}-{keep.last} of {n}",
+            trimmed,
+            text,
             keep=keep,
+            extended_start=extended_start,
+            extended_end=extended_end,
         )
-    return Trim(
+    return Adjust(
         candidate.start,
         candidate.end,
         False,
-        f"trim to sentences {keep.first}-{keep.last} ignored: {reason}",
+        f"adjustment to sentences {keep.first}-{keep.last} ignored: {reason}",
         ignored="length",
     )
 
@@ -307,11 +339,14 @@ class Selection:
 
 
 def select(drafts: list[Draft], min_score: int, keep_top: int) -> Selection:
-    """Kept = verdict keep, score >= min_score, and the model's trim (if any) was usable; best
-    score first, ties to the earlier candidate; the first keep_top get rank 1..N.
+    """Kept = verdict keep, score >= min_score, the model's adjustment (if any) was usable, and
+    no better clip overlaps it by more than half of the shorter one; best score first, ties to the
+    earlier candidate; the first keep_top get rank 1..N.
 
-    A clip whose trim was ignored is not kept: its score described a clip we did not cut. A low
-    score is reported as min_score first, whatever else is wrong with the clip.
+    A clip whose adjustment was ignored is not kept: its score described a clip we did not cut. A
+    low score is reported as min_score first, whatever else is wrong with the clip. Overlap is
+    judged on the final (adjusted) times, in score order, before the keep_top cut, so a clip
+    dropped as an overlap never takes a rank.
     """
     dropped: dict[str, DroppedBy] = {}
     eligible = []
@@ -320,13 +355,18 @@ def select(drafts: list[Draft], min_score: int, keep_top: int) -> Selection:
             continue
         if draft.clip.score < min_score:
             dropped[draft.candidate.id] = "min_score"
-        elif draft.trim.ignored is not None:
-            dropped[draft.candidate.id] = "trim_ignored"
+        elif draft.adjust.ignored is not None:
+            dropped[draft.candidate.id] = "adjust_ignored"
         else:
             eligible.append(draft)
     ordered = sorted(eligible, key=lambda d: (-d.clip.score, d.position))
-    ranks = {d.candidate.id: rank for rank, d in enumerate(ordered[:keep_top], start=1)}
-    for draft in ordered[keep_top:]:
+    chosen = set(dedupe([(d.adjust.start, d.adjust.end) for d in ordered], MAX_OVERLAP))
+    best = [d for i, d in enumerate(ordered) if i in chosen]
+    for i, draft in enumerate(ordered):
+        if i not in chosen:
+            dropped[draft.candidate.id] = "overlap"
+    ranks = {d.candidate.id: rank for rank, d in enumerate(best[:keep_top], start=1)}
+    for draft in best[keep_top:]:
         dropped[draft.candidate.id] = "top_n"
     return Selection(ranks, dropped)
 
@@ -392,7 +432,9 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
             "min_seconds": f"{min_length:g}",
             "max_seconds": f"{max_length:g}",
             "count": str(len(group)),
-            "blocks": "\n".join(candidate_block(item, index) for item in group),
+            "blocks": "\n".join(
+                candidate_block(item, index, cfg.extend_before, cfg.extend_after) for item in group
+            ),
         }
         batch, _ = client.call_structured(
             f"{PURPOSE}:chunk-{number}",
@@ -413,16 +455,18 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
     drafts: list[Draft] = []
     for position, item in enumerate(located):
         clip = answers[item.candidate.id]
-        trim = resolve_trim(
+        adjust = resolve_adjust(
             index,
             item,
             clip.keep_sentences,
+            before=cfg.extend_before,
+            after=cfg.extend_after,
             padding=padding,
             duration=duration,
             min_length=min_length,
             max_length=max_length,
         )
-        notes = [trim.note] if trim.note else []
+        notes = [adjust.note] if adjust.note else []
         if _words(clip.hook_line) > MAX_HOOK_WORDS:
             notes.append(f"hook_line is {_words(clip.hook_line)} words (over {MAX_HOOK_WORDS})")
         if _words(clip.reason) > MAX_REASON_WORDS:
@@ -432,7 +476,7 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
                 position,
                 item.candidate,
                 clip,
-                trim,
+                adjust,
                 notes,
                 sentences=item.count,
                 start_at_segment_edge=item.start_at_segment_edge,
@@ -448,9 +492,15 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
         notes = list(draft.notes)
         if dropped_by == "min_score":
             notes.append(f"score {clip.score} is under min_score {cfg.min_score}")
-        elif dropped_by == "trim_ignored":
-            notes.append("the model's trim was ignored, so its score does not describe this clip")
-            warnings.append(f"{candidate_id}: kept by the model but its trim was ignored: not kept")
+        elif dropped_by == "adjust_ignored":
+            notes.append(
+                "the model's adjustment was ignored, so its score does not describe this clip"
+            )
+            warnings.append(
+                f"{candidate_id}: kept by the model but its adjustment was ignored: not kept"
+            )
+        elif dropped_by == "overlap":
+            notes.append("overlaps a better clip by more than half of the shorter one")
         elif dropped_by == "top_n":
             notes.append(f"outside the top {app.clip.keep_top}")
         scored.append(
@@ -465,16 +515,18 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
                 hook_line=_one_line(clip.hook_line)[:MAX_TEXT_CHARS],
                 suggested_title=_one_line(clip.suggested_title)[:MAX_TEXT_CHARS],
                 reason=_one_line(clip.reason)[:MAX_TEXT_CHARS],
-                start=draft.trim.start,
-                end=draft.trim.end,
+                start=draft.adjust.start,
+                end=draft.adjust.end,
                 candidate_start=draft.candidate.start,
                 candidate_end=draft.candidate.end,
-                trimmed=draft.trim.trimmed,
+                trimmed=draft.adjust.trimmed,
                 notes=notes,
                 start_at_segment_edge=draft.start_at_segment_edge,
                 end_at_segment_edge=draft.end_at_segment_edge,
                 sentences=draft.sentences,
-                kept_sentences=draft.trim.keep,
+                kept_sentences=draft.adjust.keep,
+                extended_start=draft.adjust.extended_start,
+                extended_end=draft.adjust.extended_end,
             )
         )
 
@@ -489,11 +541,15 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
         rejected=sum(1 for s in scored if s.verdict == "reject"),
         dropped_min_score=sum(1 for s in scored if s.dropped_by == "min_score"),
         dropped_top_n=sum(1 for s in scored if s.dropped_by == "top_n"),
-        dropped_trim_ignored=sum(1 for s in scored if s.dropped_by == "trim_ignored"),
+        dropped_overlap=sum(1 for s in scored if s.dropped_by == "overlap"),
+        adjust_ignored=sum(1 for s in scored if s.dropped_by == "adjust_ignored"),
+        extensions_applied=sum(
+            1 for d in drafts if d.adjust.extended_start or d.adjust.extended_end
+        ),
         trimmed=sum(1 for s in scored if s.trimmed),
-        trims_applied=sum(1 for d in drafts if d.trim.trimmed),
-        trims_ignored=sum(1 for d in drafts if d.trim.ignored == "length"),
-        trims_out_of_range=sum(1 for d in drafts if d.trim.ignored == "range"),
+        trims_applied=sum(1 for d in drafts if d.adjust.trimmed),
+        trims_ignored=sum(1 for d in drafts if d.adjust.ignored == "length"),
+        trims_out_of_range=sum(1 for d in drafts if d.adjust.ignored == "range"),
         reject_reasons=reasons,
         model=app.models.score,
         effort=cfg.effort,
@@ -514,12 +570,20 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
         log.info(
             f"score: {entry.id} rank={entry.rank} kept={entry.kept} score={entry.score} "
             f"{entry.verdict} {entry.reject_reason} dropped_by={entry.dropped_by} "
-            f"{entry.start:.2f}-{entry.end:.2f} s trimmed={entry.trimmed}"
+            f"{entry.start:.2f}-{entry.end:.2f} s trimmed={entry.trimmed} "
+            f"extended={entry.extended_start}/{entry.extended_end}"
         )
-    ours = summary.dropped_min_score + summary.dropped_top_n + summary.dropped_trim_ignored
+    ours = (
+        summary.dropped_min_score
+        + summary.dropped_top_n
+        + summary.adjust_ignored
+        + summary.dropped_overlap
+    )
     ignored = summary.trims_ignored + summary.trims_out_of_range
     log.info(
         f"score: {summary.kept} kept of {summary.candidates} ({summary.rejected} rejected, "
-        f"{ours} dropped by our rules, {summary.trims_applied} trims applied, {ignored} ignored); "
+        f"{ours} dropped by our rules ({summary.dropped_overlap} overlaps), "
+        f"{summary.trims_applied} trims applied, {summary.extensions_applied} extended, "
+        f"{ignored} ignored); "
         f"cost ${summary.actual_usd:.4f}"
     )

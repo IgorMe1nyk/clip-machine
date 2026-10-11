@@ -203,9 +203,13 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeFfmpeg:
 def make_ctx(project: Path, *, resuming: bool = False, run_name: str = "run") -> RunContext:
     run_dir = project / "runs" / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
+    resolved = load_resolved(project, "example-client")
+    # the shipped default offset is 0.15; these tests assume captions at their spoken time
+    captions = resolved.app.captions.model_copy(update={"offset_seconds": 0.0})
+    app = resolved.app.model_copy(update={"captions": captions})
     return RunContext(
         run_dir=run_dir,
-        config=load_resolved(project, "example-client"),
+        config=ResolvedConfig(app=app, client_name=resolved.client_name, rules=resolved.rules),
         input_path=run_dir / "x.mp4",
         project_root=project,
         resuming=resuming,

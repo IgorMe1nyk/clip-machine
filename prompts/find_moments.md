@@ -17,6 +17,8 @@ anything that needs earlier context. Fewer, better moments beat filling the quot
 
 Start where a new thought starts. Never start on a continuation (and, so, but,
 because, which...) that depends on what came before.
+Start each moment at its setup (the question or the first sentence of the thought) and
+end it where the point is finished.
 End only after the payoff is complete. If the moment is a question, include the full
 answer. If it's a story, include its ending. Prefer {preferred_min}-{preferred_max}
 seconds. Never cut a payoff just to stay short.

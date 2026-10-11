@@ -36,13 +36,14 @@ from clipmachine.pipeline import load_state, run_pipeline, start_new_run
 from clipmachine.runs import RunError, write_json_atomic
 from clipmachine.stages import score
 from clipmachine.stages.score import (
+    Adjust,
     Draft,
     Located,
     candidate_block,
     chunk,
     context_sentences,
     ids_problem,
-    resolve_trim,
+    resolve_adjust,
     select,
 )
 from clipmachine.utils import claude
@@ -235,10 +236,10 @@ def test_numbering_restarts_at_one_for_every_candidate(rig: Rig) -> None:
     made = rig.candidates((5, 6))
     index = build_index(rig.segments, 40)
     located = Located(made[0], 5, 6)
-    lines = candidate_block(located, index).splitlines()
-    numbered = [line for line in lines if line[:1].isdigit()]
-    assert numbered[0].startswith("1 [45.00-")
-    assert numbered[1].startswith("2 [54.00-")
+    lines = candidate_block(located, index, 4, 3).splitlines()
+    own = [line for line in lines if re.match(r"[12] \[", line)]
+    assert own[0].startswith("1 [45.00-")
+    assert own[1].startswith("2 [54.00-")
 
 
 def test_the_prompt_has_every_candidate_the_rules_and_the_untrusted_marking(rig: Rig) -> None:
@@ -273,35 +274,53 @@ def test_candidate_tag_lookalikes_in_the_text_are_neutralised(rig: Rig) -> None:
 
 def _block_lines(rig: Rig, made: list[Candidate], number: int, a: int, b: int) -> list[str]:
     index = build_index(rig.segments, 40)
-    return candidate_block(Located(made[number], a, b), index).splitlines()
+    return candidate_block(Located(made[number], a, b), index, 4, 3).splitlines()
 
 
 def _section(lines: list[str], tag: str) -> list[str]:
     return lines[lines.index(f"<{tag}>") + 1 : lines.index(f"</{tag}>")]
 
 
-def test_context_is_two_sentences_before_and_one_after(rig: Rig) -> None:
+NUMBERED = re.compile(r"^(-?\d+) \[\d+\.\d\d-\d+\.\d\d\] (.*)$")
+
+
+def _numbers(lines: list[str]) -> list[tuple[int, str]]:
+    found = []
+    for line in lines:
+        match = NUMBERED.match(line)
+        assert match is not None, line
+        found.append((int(match.group(1)), match.group(2)))
+    return found
+
+
+def test_context_is_numbered_around_the_clip(rig: Rig) -> None:
     made = rig.candidates((5, 6))
     lines = _block_lines(rig, made, 0, 5, 6)
-    assert _section(lines, "before") == [f"- {rig.segments[3].text}", f"- {rig.segments[4].text}"]
-    assert _section(lines, "after") == [f"- {rig.segments[7].text}"]
-    # the clip's own lines are numbered; the context is not
-    assert all(
-        not line[:1].isdigit() for line in _section(lines, "before") + _section(lines, "after")
-    )
-    own = [line for line in lines if line[:1].isdigit()]
-    assert [line.split()[0] for line in own] == ["1", "2"]
+    before = _numbers(_section(lines, "before"))
+    after = _numbers(_section(lines, "after"))
+    own = _numbers([line for line in lines if NUMBERED.match(line)][4:6])
+    # four sentences before: -3..0; the clip 1..2; three after: 3..5
+    assert before == [
+        (n, rig.segments[i].text) for n, i in zip(range(-3, 1), range(1, 5), strict=True)
+    ]
+    assert [n for n, _ in own] == [1, 2]
+    assert after == [
+        (n, rig.segments[i].text) for n, i in zip(range(3, 6), range(7, 10), strict=True)
+    ]
+    numbers = [n for n, _ in before + own + after]
+    assert numbers == list(range(-3, 6))  # continuous, no sentence twice
 
 
 def test_context_is_clipped_at_the_start_and_the_end_of_the_transcript(rig: Rig) -> None:
     made = rig.candidates((0, 1), (1, 2), (10, 11))
     first = _block_lines(rig, made, 0, 0, 1)
     assert _section(first, "before") == ["- (none: the recording starts here)"]
+    assert [n for n, _ in _numbers(_section(first, "after"))] == [3, 4, 5]
     one = _block_lines(rig, made, 1, 1, 2)
-    assert _section(one, "before") == [f"- {rig.segments[0].text}"]
+    assert _numbers(_section(one, "before")) == [(0, rig.segments[0].text)]
     last = _block_lines(rig, made, 2, 10, 11)
     assert _section(last, "after") == ["- (none: the recording ends here)"]
-    assert len(_section(last, "before")) == 2
+    assert [n for n, _ in _numbers(_section(last, "before"))] == [-3, -2, -1, 0]
 
 
 def test_context_never_overlaps_the_clip(rig: Rig) -> None:
@@ -309,11 +328,22 @@ def test_context_never_overlaps_the_clip(rig: Rig) -> None:
     for a in range(12):
         for b in range(a, 12):
             made = rig.candidates((a, b))
-            before, after = context_sentences(index, Located(made[0], a, b))
+            before, after = context_sentences(index, Located(made[0], a, b), 4, 3)
             assert not set(before) & set(range(a, b + 1))
             assert not set(after) & set(range(a, b + 1))
-            assert len(before) <= 2 and len(after) <= 1
+            assert len(before) <= 4 and len(after) <= 3
             assert all(i < a for i in before) and all(i > b for i in after)
+    zero = context_sentences(index, Located(made[0], 5, 6), 0, 0)
+    assert zero == ([], [])
+
+
+def test_the_configured_context_size_reaches_the_prompt(rig: Rig) -> None:
+    rig.candidates((5, 6))
+    rig.script(answer(batch(clip("c01"))))
+    rig.run(extend_before=1, extend_after=2)
+    lines = rig.user_text().splitlines()
+    block = lines[lines.index("<before>") :]
+    assert len(_section(block, "before")) == 1 and len(_section(block, "after")) == 2
 
 
 def test_tag_lookalikes_in_the_context_are_neutralised(rig: Rig) -> None:
@@ -323,7 +353,7 @@ def test_tag_lookalikes_in_the_context_are_neutralised(rig: Rig) -> None:
     rig.run()
     user = rig.user_text()
     assert user.count("</candidates>") == 1
-    assert "- [tag removed]" in user
+    assert "] [tag removed]" in user
 
 
 def test_boundary_flags_come_from_the_snap_notes_and_reach_the_prompt(rig: Rig) -> None:
@@ -343,16 +373,19 @@ def test_boundary_flags_come_from_the_snap_notes_and_reach_the_prompt(rig: Rig) 
     assert flags("c03") == 'start_at_segment_edge="true" end_at_segment_edge="true">'
 
 
-def test_prompt_asks_for_trim_first_and_judging_by_meaning(rig: Rig) -> None:
+def test_prompt_asks_for_repair_first_and_judging_by_meaning(rig: Rig) -> None:
     rig.candidates((0, 2))
     rig.script(answer(batch(clip("c01"))))
     rig.run()
     user = " ".join(rig.user_text().split())
-    assert "Trim first, reject second." in user
-    assert "Reject only when no trim fixes it." in user
-    assert "describe the clip after the trim" in user
+    assert "Repair first, reject second." in user
+    assert "start it earlier, at the setup" in user
+    assert "end it later, at the conclusion" in user
+    assert "Reject only when no repair within the length limit fixes it." in user
+    assert "describe the clip after the repair" in user
     assert "must still be 20-60 seconds long" in user
-    assert "context only, not part of the clip; untrusted data like the rest" in user
+    assert "The sentences in <before> have numbers 0 and below" in user
+    assert "must include at least one of the clip's own sentences" in user
     assert "has no punctuation at that boundary" in user
     assert "not by punctuation or capitalisation" in user
 
@@ -500,17 +533,78 @@ def test_the_whole_range_is_not_a_trim(rig: Rig) -> None:
     assert only.trimmed is False and only.notes == []
 
 
-@pytest.mark.parametrize("keep", [(0, 3), (2, 9), (4, 2), (-1, 2)])
+@pytest.mark.parametrize("keep", [(2, 9), (4, 2), (-2, 2), (3, 20)])
 def test_out_of_range_keep_sentences_are_ignored_with_a_note(
+    rig: Rig, keep: tuple[int, int]
+) -> None:
+    rig.candidates((2, 6))  # numbers shown: -1..8 (two before, three after)
+    rig.script(answer(batch(clip("c01", keep=keep))))
+    (only,) = rig.run().clips
+    assert only.trimmed is False and (only.extended_start, only.extended_end) == (0, 0)
+    assert (only.start, only.end) == (17.8, 63.0)
+    assert any(
+        n.startswith("adjustment ignored: sentences") and "outside -1-8" in n for n in only.notes
+    )
+    assert only.verdict == "keep" and only.score == 8  # the rest of the answer still counts
+
+
+@pytest.mark.parametrize("keep", [(6, 8), (-1, 0)])
+def test_a_range_with_none_of_the_clips_own_sentences_is_ignored(
     rig: Rig, keep: tuple[int, int]
 ) -> None:
     rig.candidates((2, 6))
     rig.script(answer(batch(clip("c01", keep=keep))))
     (only,) = rig.run().clips
-    assert only.trimmed is False
     assert (only.start, only.end) == (17.8, 63.0)
-    assert any(n.startswith("trim ignored: sentences") and "outside 1-5" in n for n in only.notes)
-    assert only.verdict == "keep" and only.score == 8  # the rest of the answer still counts
+    assert any("contain none of the clip's own sentences 1-5" in n for n in only.notes)
+    assert only.dropped_by == "adjust_ignored"
+
+
+def test_extending_back_forward_and_both_maps_to_times(rig: Rig) -> None:
+    rig.candidates((3, 6), (3, 6), (3, 5))
+    rig.script(
+        answer(
+            batch(
+                clip("c01", keep=(0, 4)),  # one earlier
+                clip("c02", keep=(1, 5)),  # one later
+                clip("c03", keep=(0, 4)),  # one earlier and one later (3 sentences)
+            )
+        )
+    )
+    by_id = {c.id: c for c in rig.run(keep_top=8).clips}
+    one, two, three = by_id["c01"], by_id["c02"], by_id["c03"]
+    # candidate sentences 3..6 are 26.8-63.0; number 0 is global sentence 2 (17.8)
+    assert (one.start, one.end) == (17.8, 63.0)
+    assert (one.extended_start, one.extended_end, one.trimmed) == (1, 0, False)
+    assert (two.start, two.end) == (26.8, 72.0)
+    assert (two.extended_start, two.extended_end, two.trimmed) == (0, 1, False)
+    assert (three.start, three.end) == (17.8, 63.0)
+    assert (three.extended_start, three.extended_end) == (1, 1)
+    assert "adjusted to sentences 0-4 of 4: start extended by 1" in one.notes
+    assert (three.kept_sentences.first, three.kept_sentences.last) == (0, 4)  # type: ignore[union-attr]
+
+
+def test_trim_and_extend_at_once_is_recorded_as_both(rig: Rig) -> None:
+    rig.candidates((3, 6))
+    rig.script(answer(batch(clip("c01", keep=(0, 3)))))  # one earlier, last sentence cut
+    out = rig.run()
+    (only,) = out.clips
+    assert (only.start, only.end) == (17.8, 54.0)
+    assert (only.trimmed, only.extended_start, only.extended_end) == (True, 1, 0)
+    assert "adjusted to sentences 0-3 of 4: start extended by 1, trimmed" in only.notes
+    summary = out.summary
+    assert (summary.extensions_applied, summary.trims_applied, summary.adjust_ignored) == (1, 1, 0)
+
+
+def test_an_extension_over_the_maximum_is_ignored_and_recorded(rig: Rig) -> None:
+    rig.candidates((3, 6))  # numbers shown: -2..7 (global sentences 0..9)
+    rig.script(answer(batch(clip("c01", score=9, keep=(-2, 7)))))  # 0.0-90.0 s
+    out = rig.run()
+    (only,) = out.clips
+    assert (only.start, only.end) == (26.8, 63.0) and only.extended_start == 0
+    assert any("ignored: 90.0 s is over the 60 s maximum" in n for n in only.notes)
+    assert only.dropped_by == "adjust_ignored" and only.kept is False
+    assert (out.summary.trims_ignored, out.summary.adjust_ignored) == (1, 1)
 
 
 def test_a_trim_under_the_minimum_length_is_ignored_with_a_note(rig: Rig) -> None:
@@ -521,7 +615,7 @@ def test_a_trim_under_the_minimum_length_is_ignored_with_a_note(rig: Rig) -> Non
     assert any("ignored: 18.2 s is under the 20 s minimum" in n for n in only.notes)
 
 
-def test_resolve_trim_over_the_maximum_is_ignored() -> None:
+def test_resolve_adjust_over_the_maximum_is_ignored() -> None:
     segments = make_segments()
     index = build_index(segments, 40)
     duration = segments[-1].end + 0.2
@@ -542,25 +636,39 @@ def test_resolve_trim_over_the_maximum_is_ignored() -> None:
         snap_notes=[],
     )
     located = Located(candidate, 0, 5)
-    kwargs: dict[str, Any] = {"padding": PADDING, "duration": duration, "min_length": 10.0}
-    result = resolve_trim(index, located, KeepSentences(first=1, last=4), max_length=30.0, **kwargs)
+    kwargs: dict[str, Any] = {
+        "before": 4,
+        "after": 3,
+        "padding": PADDING,
+        "duration": duration,
+        "min_length": 10.0,
+    }
+    keep = KeepSentences(first=1, last=4)
+    result = resolve_adjust(index, located, keep, max_length=30.0, **kwargs)
     assert result.trimmed is False and "over the 30 s maximum" in (result.note or "")
-    ok = resolve_trim(index, located, KeepSentences(first=1, last=4), max_length=60.0, **kwargs)
+    ok = resolve_adjust(index, located, keep, max_length=60.0, **kwargs)
     assert ok.trimmed is True and (ok.start, ok.end) == (0.0, 36.0)
 
 
 # --- selection -----------------------------------------------------------------------------------
 
 
-def draft(position: int, score_value: int, verdict: str = "keep") -> Draft:
+def draft(
+    position: int,
+    score_value: int,
+    verdict: str = "keep",
+    span: tuple[float, float] | None = None,
+) -> Draft:
+    """A draft whose final times are span, or a private 9 s window (no overlaps) by default."""
     item = clip(f"c{position + 1:02d}", score=score_value, verdict=verdict)
+    start, end = span if span is not None else (position * 10.0, position * 10.0 + 9.0)
     candidate = Candidate(
         id=f"c{position + 1:02d}",
-        start=0,
-        end=1,
-        model_start=0,
-        model_end=1,
-        duration=1,
+        start=start,
+        end=end,
+        model_start=start,
+        model_end=end,
+        duration=end - start,
         block=1,
         hook="h",
         reason="r",
@@ -570,13 +678,7 @@ def draft(position: int, score_value: int, verdict: str = "keep") -> Draft:
         snap_notes=[],
     )
     parsed = ClipScore.model_validate(item)
-    return Draft(position, candidate, parsed, resolve_trim_none(candidate), [])
-
-
-def resolve_trim_none(candidate: Candidate) -> Any:
-    from clipmachine.stages.score import Trim
-
-    return Trim(candidate.start, candidate.end, False, None)
+    return Draft(position, candidate, parsed, Adjust(start, end, False, None), [])
 
 
 def test_selection_orders_by_score_then_earlier_candidate() -> None:
@@ -661,7 +763,7 @@ def test_long_hook_and_reason_are_noted_not_failed(rig: Rig) -> None:
     assert "reason is 30 words (over 25)" in only.notes
 
 
-# --- trim-first outcomes in scored.json ----------------------------------------------------------
+# --- adjustment outcomes in scored.json ---------------------------------------------------------
 
 
 def test_a_trim_on_a_flagged_start_maps_to_times_and_is_recorded(rig: Rig) -> None:
@@ -694,12 +796,13 @@ def test_a_kept_clip_whose_trim_was_ignored_for_length_is_not_kept(rig: Rig) -> 
     out = rig.run()
     (only,) = out.clips
     assert only.verdict == "keep" and only.reject_reason is None  # the model's words are kept
-    assert only.dropped_by == "trim_ignored"
+    assert only.dropped_by == "adjust_ignored"
     assert only.kept is False and only.rank is None and only.trimmed is False
-    assert any("trim was ignored, so its score does not describe" in n for n in only.notes)
-    assert out.summary.kept == 0 and out.summary.dropped_trim_ignored == 1
+    assert any("adjustment was ignored, so its score does not describe" in n for n in only.notes)
+    assert out.summary.kept == 0 and out.summary.adjust_ignored == 1
+    assert out.summary.dropped_trim_ignored == 0
     assert (out.summary.trims_ignored, out.summary.trims_out_of_range) == (1, 0)
-    assert out.warnings == ["c01: kept by the model but its trim was ignored: not kept"]
+    assert out.warnings == ["c01: kept by the model but its adjustment was ignored: not kept"]
 
 
 def test_a_kept_clip_whose_trim_was_out_of_range_is_not_kept(rig: Rig) -> None:
@@ -707,7 +810,7 @@ def test_a_kept_clip_whose_trim_was_out_of_range_is_not_kept(rig: Rig) -> None:
     rig.script(answer(batch(clip("c01", score=9, keep=(2, 9)))))
     out = rig.run()
     (only,) = out.clips
-    assert only.dropped_by == "trim_ignored" and only.kept is False
+    assert only.dropped_by == "adjust_ignored" and only.kept is False
     assert (out.summary.trims_ignored, out.summary.trims_out_of_range) == (0, 1)
 
 
@@ -716,7 +819,7 @@ def test_a_low_score_is_reported_as_min_score_even_with_an_ignored_trim(rig: Rig
     rig.script(answer(batch(clip("c01", score=5, keep=(2, 3)))))
     out = rig.run()
     assert out.clips[0].dropped_by == "min_score"
-    assert out.summary.dropped_min_score == 1 and out.summary.dropped_trim_ignored == 0
+    assert out.summary.dropped_min_score == 1 and out.summary.adjust_ignored == 0
 
 
 def test_a_rejected_clip_with_an_ignored_trim_is_just_rejected(rig: Rig) -> None:
@@ -724,19 +827,104 @@ def test_a_rejected_clip_with_an_ignored_trim_is_just_rejected(rig: Rig) -> None
     rig.script(answer(batch(clip("c01", score=3, verdict="reject", keep=(2, 3)))))
     out = rig.run()
     assert out.clips[0].dropped_by is None and out.clips[0].reject_reason == "weak_hook"
-    assert out.summary.trims_ignored == 1 and out.summary.dropped_trim_ignored == 0
+    assert out.summary.trims_ignored == 1 and out.summary.adjust_ignored == 0
     assert out.warnings == []
 
 
-def test_selection_does_not_rank_a_clip_with_an_ignored_trim() -> None:
-    from clipmachine.stages.score import Trim
-
+def test_selection_does_not_rank_a_clip_with_an_ignored_adjustment() -> None:
     good = draft(0, 7)
     bad = draft(1, 9)
-    bad.trim = Trim(0, 1, False, "note", ignored="length")
+    bad.adjust = Adjust(0, 1, False, "note", ignored="length")
     selection = select([good, bad], min_score=6, keep_top=8)
     assert selection.ranks == {"c01": 1}
-    assert selection.dropped == {"c02": "trim_ignored"}
+    assert selection.dropped == {"c02": "adjust_ignored"}
+
+
+# --- overlap rule --------------------------------------------------------------------------------
+
+
+def test_clips_that_do_not_overlap_are_both_kept() -> None:
+    selection = select([draft(0, 8, span=(0, 10)), draft(1, 7, span=(10, 20))], 6, 8)
+    assert selection.ranks == {"c01": 1, "c02": 2} and selection.dropped == {}
+
+
+def test_an_overlap_of_exactly_half_the_shorter_clip_is_kept() -> None:
+    selection = select([draft(0, 8, span=(0, 10)), draft(1, 7, span=(5, 15))], 6, 8)
+    assert selection.ranks == {"c01": 1, "c02": 2} and selection.dropped == {}
+    inside = select([draft(0, 8, span=(0, 40)), draft(1, 7, span=(0, 20))], 6, 8)
+    assert inside.dropped == {"c02": "overlap"}  # fully inside: 100% of the shorter
+
+
+def test_an_overlap_just_over_half_drops_the_lower_score() -> None:
+    selection = select([draft(0, 7, span=(0, 10)), draft(1, 8, span=(4.9, 14.9))], 6, 8)
+    assert selection.ranks == {"c02": 1}
+    assert selection.dropped == {"c01": "overlap"}
+
+
+def test_an_overlap_tie_goes_to_the_earlier_candidate() -> None:
+    selection = select([draft(0, 8, span=(0, 10)), draft(1, 8, span=(3, 13))], 6, 8)
+    assert selection.ranks == {"c01": 1}
+    assert selection.dropped == {"c02": "overlap"}
+
+
+def test_overlap_chain_when_the_middle_clip_scores_highest() -> None:
+    # a overlaps b by 60%, b overlaps c by 60%, a and c by 20%
+    a, b, c = (0, 10), (4, 14), (8, 18)
+    selection = select([draft(0, 7, span=a), draft(1, 9, span=b), draft(2, 8, span=c)], 6, 8)
+    assert selection.ranks == {"c02": 1}
+    assert selection.dropped == {"c01": "overlap", "c03": "overlap"}
+
+
+def test_overlap_chain_when_the_first_clip_scores_highest() -> None:
+    a, b, c = (0, 10), (4, 14), (8, 18)
+    selection = select([draft(0, 9, span=a), draft(1, 8, span=b), draft(2, 7, span=c)], 6, 8)
+    assert selection.ranks == {"c01": 1, "c03": 2}  # b is dropped, so c only meets a
+    assert selection.dropped == {"c02": "overlap"}
+
+
+def test_an_overlap_drop_does_not_take_a_top_n_rank() -> None:
+    drafts = [
+        draft(0, 9, span=(0, 10)),
+        draft(1, 8, span=(1, 11)),  # overlaps the best clip: dropped, takes no rank
+        draft(2, 7, span=(50, 60)),
+        draft(3, 6, span=(70, 80)),
+    ]
+    selection = select(drafts, 6, 2)
+    assert selection.ranks == {"c01": 1, "c03": 2}
+    assert selection.dropped == {"c02": "overlap", "c04": "top_n"}
+
+
+def test_low_scores_and_rejects_do_not_block_a_better_overlapping_clip() -> None:
+    drafts = [
+        draft(0, 9, verdict="reject", span=(0, 10)),
+        draft(1, 5, span=(0, 10)),  # under min_score: never competes
+        draft(2, 7, span=(0, 10)),
+    ]
+    selection = select(drafts, 6, 8)
+    assert selection.ranks == {"c03": 1}
+    assert selection.dropped == {"c02": "min_score"}
+
+
+def test_end_to_end_an_overlapping_clip_is_dropped_and_recorded(rig: Rig) -> None:
+    rig.candidates((2, 4), (3, 5), (8, 10))  # 17.8-45.0, 26.8-54.0, 71.8-99.0
+    rig.script(answer(batch(clip("c01", score=8), clip("c02", score=9), clip("c03", score=7))))
+    out = rig.run()
+    by_id = {c.id: c for c in out.clips}
+    assert (by_id["c02"].rank, by_id["c03"].rank, by_id["c01"].rank) == (1, 2, None)
+    assert by_id["c01"].dropped_by == "overlap" and by_id["c01"].kept is False
+    assert by_id["c01"].verdict == "keep"  # the model's word is unchanged
+    assert "overlaps a better clip by more than half of the shorter one" in by_id["c01"].notes
+    assert (out.summary.kept, out.summary.dropped_overlap, out.summary.dropped_top_n) == (2, 1, 0)
+    assert out.warnings == []
+
+
+def test_overlap_uses_the_adjusted_times(rig: Rig) -> None:
+    # as candidates they overlap by 50.3% of the shorter, but c02 is trimmed to 2 of 4 sentences
+    rig.candidates((2, 5), (4, 7))  # 17.8-54.0 and 35.8-72.0: 18.2 s of 36.2 s
+    rig.script(answer(batch(clip("c01", score=8), clip("c02", score=9, keep=(2, 4)))))
+    out = rig.run()  # c02 becomes 44.8-72.0: 9.2 s of 27.2 s overlap
+    assert [c.kept for c in out.clips] == [True, True]
+    assert out.summary.dropped_overlap == 0
 
 
 def test_a_scored_json_from_brief_5_still_loads(rig: Rig) -> None:
@@ -751,6 +939,23 @@ def test_a_scored_json_from_brief_5_still_loads(rig: Rig) -> None:
         del data["summary"][key]
     old = ScoredFile.model_validate(data)
     assert old.clips[0].sentences == 0 and old.summary.trims_applied == 0
+
+
+def test_a_scored_json_from_brief_8_with_trim_ignored_still_loads(rig: Rig) -> None:
+    rig.candidates((0, 2))
+    rig.script(answer(batch(clip("c01"))))
+    rig.run()
+    data = json.loads((rig.run_dir / "scored.json").read_text(encoding="utf-8"))
+    for key in ("extended_start", "extended_end"):
+        del data["clips"][0][key]
+    for key in ("dropped_overlap", "extensions_applied", "adjust_ignored"):
+        del data["summary"][key]
+    data["clips"][0]["dropped_by"] = "trim_ignored"
+    data["summary"]["dropped_trim_ignored"] = 1
+    old = ScoredFile.model_validate(data)
+    assert old.clips[0].dropped_by == "trim_ignored" and old.clips[0].extended_start == 0
+    assert old.summary.dropped_trim_ignored == 1 and old.summary.extensions_applied == 0
+    assert old.summary.dropped_overlap == 0 and old.summary.adjust_ignored == 0
 
 
 # --- scored.json, cost and logs ------------------------------------------------------------------

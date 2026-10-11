@@ -171,6 +171,8 @@ def _card(clip: ScoredClip, problem: str | None, text: str) -> str:
     badges = ""
     if clip.trimmed:
         badges += '<span class="badge">trimmed</span>'
+    if clip.extended_start or clip.extended_end:
+        badges += '<span class="badge">extended</span>'
     if clip.start_at_segment_edge:
         badges += '<span class="badge">starts at segment edge</span>'
     if clip.end_at_segment_edge:
@@ -227,7 +229,8 @@ def _summary(
         for name, n in (
             ("dropped min_score", s.dropped_min_score),
             ("dropped top_n", s.dropped_top_n),
-            ("dropped trim_ignored", s.dropped_trim_ignored),
+            ("dropped adjust_ignored", s.adjust_ignored + s.dropped_trim_ignored),
+            ("dropped overlap", s.dropped_overlap),
         )
         if n
     ]

@@ -255,6 +255,18 @@ def test_summary_counts_cost_and_time(ctx: RunContext) -> None:
     assert "dropped top_n 1" in page
 
 
+def test_extended_badge_and_the_adjust_and_overlap_drops(ctx: RunContext) -> None:
+    clip = kept("c01", 1, 10.0, 30.0, extended_start=1)
+    dropped = scored_clip("c02", None, 40.0, 60.0).model_copy(
+        update={"verdict": "keep", "reject_reason": None, "dropped_by": "overlap"}
+    )
+    page = build(ctx, [clip, dropped], dropped_overlap=1, adjust_ignored=2, dropped_trim_ignored=1)
+    assert "extended" in cards(page)[0]
+    assert "dropped overlap 1" in page
+    assert "dropped adjust_ignored 3" in page  # new and old files are counted together
+    assert "dropped: overlap" in page
+
+
 def test_missing_costs_file_is_zero(ctx: RunContext) -> None:
     assert "$0.00" in build(ctx, [kept("c01", 1, 10.0, 30.0)])
 

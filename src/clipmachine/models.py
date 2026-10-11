@@ -94,6 +94,10 @@ class ScoreConfig(StrictModel):
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     min_score: int = Field(default=6, ge=1, le=10)
     repair_attempts: int = Field(default=1, ge=0, le=1)  # the client makes at most one repair call
+    # Brief 9: context sentences shown before/after a clip, which the judge may extend into.
+    # Defaults keep run folders made before it loadable.
+    extend_before: int = Field(default=4, ge=0, le=10)
+    extend_after: int = Field(default=3, ge=0, le=10)
 
     @model_validator(mode="after")
     def _check_thinking_and_effort(self) -> "ScoreConfig":
@@ -233,7 +237,7 @@ class CaptionsConfig(StrictModel):
     font_size: int = Field(default=80, gt=0)
     margin_v: int = Field(default=350, ge=0)  # pixels from the bottom edge
     # Brief 6.1: moves every caption event in time; positive = captions appear later
-    offset_seconds: float = Field(default=0.0, ge=-1.0, le=1.0)
+    offset_seconds: float = Field(default=0.15, ge=-1.0, le=1.0)
 
     @model_validator(mode="after")
     def _check_values(self) -> "CaptionsConfig":
@@ -533,8 +537,8 @@ RejectReason = Literal[
 ]
 REJECT_REASONS: tuple[str, ...] = RejectReason.__args__  # type: ignore[attr-defined]
 DroppedBy = Literal[
-    "min_score", "top_n", "trim_ignored"
-]  # our own selection, never the model's word
+    "min_score", "top_n", "trim_ignored", "adjust_ignored", "overlap"
+]  # our own selection, never the model's word; trim_ignored is read from old files only
 MIN_SCORE, MAX_SCORE = 1, 10
 
 
@@ -545,8 +549,13 @@ def _lower(value: object) -> object:
 
 class KeepSentences(StrictModel):
     # Sent to the API as part of the schema: no numeric constraints (the stage checks ranges).
-    first: int = Field(description="Number of the first sentence to keep")
-    last: int = Field(description="Number of the last sentence to keep")
+    # Brief 9: numbers may be <= 0 (context before the clip) or > n (context after it)
+    first: int = Field(
+        description="Number of the first sentence to keep; may be 0 or negative to start earlier"
+    )
+    last: int = Field(
+        description="Number of the last sentence to keep; may be above the clip's last number"
+    )
 
 
 class ClipScore(StrictModel):
@@ -560,7 +569,10 @@ class ClipScore(StrictModel):
     suggested_title: str
     reason: str = Field(description="Short explanation of the verdict, at most 25 words")
     keep_sentences: KeepSentences | None = Field(
-        description="Optional tighter range of this candidate's own sentence numbers, or null"
+        description=(
+            "Optional new range of sentence numbers (the clip's own, plus the numbered context "
+            "before and after it), or null"
+        )
     )
 
     @field_validator("verdict", "reject_reason", mode="before")
@@ -606,7 +618,10 @@ class ScoredClip(StrictModel):
     start_at_segment_edge: bool = False
     end_at_segment_edge: bool = False
     sentences: int = 0  # sentences in the candidate (the "of N" of a trim)
-    kept_sentences: KeepSentences | None = None  # the applied trim, 1-based within the candidate
+    kept_sentences: KeepSentences | None = None  # the applied range, 1-based within the candidate
+    # added in Brief 9: sentences added before the clip's first / after its last
+    extended_start: int = 0
+    extended_end: int = 0
 
 
 class ScoredSummary(StrictModel):
@@ -615,7 +630,10 @@ class ScoredSummary(StrictModel):
     rejected: int  # the model said reject
     dropped_min_score: int  # model said keep, score under score.min_score
     dropped_top_n: int  # model said keep, passed min_score, but outside clip.keep_top
-    dropped_trim_ignored: int = 0  # model said keep, but the trim it relied on was ignored
+    dropped_trim_ignored: int = 0  # old files only (Brief 9 writes adjust_ignored)
+    dropped_overlap: int = 0  # overlapped a better clip by more than half of the shorter one
+    extensions_applied: int = 0  # clips whose start moved earlier or end later
+    adjust_ignored: int = 0  # model said keep, but the adjustment it relied on was ignored
     trimmed: int
     trims_applied: int = 0  # same number as trimmed
     trims_ignored: int = 0  # outside clip.min_seconds..max_seconds

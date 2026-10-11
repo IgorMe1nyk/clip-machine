@@ -38,6 +38,8 @@ score:
   effort: medium             # low / medium / high (xhigh and max need thinking: adaptive)
   min_score: 6               # 1-10; a keep below this is dropped (dropped_by: min_score)
   repair_attempts: 1         # 0 or 1: extra call when the answer is invalid
+  extend_before: 4           # 0-10; sentences before a clip the judge may extend into
+  extend_after: 3            # 0-10; sentences after a clip the judge may extend into
 transcribe:                  # defaults chosen in D-011 from the Brief 3 benchmark (setting B)
   model: small               # tiny base small medium large-v3 turbo distil-large-v3 ...
   device: auto               # auto / cpu / cuda
@@ -81,4 +83,4 @@ captions:
   font_file: Montserrat-Bold.ttf   # inside assets/fonts/; a missing file fails the render stage
   font_size: 80              # pixels on the 1080x1920 canvas
   margin_v: 350              # pixels from the bottom edge, clear of phone UI
-  offset_seconds: 0.0        # -1.0 to 1.0; positive = captions appear later (sync tuning)
+  offset_seconds: 0.15       # -1.0 to 1.0; positive = captions appear later (sync tuning)

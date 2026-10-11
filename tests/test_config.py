@@ -424,7 +424,7 @@ def test_config_without_render_keys_still_loads(project: Path) -> None:
 
 
 def test_caption_offset_default_and_valid_values(project: Path) -> None:
-    assert load_app_config(project).captions.offset_seconds == 0.0
+    assert load_app_config(project).captions.offset_seconds == 0.15
     for value in (-1.0, -0.25, 0.15, 1.0):
         _default(project, lambda d, v=value: d["captions"].update(offset_seconds=v))
         assert load_app_config(project).captions.offset_seconds == value
@@ -439,7 +439,24 @@ def test_caption_offset_out_of_range_is_rejected(project: Path, value: float) ->
 
 def test_config_without_offset_loads(project: Path) -> None:
     _default(project, lambda d: d["captions"].pop("offset_seconds"))
-    assert load_app_config(project).captions.offset_seconds == 0.0
+    assert load_app_config(project).captions.offset_seconds == 0.15
+
+
+def test_extend_defaults_and_config_without_them_loads(project: Path) -> None:
+    assert load_app_config(project).score.extend_before == 4
+    assert load_app_config(project).score.extend_after == 3
+    _default(project, lambda d: d["score"].pop("extend_before"))
+    _default(project, lambda d: d["score"].pop("extend_after"))
+    app = load_app_config(project)
+    assert (app.score.extend_before, app.score.extend_after) == (4, 3)
+
+
+@pytest.mark.parametrize("key", ["extend_before", "extend_after"])
+@pytest.mark.parametrize("value", [-1, 11])
+def test_extend_out_of_range_is_rejected(project: Path, key: str, value: int) -> None:
+    _default(project, lambda d: d["score"].update({key: value}))
+    with pytest.raises(ConfigError, match=key):
+        load_app_config(project)
 
 
 # --- Brief 8: speaker crop ------------------------------------------------------------------
