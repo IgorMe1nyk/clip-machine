@@ -661,6 +661,98 @@ def test_long_hook_and_reason_are_noted_not_failed(rig: Rig) -> None:
     assert "reason is 30 words (over 25)" in only.notes
 
 
+# --- trim-first outcomes in scored.json ----------------------------------------------------------
+
+
+def test_a_trim_on_a_flagged_start_maps_to_times_and_is_recorded(rig: Rig) -> None:
+    rig.candidates((2, 6), notes={1: [EDGE_START_NOTE]})  # five sentences, 17.8 - 63.0
+    rig.script(answer(batch(clip("c01", keep=(2, 4)))))
+    out = rig.run()
+    (only,) = out.clips
+    assert (only.start, only.end) == (26.8, 54.0)  # local 2..4 are global 3..5
+    assert (only.candidate_start, only.candidate_end) == (17.8, 63.0)
+    assert only.trimmed is True and only.kept is True and only.rank == 1
+    assert only.start_at_segment_edge is True and only.end_at_segment_edge is False
+    assert only.sentences == 5
+    assert (only.kept_sentences.first, only.kept_sentences.last) == (2, 4)  # type: ignore[union-attr]
+    summary = out.summary
+    assert (summary.trims_applied, summary.trimmed) == (1, 1)
+    assert (summary.trims_ignored, summary.trims_out_of_range) == (0, 0)
+
+
+def test_untrimmed_clips_carry_the_flags_and_no_kept_sentences(rig: Rig) -> None:
+    rig.candidates((0, 2), notes={1: [EDGE_END_NOTE]})
+    rig.script(answer(batch(clip("c01"))))
+    (only,) = rig.run().clips
+    assert only.kept_sentences is None and only.sentences == 3
+    assert (only.start_at_segment_edge, only.end_at_segment_edge) == (False, True)
+
+
+def test_a_kept_clip_whose_trim_was_ignored_for_length_is_not_kept(rig: Rig) -> None:
+    rig.candidates((2, 6))
+    rig.script(answer(batch(clip("c01", score=9, keep=(2, 3)))))  # 18.2 s: under the minimum
+    out = rig.run()
+    (only,) = out.clips
+    assert only.verdict == "keep" and only.reject_reason is None  # the model's words are kept
+    assert only.dropped_by == "trim_ignored"
+    assert only.kept is False and only.rank is None and only.trimmed is False
+    assert any("trim was ignored, so its score does not describe" in n for n in only.notes)
+    assert out.summary.kept == 0 and out.summary.dropped_trim_ignored == 1
+    assert (out.summary.trims_ignored, out.summary.trims_out_of_range) == (1, 0)
+    assert out.warnings == ["c01: kept by the model but its trim was ignored: not kept"]
+
+
+def test_a_kept_clip_whose_trim_was_out_of_range_is_not_kept(rig: Rig) -> None:
+    rig.candidates((2, 6))
+    rig.script(answer(batch(clip("c01", score=9, keep=(2, 9)))))
+    out = rig.run()
+    (only,) = out.clips
+    assert only.dropped_by == "trim_ignored" and only.kept is False
+    assert (out.summary.trims_ignored, out.summary.trims_out_of_range) == (0, 1)
+
+
+def test_a_low_score_is_reported_as_min_score_even_with_an_ignored_trim(rig: Rig) -> None:
+    rig.candidates((2, 6))
+    rig.script(answer(batch(clip("c01", score=5, keep=(2, 3)))))
+    out = rig.run()
+    assert out.clips[0].dropped_by == "min_score"
+    assert out.summary.dropped_min_score == 1 and out.summary.dropped_trim_ignored == 0
+
+
+def test_a_rejected_clip_with_an_ignored_trim_is_just_rejected(rig: Rig) -> None:
+    rig.candidates((2, 6))
+    rig.script(answer(batch(clip("c01", score=3, verdict="reject", keep=(2, 3)))))
+    out = rig.run()
+    assert out.clips[0].dropped_by is None and out.clips[0].reject_reason == "weak_hook"
+    assert out.summary.trims_ignored == 1 and out.summary.dropped_trim_ignored == 0
+    assert out.warnings == []
+
+
+def test_selection_does_not_rank_a_clip_with_an_ignored_trim() -> None:
+    from clipmachine.stages.score import Trim
+
+    good = draft(0, 7)
+    bad = draft(1, 9)
+    bad.trim = Trim(0, 1, False, "note", ignored="length")
+    selection = select([good, bad], min_score=6, keep_top=8)
+    assert selection.ranks == {"c01": 1}
+    assert selection.dropped == {"c02": "trim_ignored"}
+
+
+def test_a_scored_json_from_brief_5_still_loads(rig: Rig) -> None:
+    rig.candidates((0, 2))
+    rig.script(answer(batch(clip("c01"))))
+    rig.run()
+    path = rig.run_dir / "scored.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for key in ("start_at_segment_edge", "end_at_segment_edge", "sentences", "kept_sentences"):
+        del data["clips"][0][key]
+    for key in ("dropped_trim_ignored", "trims_applied", "trims_ignored", "trims_out_of_range"):
+        del data["summary"][key]
+    old = ScoredFile.model_validate(data)
+    assert old.clips[0].sentences == 0 and old.summary.trims_applied == 0
+
+
 # --- scored.json, cost and logs ------------------------------------------------------------------
 
 

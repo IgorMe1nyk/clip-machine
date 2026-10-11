@@ -454,7 +454,9 @@ RejectReason = Literal[
     "below_threshold",
 ]
 REJECT_REASONS: tuple[str, ...] = RejectReason.__args__  # type: ignore[attr-defined]
-DroppedBy = Literal["min_score", "top_n"]  # our own selection, never the model's word
+DroppedBy = Literal[
+    "min_score", "top_n", "trim_ignored"
+]  # our own selection, never the model's word
 MIN_SCORE, MAX_SCORE = 1, 10
 
 
@@ -522,6 +524,11 @@ class ScoredClip(StrictModel):
     candidate_end: float
     trimmed: bool
     notes: list[str]
+    # added in Brief 5.1; defaults keep scored.json files from Brief 5 loadable
+    start_at_segment_edge: bool = False
+    end_at_segment_edge: bool = False
+    sentences: int = 0  # sentences in the candidate (the "of N" of a trim)
+    kept_sentences: KeepSentences | None = None  # the applied trim, 1-based within the candidate
 
 
 class ScoredSummary(StrictModel):
@@ -530,7 +537,11 @@ class ScoredSummary(StrictModel):
     rejected: int  # the model said reject
     dropped_min_score: int  # model said keep, score under score.min_score
     dropped_top_n: int  # model said keep, passed min_score, but outside clip.keep_top
+    dropped_trim_ignored: int = 0  # model said keep, but the trim it relied on was ignored
     trimmed: int
+    trims_applied: int = 0  # same number as trimmed
+    trims_ignored: int = 0  # outside clip.min_seconds..max_seconds
+    trims_out_of_range: int = 0  # sentence numbers outside the candidate
     reject_reasons: dict[str, int]  # the model's reasons only; every reason is present
     model: str
     effort: str

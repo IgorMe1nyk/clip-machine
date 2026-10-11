@@ -23,6 +23,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from clipmachine.context import RunContext
 from clipmachine.models import (
@@ -94,6 +95,8 @@ class Trim:
     end: float
     trimmed: bool
     note: str | None
+    ignored: Literal["range", "length"] | None = None  # why the model's keep_sentences was not used
+    keep: KeepSentences | None = None  # the range that was applied, when trimmed
 
 
 @dataclass
@@ -105,6 +108,9 @@ class Draft:
     clip: ClipScore
     trim: Trim
     notes: list[str]
+    sentences: int = 0  # sentences in the candidate
+    start_at_segment_edge: bool = False
+    end_at_segment_edge: bool = False
 
 
 def _remove_outputs(run_dir: Path, *, strict: bool) -> None:
@@ -258,6 +264,7 @@ def resolve_trim(
             candidate.end,
             False,
             f"trim ignored: sentences {keep.first}-{keep.last} are outside 1-{n}",
+            ignored="range",
         )
     if keep.first == 1 and keep.last == n:
         return whole
@@ -274,12 +281,19 @@ def resolve_trim(
     elif length > max_length + EPSILON:
         reason = f"{length:.1f} s is over the {max_length:g} s maximum"
     else:
-        return Trim(start, end, True, f"trimmed to sentences {keep.first}-{keep.last} of {n}")
+        return Trim(
+            start,
+            end,
+            True,
+            f"trimmed to sentences {keep.first}-{keep.last} of {n}",
+            keep=keep,
+        )
     return Trim(
         candidate.start,
         candidate.end,
         False,
         f"trim to sentences {keep.first}-{keep.last} ignored: {reason}",
+        ignored="length",
     )
 
 
@@ -293,8 +307,12 @@ class Selection:
 
 
 def select(drafts: list[Draft], min_score: int, keep_top: int) -> Selection:
-    """Kept = verdict keep and score >= min_score; best score first, ties to the earlier
-    candidate; the first keep_top get rank 1..N."""
+    """Kept = verdict keep, score >= min_score, and the model's trim (if any) was usable; best
+    score first, ties to the earlier candidate; the first keep_top get rank 1..N.
+
+    A clip whose trim was ignored is not kept: its score described a clip we did not cut. A low
+    score is reported as min_score first, whatever else is wrong with the clip.
+    """
     dropped: dict[str, DroppedBy] = {}
     eligible = []
     for draft in drafts:
@@ -302,6 +320,8 @@ def select(drafts: list[Draft], min_score: int, keep_top: int) -> Selection:
             continue
         if draft.clip.score < min_score:
             dropped[draft.candidate.id] = "min_score"
+        elif draft.trim.ignored is not None:
+            dropped[draft.candidate.id] = "trim_ignored"
         else:
             eligible.append(draft)
     ordered = sorted(eligible, key=lambda d: (-d.clip.score, d.position))
@@ -407,7 +427,18 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
             notes.append(f"hook_line is {_words(clip.hook_line)} words (over {MAX_HOOK_WORDS})")
         if _words(clip.reason) > MAX_REASON_WORDS:
             notes.append(f"reason is {_words(clip.reason)} words (over {MAX_REASON_WORDS})")
-        drafts.append(Draft(position, item.candidate, clip, trim, notes))
+        drafts.append(
+            Draft(
+                position,
+                item.candidate,
+                clip,
+                trim,
+                notes,
+                sentences=item.count,
+                start_at_segment_edge=item.start_at_segment_edge,
+                end_at_segment_edge=item.end_at_segment_edge,
+            )
+        )
 
     selection = select(drafts, cfg.min_score, app.clip.keep_top)
     scored: list[ScoredClip] = []
@@ -417,6 +448,9 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
         notes = list(draft.notes)
         if dropped_by == "min_score":
             notes.append(f"score {clip.score} is under min_score {cfg.min_score}")
+        elif dropped_by == "trim_ignored":
+            notes.append("the model's trim was ignored, so its score does not describe this clip")
+            warnings.append(f"{candidate_id}: kept by the model but its trim was ignored: not kept")
         elif dropped_by == "top_n":
             notes.append(f"outside the top {app.clip.keep_top}")
         scored.append(
@@ -437,6 +471,10 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
                 candidate_end=draft.candidate.end,
                 trimmed=draft.trim.trimmed,
                 notes=notes,
+                start_at_segment_edge=draft.start_at_segment_edge,
+                end_at_segment_edge=draft.end_at_segment_edge,
+                sentences=draft.sentences,
+                kept_sentences=draft.trim.keep,
             )
         )
 
@@ -451,7 +489,11 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
         rejected=sum(1 for s in scored if s.verdict == "reject"),
         dropped_min_score=sum(1 for s in scored if s.dropped_by == "min_score"),
         dropped_top_n=sum(1 for s in scored if s.dropped_by == "top_n"),
+        dropped_trim_ignored=sum(1 for s in scored if s.dropped_by == "trim_ignored"),
         trimmed=sum(1 for s in scored if s.trimmed),
+        trims_applied=sum(1 for d in drafts if d.trim.trimmed),
+        trims_ignored=sum(1 for d in drafts if d.trim.ignored == "length"),
+        trims_out_of_range=sum(1 for d in drafts if d.trim.ignored == "range"),
         reject_reasons=reasons,
         model=app.models.score,
         effort=cfg.effort,
@@ -474,8 +516,10 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
             f"{entry.verdict} {entry.reject_reason} dropped_by={entry.dropped_by} "
             f"{entry.start:.2f}-{entry.end:.2f} s trimmed={entry.trimmed}"
         )
+    ours = summary.dropped_min_score + summary.dropped_top_n + summary.dropped_trim_ignored
+    ignored = summary.trims_ignored + summary.trims_out_of_range
     log.info(
         f"score: {summary.kept} kept of {summary.candidates} ({summary.rejected} rejected, "
-        f"{summary.dropped_min_score + summary.dropped_top_n} dropped by our rules, "
-        f"{summary.trimmed} trimmed); cost ${summary.actual_usd:.4f}"
+        f"{ours} dropped by our rules, {summary.trims_applied} trims applied, {ignored} ignored); "
+        f"cost ${summary.actual_usd:.4f}"
     )
