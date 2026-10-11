@@ -1,5 +1,5 @@
-"""Stand-ins for the frame pipe and the Face Landmarker, so tracking tests need neither ffmpeg nor
-mediapipe. Everything is synthetic: blank frames and scripted faces."""
+"""Stand-ins for the frame pipe and the face finder, so tracking tests need neither ffmpeg, opencv
+nor mediapipe. Everything is synthetic: flat grey frames and scripted faces."""
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -11,10 +11,12 @@ import pytest
 
 from clipmachine import tracking
 from clipmachine.utils import faces
-from clipmachine.utils.faces import MODEL_NAME, RawFace
+from clipmachine.utils.faces import DETECTOR, LANDMARKER, FaceFinder, FoundFaces, RawFace
 
-# t (seconds from the clip start) -> the faces in that frame
+# t (seconds from the clip start) -> the faces in that frame, before small ones are dropped
 Scenario = Callable[[float], list[RawFace]]
+# t -> the grey level (0-255) the frame is painted with; a jump is a cut in the "source's edit"
+Look = Callable[[float], int]
 
 
 def talking(t: float) -> float:
@@ -39,13 +41,31 @@ def nobody(t: float) -> list[RawFace]:
     return []
 
 
+def steady(t: float) -> int:
+    return 0
+
+
+def cut_at(*times: float, levels: tuple[int, int] = (0, 255)) -> Look:
+    """The picture alternates between two grey levels at each of the given times."""
+
+    def look(t: float) -> int:
+        return levels[sum(1 for c in times if t >= c - 1e-9) % 2]
+
+    return look
+
+
 @dataclass
 class TrackFakes:
     scenario: Scenario = nobody
+    look: Look = steady
     frame_requests: list[list[str]] = field(default_factory=list)
+    frame_sizes: list[tuple[int, int]] = field(default_factory=list)
     previews: list[dict[str, Any]] = field(default_factory=list)
+    finder_args: list[dict[str, Any]] = field(default_factory=list)
     opened: int = 0
     closed: int = 0
+    fps: float = 10.0
+    index: int = 0  # frames handed to find_faces since read_frames was last called
 
     def read_frames(
         self,
@@ -57,20 +77,40 @@ class TrackFakes:
         scratch_dir: Path | None = None,
     ) -> Iterator["np.ndarray[Any, Any]"]:
         self.frame_requests.append(args)
+        self.frame_sizes.append((frame_w, frame_h))
         duration = float(args[args.index("-t") + 1])
-        fps = float(args[args.index("-vf") + 1].split(",")[0].removeprefix("fps="))
-        for _ in range(int(round(duration * fps))):
-            yield np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
+        self.fps = float(args[args.index("-vf") + 1].split(",")[0].removeprefix("fps="))
+        self.index = 0
+        for k in range(int(round(duration * self.fps))):
+            grey = self.look(k / self.fps)
+            yield np.full((frame_h, frame_w, 3), grey, dtype=np.uint8)
 
-    def open_landmarker(self, model_path: Path, max_faces: int) -> object:
+    def open_finder(
+        self, detector_path: Path, landmarker_path: Path, **settings: Any
+    ) -> FaceFinder:
         self.opened += 1
-        assert model_path.name == MODEL_NAME
-        return object()
+        assert detector_path.name == DETECTOR.name
+        assert landmarker_path.name == LANDMARKER.name
+        self.finder_args.append(settings)
+        return FaceFinder(
+            detector=None,
+            landmarker=None,
+            detect_width=settings["detect_width"],
+            crop_scale=settings["crop_scale"],
+            min_face_height=settings["min_face_height"],
+            max_faces=settings["max_faces"],
+        )
 
-    def detect(self, handle: object, frame: Any, t_ms: int) -> list[RawFace]:
-        return self.scenario(t_ms / 1000)
+    def find_faces(self, finder: FaceFinder, frame: Any) -> FoundFaces:
+        """What the real finder returns: boxes under min_face_height dropped but still counted in
+        largest_height, and at most max_faces kept."""
+        t = self.index / self.fps
+        self.index += 1
+        seen = self.scenario(t)
+        kept = [f for f in seen if f.h >= finder.min_face_height][: finder.max_faces]
+        return FoundFaces(faces=kept, largest_height=max((f.h for f in seen), default=0.0))
 
-    def close_landmarker(self, handle: object) -> None:
+    def close_finder(self, finder: FaceFinder) -> None:
         self.closed += 1
 
     def write_preview(
@@ -88,20 +128,23 @@ class TrackFakes:
         out.write_bytes(b"fake preview")
 
 
-def install(monkeypatch: pytest.MonkeyPatch, scenario: Scenario = nobody) -> TrackFakes:
-    fakes = TrackFakes(scenario=scenario)
+def install(
+    monkeypatch: pytest.MonkeyPatch, scenario: Scenario = nobody, look: Look = steady
+) -> TrackFakes:
+    fakes = TrackFakes(scenario=scenario, look=look)
     monkeypatch.setattr(tracking.ffmpeg, "read_frames", fakes.read_frames)
     monkeypatch.setattr(tracking.ffmpeg, "write_preview", fakes.write_preview)
-    monkeypatch.setattr(tracking.faces, "open_landmarker", fakes.open_landmarker)
-    monkeypatch.setattr(tracking.faces, "detect", fakes.detect)
-    monkeypatch.setattr(tracking.faces, "close_landmarker", fakes.close_landmarker)
+    monkeypatch.setattr(tracking.faces, "open_finder", fakes.open_finder)
+    monkeypatch.setattr(tracking.faces, "find_faces", fakes.find_faces)
+    monkeypatch.setattr(tracking.faces, "close_finder", fakes.close_finder)
     return fakes
 
 
 def write_model(project: Path) -> Path:
-    """A tiny stand-in for the model file where the track command looks for it."""
-    folder = faces.model_dir(project)
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / MODEL_NAME
-    path.write_bytes(b"fake face model")
-    return path
+    """Tiny stand-ins for both model files where the track command looks for them. Returns the
+    landmarker's path."""
+    for spec in (DETECTOR, LANDMARKER):
+        folder = faces.model_dir(project, spec)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / spec.name).write_bytes(b"fake " + spec.name.encode())
+    return faces.model_dir(project) / LANDMARKER.name

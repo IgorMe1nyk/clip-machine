@@ -200,7 +200,14 @@ class SpeakerConfig(StrictModel):
     before this section existed still load."""
 
     sample_fps: float = Field(default=10, gt=0, le=30)  # frames analysed per second of clip
-    analysis_width: int = Field(default=640, ge=64)  # pixels; frames are scaled to this width
+    analysis_width: int = Field(default=640, ge=64)  # unused since Brief 8.1; old files carry it
+    detect_width: int = Field(default=960, ge=64)  # pixels; frames are scaled to this for YuNet
+    # Frames are decoded at this width (never above the source's); mouth crops are cut from them.
+    landmark_width: int = Field(default=1920, ge=64)
+    detect_score: float = Field(default=0.7, gt=0, lt=1)  # YuNet score a face needs
+    face_crop_scale: float = Field(default=2.0, ge=1, le=6)  # crop around a face, x its box
+    # Picture change between two samples (0-1) that counts as a cut in the source's edit.
+    cut_threshold: float = Field(default=0.12, gt=0, le=1)
     max_faces: int = Field(default=4, ge=1, le=8)
     window_seconds: float = Field(default=0.5, gt=0)  # the speaker is chosen per window
     min_shot_seconds: float = Field(default=1.5, gt=0)  # no shot is shorter than this
@@ -209,7 +216,9 @@ class SpeakerConfig(StrictModel):
     confirm_windows: int = Field(default=2, ge=1)  # ... for this many windows in a row
     dead_zone: float = Field(default=0.08, ge=0, le=1)  # fraction of the crop width
     smoothing: float = Field(default=0.25, gt=0, le=1)  # exponential factor; 1 = no smoothing
-    min_face_height: float = Field(default=0.08, gt=0, le=1)  # fraction of the frame height
+    # Fraction of the frame height; smaller faces are ignored, and a clip where nearly all are
+    # smaller falls back to the centre crop.
+    min_face_height: float = Field(default=0.08, gt=0, le=1)
     link_max_distance: float = Field(default=0.12, gt=0, le=1)  # fraction of the frame width
     min_speech_words_per_window: int = Field(default=1, ge=1)
     debug_preview: bool = False  # also write clips/<id>.track.preview.mp4
@@ -761,6 +770,9 @@ class TrackSummary(StrictModel):
     face_time_pct: float  # % of samples with at least one face
     samples: int
     analysis_seconds: float
+    cuts: int = 0  # shot cuts found in the source's edit
+    faces_per_sample: float = 0.0
+    mouth_read_pct: float = 0.0  # % of face samples whose mouth could be read
 
 
 class TrackFile(StrictModel):
@@ -774,12 +786,15 @@ class TrackFile(StrictModel):
     settings: SpeakerConfig
     mediapipe_version: str | None
     model_sha256: str | None
+    detector_sha256: str | None = None
+    opencv_version: str | None = None
     frame: TrackFrame
     crop_w: int  # width of the 9:16 window in source pixels
     shots: list[TrackShot]
     samples: list[TrackSample]
     fallback_reason: str | None  # set: every crop_x is the centre crop
     summary: TrackSummary
+    cuts: list[float] = []  # shot cuts, seconds from the clip start
 
 
 CostStatus = Literal["ok", "refused", "failed", "unconfirmed"]

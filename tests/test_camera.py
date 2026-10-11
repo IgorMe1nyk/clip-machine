@@ -373,6 +373,15 @@ def test_the_largest_face_decides_not_the_smallest() -> None:
     assert fallback_reason(frames, cfg(), 1920, 606) is None
 
 
+def test_largest_heights_decide_when_given() -> None:
+    kept: list[list[FaceSample]] = [[] for _ in range(10)]  # every face was dropped as small
+    small = [0.05] * 10
+    assert fallback_reason(kept, cfg(), 1920, 606, small) == FALLBACK_FACES_TOO_SMALL
+    assert fallback_reason(kept, cfg(), 1920, 606, [0.0] * 10) == FALLBACK_NO_FACE
+    mixed = [0.0] * 5 + [0.3] * 5
+    assert fallback_reason(kept, cfg(), 1920, 606, mixed) is None  # zeros are samples without faces
+
+
 def test_a_source_not_wider_than_the_crop_is_a_fallback() -> None:
     frames = [[face(0.0, 0.5)]]
     assert fallback_reason(frames, cfg(), 606, 606) == FALLBACK_SOURCE_NOT_WIDER

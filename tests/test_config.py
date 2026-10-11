@@ -480,6 +480,26 @@ def test_config_without_speaker_section_still_loads(project: Path, tmp_path: Pat
     assert load_resolved_file(target).app.speaker.max_faces == 4
 
 
+def test_brief_8_1_speaker_defaults() -> None:
+    cfg = SpeakerConfig()
+    assert (cfg.detect_width, cfg.landmark_width) == (960, 1920)
+    assert (cfg.detect_score, cfg.face_crop_scale, cfg.cut_threshold) == (0.7, 2.0, 0.12)
+
+
+def test_a_speaker_section_from_before_brief_8_1_still_loads(project: Path, tmp_path: Path) -> None:
+    old = {"sample_fps": 10, "analysis_width": 640, "max_faces": 4, "min_face_height": 0.08}
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "example-client"), target)
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    data["config"]["speaker"] = old  # analysis_width, none of the new keys
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    speaker = load_resolved_file(target).app.speaker
+
+    assert speaker.analysis_width == 640
+    assert speaker.landmark_width == 1920 and speaker.cut_threshold == 0.12
+
+
 def test_crop_center_is_the_default_and_speaker_is_accepted(project: Path) -> None:
     assert load_app_config(project).video.crop == "center"
     _default(project, lambda d: d["video"].update(crop="speaker"))
@@ -507,6 +527,14 @@ def test_crop_face_is_rejected_with_a_clear_message(project: Path) -> None:
         ({"dead_zone": 1.5}, "speaker.dead_zone"),
         ({"min_face_height": 0}, "speaker.min_face_height"),
         ({"link_max_distance": 0}, "speaker.link_max_distance"),
+        ({"detect_width": 32}, "speaker.detect_width"),
+        ({"landmark_width": 32}, "speaker.landmark_width"),
+        ({"detect_score": 0}, "speaker.detect_score"),
+        ({"detect_score": 1}, "speaker.detect_score"),
+        ({"face_crop_scale": 0.5}, "speaker.face_crop_scale"),
+        ({"face_crop_scale": 7}, "speaker.face_crop_scale"),
+        ({"cut_threshold": 0}, "speaker.cut_threshold"),
+        ({"cut_threshold": 1.5}, "speaker.cut_threshold"),
         ({"sample": 10}, "speaker.sample"),  # typo: unknown key
     ],
 )

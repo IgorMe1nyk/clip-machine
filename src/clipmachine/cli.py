@@ -148,8 +148,10 @@ def _cmd_track(args: argparse.Namespace, root: Path) -> int:
     for result in results:
         print(
             f"{result.clip_id}: {result.fallback_reason or 'ok'}, "
-            f"faces {result.faces_seen}, switches {result.switches}, "
-            f"face time {result.face_time_pct:.0f}%, {result.analysis_seconds:.1f} s"
+            f"faces {result.faces_seen}, {result.faces_per_sample:.2f} per sample, "
+            f"cuts {result.cuts}, switches {result.switches}, "
+            f"face time {result.face_time_pct:.0f}%, mouth read {result.mouth_read_pct:.0f}%, "
+            f"{result.analysis_seconds:.1f} s"
         )
     return EXIT_OK
 

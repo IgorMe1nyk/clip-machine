@@ -66,11 +66,6 @@ DETECTOR = ModelSpec(
     label="face detector model",
 )
 
-# The landmarker's old names, still used by tracking and the tests.
-MODEL_URL = LANDMARKER.url
-MODEL_DIR = LANDMARKER.folder
-MODEL_NAME = LANDMARKER.name
-
 DOWNLOAD_TIMEOUT_SECONDS = 60
 DOWNLOAD_CHUNK_BYTES = 1 << 16
 MAX_REASON_CHARS = 200
@@ -135,20 +130,6 @@ class FaceFinder:
     crop_scale: float
     min_face_height: float
     max_faces: int
-
-    def close(self) -> None:
-        close = getattr(self.landmarker, "close", None)
-        if callable(close):
-            close()
-
-
-@dataclass
-class LandmarkerHandle:
-    """An open landmarker and the last timestamp given to it (VIDEO mode needs strictly
-    increasing ones)."""
-
-    landmarker: Any
-    last_ms: int = -1
 
     def close(self) -> None:
         close = getattr(self.landmarker, "close", None)
@@ -372,7 +353,15 @@ def mediapipe_version() -> str | None:
         return None
 
 
-# --- SEAMS: the only places that touch mediapipe; unit tests replace these ----------------------
+def opencv_version() -> str | None:
+    """The installed OpenCV version, read from package metadata (nothing is imported)."""
+    try:
+        return importlib.metadata.version("opencv-contrib-python")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+# --- the libraries, imported on first use ---------------------------------------------------
 
 
 def _mediapipe() -> Any:
@@ -383,45 +372,6 @@ def _mediapipe() -> Any:
             f"mediapipe could not be imported ({_one_line(exc)}); run: uv sync --locked"
         ) from exc
     return mp
-
-
-def open_landmarker(model_path: Path, max_faces: int) -> Any:  # SEAM
-    """A Face Landmarker in VIDEO mode, wrapped in a LandmarkerHandle. Close it with .close()."""
-    mp = _mediapipe()
-    try:
-        vision = mp.tasks.vision
-        options = vision.FaceLandmarkerOptions(
-            base_options=mp.tasks.BaseOptions(model_asset_path=str(model_path)),
-            running_mode=vision.RunningMode.VIDEO,
-            num_faces=max_faces,
-            output_face_blendshapes=False,
-            output_facial_transformation_matrixes=False,
-            min_face_detection_confidence=0.5,
-            min_face_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
-        )
-        return LandmarkerHandle(vision.FaceLandmarker.create_from_options(options))
-    except Exception as exc:
-        raise FacesError(f"could not start the face landmarker: {_one_line(exc)}") from exc
-
-
-def detect(handle: Any, frame_rgb: "NDArray[np.uint8]", t_ms: int) -> list[RawFace]:  # SEAM
-    """Faces in one RGB frame. Timestamps are made strictly increasing, as VIDEO mode requires."""
-    import numpy as np
-
-    mp = _mediapipe()
-    timestamp = max(t_ms, handle.last_ms + 1)
-    handle.last_ms = timestamp
-    image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(frame_rgb))
-    try:
-        result = handle.landmarker.detect_for_video(image, timestamp)
-    except Exception as exc:
-        raise FacesError(f"face detection failed: {_one_line(exc)}") from exc
-    return [raw_face(landmarks) for landmarks in result.face_landmarks]
-
-
-def close_landmarker(handle: Any) -> None:  # SEAM
-    handle.close()
 
 
 # --- SEAMS for the finder: YuNet finds faces, the landmarker reads mouths on crops ---------------

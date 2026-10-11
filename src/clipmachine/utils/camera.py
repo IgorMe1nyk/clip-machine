@@ -512,15 +512,25 @@ def follow_segments(
 
 
 def fallback_reason(
-    frames: Sequence[Sequence[FaceSample]], cfg: SpeakerConfig, frame_w: int, crop_w: int
+    frames: Sequence[Sequence[FaceSample]],
+    cfg: SpeakerConfig,
+    frame_w: int,
+    crop_w: int,
+    largest_heights: Sequence[float] | None = None,
 ) -> str | None:
     """Why a centre crop should be used instead of following faces, or None to follow them.
 
-    Face sizes are fractions of the frame, so the frame height is not needed here.
+    Face sizes are fractions of the frame, so the frame height is not needed here. When
+    `largest_heights` is given (the tallest face the detector saw in each sample, before small ones
+    were dropped; 0.0 for none), "no face" and "faces too small" are judged from it instead of
+    from `frames`.
     """
     if frame_w <= crop_w:
         return FALLBACK_SOURCE_NOT_WIDER
-    largest = [max(f.h for f in faces) for faces in frames if faces]
+    if largest_heights is None:
+        largest = [max(f.h for f in faces) for faces in frames if faces]
+    else:
+        largest = [h for h in largest_heights if h > 0.0]
     if not largest:
         return FALLBACK_NO_FACE
     small = sum(1 for h in largest if h < cfg.min_face_height)

@@ -198,22 +198,22 @@ def test_missing_model_is_an_error_that_names_the_fetch_command(tmp_path: Path) 
 
 
 def test_model_with_the_wrong_hash_is_an_error(tmp_path: Path) -> None:
-    (tmp_path / faces.MODEL_NAME).write_bytes(b"tiny fake model")
+    (tmp_path / faces.LANDMARKER.name).write_bytes(b"tiny fake model")
     with pytest.raises(FacesError, match="SHA-256"):
         ensure_model(tmp_path, expected_sha256="0" * 64)
-    assert (tmp_path / faces.MODEL_NAME).read_bytes() == b"tiny fake model"  # never replaced
+    assert (tmp_path / faces.LANDMARKER.name).read_bytes() == b"tiny fake model"  # never replaced
 
 
 def test_model_with_the_right_hash_is_returned(tmp_path: Path) -> None:
     data = b"tiny fake model"
-    (tmp_path / faces.MODEL_NAME).write_bytes(data)
+    (tmp_path / faces.LANDMARKER.name).write_bytes(data)
     path = ensure_model(tmp_path, expected_sha256=hashlib.sha256(data).hexdigest())
-    assert path == tmp_path / faces.MODEL_NAME
+    assert path == tmp_path / faces.LANDMARKER.name
 
 
 def test_without_a_pinned_hash_any_present_file_is_accepted(tmp_path: Path) -> None:
-    (tmp_path / faces.MODEL_NAME).write_bytes(b"x")
-    assert ensure_model(tmp_path) == tmp_path / faces.MODEL_NAME
+    (tmp_path / faces.LANDMARKER.name).write_bytes(b"x")
+    assert ensure_model(tmp_path) == tmp_path / faces.LANDMARKER.name
 
 
 def test_model_dir_is_inside_the_project() -> None:
@@ -295,20 +295,20 @@ def test_download_writes_the_file_and_returns_size_and_hash(
     result = download_model(target_dir)
 
     data = b"model bytes" * 1000
-    assert served == [faces.MODEL_URL]
-    assert result.path == target_dir / faces.MODEL_NAME
+    assert served == [faces.LANDMARKER.url]
+    assert result.path == target_dir / faces.LANDMARKER.name
     assert result.path.read_bytes() == data
     assert result.size_bytes == len(data)
     assert result.sha256 == hashlib.sha256(data).hexdigest()
-    assert [p.name for p in target_dir.iterdir()] == [faces.MODEL_NAME]  # no temp file left
+    assert [p.name for p in target_dir.iterdir()] == [faces.LANDMARKER.name]  # no temp file left
 
 
 def test_download_never_replaces_an_existing_file(tmp_path: Path, served: list[str]) -> None:
-    (tmp_path / faces.MODEL_NAME).write_bytes(b"old")
+    (tmp_path / faces.LANDMARKER.name).write_bytes(b"old")
     with pytest.raises(FacesError, match="already exists"):
         download_model(tmp_path)
     assert served == []
-    assert (tmp_path / faces.MODEL_NAME).read_bytes() == b"old"
+    assert (tmp_path / faces.LANDMARKER.name).read_bytes() == b"old"
 
 
 def test_download_with_a_hash_mismatch_saves_nothing(tmp_path: Path, served: list[str]) -> None:
@@ -547,22 +547,16 @@ def test_find_faces_hands_the_landmarker_the_crop_crop_square_describes(
     assert fake.crops == [(side, side)]
 
 
-# --- the real landmarker (opt in) ---------------------------------------------------------
+def test_opencv_version_reads_metadata_without_importing() -> None:
+    import sys
+
+    before = "cv2" in sys.modules
+    version = faces.opencv_version()
+    assert version is None or version[0].isdigit()
+    assert ("cv2" in sys.modules) == before
 
 
-@pytest.mark.mediapipe
-def test_real_landmarker_finds_no_face_in_a_blank_image() -> None:
-    model = REPO_ROOT / faces.MODEL_DIR / faces.MODEL_NAME
-    if not model.is_file():
-        pytest.skip(f"face model not present at {faces.MODEL_DIR}; run: {faces.FETCH_COMMAND}")
-    path = ensure_model(model.parent)
-    handle = faces.open_landmarker(path, 2)
-    try:
-        blank = np.zeros((360, 640, 3), dtype=np.uint8)
-        assert faces.detect(handle, blank, 0) == []
-        assert faces.detect(handle, blank, 0) == []  # same timestamp: bumped, not an error
-    finally:
-        faces.close_landmarker(handle)
+# --- the real finder (opt in) -------------------------------------------------------------
 
 
 @pytest.mark.mediapipe

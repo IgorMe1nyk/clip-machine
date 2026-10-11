@@ -1,6 +1,7 @@
 """`clipmachine track` end to end with the frame pipe and the landmarker faked."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -51,15 +52,20 @@ def test_track_writes_a_track_file_per_kept_clip_and_prints_one_line_each(
     assert clip_files(run_dir) == ["c01.track.json", "c02.track.json"]  # c03 was not kept
     lines = [line for line in out.splitlines() if line.strip()]
     assert len(lines) == 2
-    assert lines[0].startswith("c01: ok, faces 2, switches 1, face time 100%, ")
-    assert lines[1].startswith("c02: ok, faces 2, switches 1, face time 100%, ")
-    assert lines[0].endswith(" s")
+    shape = (
+        r"{id}: ok, faces 2, 2\.00 per sample, cuts 0, switches 1, face time 100%, "
+        r"mouth read 100%, \d+\.\d s"
+    )
+    assert re.fullmatch(shape.format(id="c01"), lines[0])
+    assert re.fullmatch(shape.format(id="c02"), lines[1])
     assert "w10" not in out  # no transcript text
 
     track = TrackFile.model_validate_json((run_dir / "clips" / "c02.track.json").read_text("utf-8"))
     assert (track.clip_id, track.clip_start, track.clip_end) == ("c02", 40.0, 62.5)
     assert track.source.sha256 == "0" * 64
-    assert track.model_sha256 == faces.file_sha256(faces.model_dir(project) / faces.MODEL_NAME)
+    assert track.model_sha256 == faces.file_sha256(faces.model_dir(project) / faces.LANDMARKER.name)
+    detector = faces.model_dir(project, faces.DETECTOR) / faces.DETECTOR.name
+    assert track.detector_sha256 == faces.file_sha256(detector)
     assert (run_dir / "run.json").read_bytes() == run_json_before  # stage states untouched
 
 
@@ -73,7 +79,8 @@ def test_track_prints_the_fallback_reason(
     assert cli.main(["track", str(run_dir)], root=project) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].startswith("c01: no_face, faces 0, switches 0, face time 0%, ")
+    assert lines[0].startswith("c01: no_face, faces 0, 0.00 per sample, cuts 0, switches 0, ")
+    assert "face time 0%, mouth read 0%, " in lines[0]
 
 
 def test_preview_flag_writes_the_preview_files(
@@ -148,6 +155,26 @@ def test_a_missing_model_is_an_error_and_nothing_is_written(
     err = capsys.readouterr().err
     assert "face model not found" in err and "fetch-face-model" in err
     assert not (faces.model_dir(project)).exists()  # the track command never downloads
+    assert clip_files(run_dir) == []
+    assert fakes.opened == 0
+
+
+def test_a_missing_detector_is_an_error_and_nothing_is_written(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_dir = make_run(project)
+    write_model(project)
+    detector = faces.model_dir(project, faces.DETECTOR) / faces.DETECTOR.name
+    detector.unlink()
+    fakes = track_fakes.install(monkeypatch)
+
+    code = cli.main(["track", str(run_dir)], root=project)
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "face detector model not found" in err
+    assert "clipmachine fetch-face-model" in err
+    assert not detector.exists()  # the track command never downloads
     assert clip_files(run_dir) == []
     assert fakes.opened == 0
 
