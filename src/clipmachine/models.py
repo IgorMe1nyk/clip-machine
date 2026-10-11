@@ -67,7 +67,7 @@ MomentType = Literal["story", "opinion", "tip", "insight", "funny", "emotional"]
 
 class CandidatesConfig(StrictModel):
     block_minutes: float = Field(default=10, gt=0)
-    per_block_max: int = Field(default=5, gt=0)
+    per_block_max: int = Field(default=8, gt=0)
     max_output_tokens: int = Field(default=2000, gt=0)
     snap_padding_seconds: float = Field(default=0.2, ge=0)
     dedupe_overlap: float = Field(default=0.5, ge=0, le=1)

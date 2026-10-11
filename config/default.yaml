@@ -22,7 +22,7 @@ budget:
   max_usd_per_day: 5.00      # UTC day, counted from runs/_ledger/costs.jsonl
 candidates:
   block_minutes: 10
-  per_block_max: 5
+  per_block_max: 8
   max_output_tokens: 2000
   snap_padding_seconds: 0.2
   dedupe_overlap: 0.5        # overlap / shorter length; above this the later one is dropped

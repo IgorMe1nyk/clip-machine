@@ -144,6 +144,7 @@ class Rig:
         cfg = resolved.app.candidates.model_copy(
             update={
                 "block_minutes": self.block_minutes,
+                "per_block_max": 5,  # the quota these tests were written for
                 "preferred_min_seconds": self.preferred[0],
                 "preferred_max_seconds": self.preferred[1],
             }

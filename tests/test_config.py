@@ -307,7 +307,7 @@ def test_default_pricing_and_limits_match_the_brief(project: Path) -> None:
     assert app.pricing.source.startswith("https://platform.claude.com/")
     assert (app.budget.max_usd_per_run, app.budget.max_usd_per_day) == (1.0, 5.0)
     cand = app.candidates
-    assert (cand.block_minutes, cand.per_block_max, cand.max_output_tokens) == (10, 5, 2000)
+    assert (cand.block_minutes, cand.per_block_max, cand.max_output_tokens) == (10, 8, 2000)
     assert (cand.snap_padding_seconds, cand.dedupe_overlap) == (0.2, 0.5)
     assert (cand.thinking, cand.effort) == ("disabled", "low")
     score = app.score
@@ -334,7 +334,7 @@ def test_resolved_file_from_before_brief_4_still_loads(project: Path, tmp_path: 
     app = load_resolved_file(target).app
     assert app.pricing.models == {}  # no guessed prices: a call is refused instead
     assert app.budget.max_usd_per_run == 1.0
-    assert app.candidates.per_block_max == 5
+    assert app.candidates.per_block_max == 8  # the model default, no value in the file
     assert (app.score.max_per_call, app.score.thinking) == (20, "between_tools")
 
 
@@ -378,3 +378,12 @@ def test_price_without_a_positive_rate_is_rejected(project: Path) -> None:
     _default(project, mutate)
     with pytest.raises(ConfigError, match="output_per_mtok"):
         load_app_config(project)
+
+
+def test_old_resolved_file_keeps_its_own_per_block_max(project: Path, tmp_path: Path) -> None:
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "general"), target)
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    data["config"]["candidates"]["per_block_max"] = 5  # a run folder made before Brief 5.1
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert load_resolved_file(target).app.candidates.per_block_max == 5
