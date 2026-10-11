@@ -200,3 +200,93 @@ def test_resolved_config_roundtrip(project: Path, tmp_path: Path) -> None:
     dump_resolved(resolved, target)
     again = load_resolved_file(target)
     assert again == resolved
+
+
+# --- pricing, budget and candidates (Brief 4) ----------------------------------------------------
+
+
+def test_default_yaml_has_every_new_key(project: Path) -> None:
+    from clipmachine.models import BudgetConfig, CandidatesConfig
+
+    data = yaml.safe_load((project / "config" / "default.yaml").read_text(encoding="utf-8"))
+    assert set(data["budget"]) == set(BudgetConfig.model_fields)
+    assert set(data["candidates"]) == set(CandidatesConfig.model_fields)
+    assert set(data["pricing"]) == {"checked", "source", "models"}
+
+
+def test_default_pricing_and_limits_match_the_brief(project: Path) -> None:
+    app = load_app_config(project)
+    assert app.models.find == "claude-haiku-5-5"
+    assert app.models.score == "claude-sonnet-5-5"
+    haiku = app.pricing.models["claude-haiku-5-5"]
+    sonnet = app.pricing.models["claude-sonnet-5-5"]
+    assert (haiku.input_per_mtok, haiku.output_per_mtok, haiku.max_prompt_tokens) == (
+        0.10,
+        0.50,
+        100_000,
+    )
+    assert (sonnet.input_per_mtok, sonnet.output_per_mtok, sonnet.max_prompt_tokens) == (
+        2.0,
+        10.0,
+        None,
+    )
+    assert app.pricing.checked == "2026-10-10"
+    assert app.pricing.source.startswith("https://platform.claude.com/")
+    assert (app.budget.max_usd_per_run, app.budget.max_usd_per_day) == (1.0, 5.0)
+    cand = app.candidates
+    assert (cand.block_minutes, cand.per_block_max, cand.max_output_tokens) == (10, 5, 2000)
+    assert (cand.snap_padding_seconds, cand.dedupe_overlap) == (0.2, 0.5)
+    assert (cand.thinking, cand.effort) == ("disabled", "low")
+
+
+def test_general_client_loads_with_its_clip_length(project: Path) -> None:
+    resolved = load_resolved(project, "general")
+    assert resolved.rules.niche == "general interviews"
+    assert (resolved.app.clip.min_seconds, resolved.app.clip.max_seconds) == (20, 60)
+    assert "sponsor reads" in resolved.rules.avoid
+
+
+def test_resolved_file_from_before_brief_4_still_loads(project: Path, tmp_path: Path) -> None:
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "example-client"), target)
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    for key in ("pricing", "budget", "candidates"):
+        del data["config"][key]
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    app = load_resolved_file(target).app
+    assert app.pricing.models == {}  # no guessed prices: a call is refused instead
+    assert app.budget.max_usd_per_run == 1.0
+    assert app.candidates.per_block_max == 5
+
+
+@pytest.mark.parametrize(
+    ("section", "update", "expected"),
+    [
+        ("budget", {"max_usd_per_run": 0}, "budget.max_usd_per_run"),
+        ("budget", {"max_usd_per_day": -1}, "budget.max_usd_per_day"),
+        ("candidates", {"block_minutes": 0}, "candidates.block_minutes"),
+        ("candidates", {"per_block_max": 0}, "candidates.per_block_max"),
+        ("candidates", {"max_output_tokens": 0}, "candidates.max_output_tokens"),
+        ("candidates", {"snap_padding_seconds": -0.1}, "candidates.snap_padding_seconds"),
+        ("candidates", {"dedupe_overlap": 1.5}, "candidates.dedupe_overlap"),
+        ("candidates", {"thinking": "enabled"}, "candidates.thinking"),
+        ("candidates", {"effort": "extreme"}, "candidates.effort"),
+        ("candidates", {"blocks": 3}, "candidates.blocks"),  # typo: unknown key
+    ],
+)
+def test_invalid_budget_and_candidates_settings_are_rejected(
+    project: Path, section: str, update: dict[str, Any], expected: str
+) -> None:
+    _default(project, lambda d: d[section].update(update))
+    with pytest.raises(ConfigError, match=expected):
+        load_app_config(project)
+
+
+def test_price_without_a_positive_rate_is_rejected(project: Path) -> None:
+    def mutate(d: dict[str, Any]) -> None:
+        d["pricing"]["models"]["claude-haiku-5-5"]["output_per_mtok"] = 0
+
+    _default(project, mutate)
+    with pytest.raises(ConfigError, match="output_per_mtok"):
+        load_app_config(project)

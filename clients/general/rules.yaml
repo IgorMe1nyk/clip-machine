@@ -1,0 +1,16 @@
+name: General interviews
+niche: general interviews
+audience: general adult audience
+tone: natural, conversational
+prefer:
+  - stories
+  - strong opinions
+  - emotional moments
+  - practical advice
+  - surprising facts
+avoid:
+  - sponsor reads
+  - intros and outros
+  - small talk
+  - inside jokes
+clip_length: { min: 20, max: 60 }

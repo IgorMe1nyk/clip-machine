@@ -6,6 +6,28 @@ clip:
 models:
   find: claude-haiku-5-5     # cheap pass
   score: claude-sonnet-5-5   # quality pass
+pricing:                     # USD per million tokens; copied from the live pricing page
+  checked: "2026-10-10"
+  source: https://platform.claude.com/docs/en/about-claude/pricing
+  models:
+    claude-haiku-5-5:
+      input_per_mtok: 0.10
+      output_per_mtok: 0.50
+      max_prompt_tokens: 100000   # above this the price is higher; the guard refuses such calls
+    claude-sonnet-5-5:
+      input_per_mtok: 2.00
+      output_per_mtok: 10.00
+budget:
+  max_usd_per_run: 1.00
+  max_usd_per_day: 5.00      # UTC day, counted from runs/_ledger/costs.jsonl
+candidates:
+  block_minutes: 10
+  per_block_max: 5
+  max_output_tokens: 2000
+  snap_padding_seconds: 0.2
+  dedupe_overlap: 0.5        # overlap / shorter length; above this the later one is dropped
+  thinking: disabled         # disabled / adaptive (Haiku 5.5 accepts both)
+  effort: low                # low / medium / high / xhigh / max
 transcribe:                  # defaults chosen in D-011 from the Brief 3 benchmark (setting B)
   model: small               # tiny base small medium large-v3 turbo distil-large-v3 ...
   device: auto               # auto / cpu / cuda
