@@ -15,6 +15,7 @@ from clipmachine.pipeline import (
 )
 from clipmachine.preflight import MissingToolError
 from clipmachine.runs import RunError
+from clipmachine.stages.report import REPORT_HTML
 
 EXIT_OK = 0
 EXIT_STAGE_FAILED = 1
@@ -45,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="resume only: reset this stage and every later one, then run",
     )
 
-    report = sub.add_parser("report", help="show the report for a run folder (stub)")
+    report = sub.add_parser("report", help="print the path of a run folder's report.html")
     report.add_argument("run_folder", type=Path)
     return parser
 
@@ -88,6 +89,9 @@ def _cmd_run(args: argparse.Namespace, root: Path) -> int:
         print("nothing to do: every stage is already done")
     else:
         print(f"done: ran {', '.join(outcome.ran)}")
+    report_path = run_dir / REPORT_HTML
+    if report_path.is_file():
+        print(f"report: {report_path}")
     return EXIT_OK
 
 
@@ -95,7 +99,13 @@ def _cmd_report(args: argparse.Namespace) -> int:
     run_folder: Path = args.run_folder
     if not is_run_folder(run_folder):
         raise RunError(f"{run_folder} is not a run folder (no run.json)")
-    print("report is not implemented yet")
+    report_path = run_folder / REPORT_HTML
+    if not report_path.is_file():
+        raise RunError(
+            f"no {REPORT_HTML} in {run_folder}; run: "
+            f"clipmachine run {run_folder} --from-stage report"
+        )
+    print(report_path)
     return EXIT_OK
 
 

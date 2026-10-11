@@ -11,6 +11,8 @@ from clipmachine.cli import main
 from clipmachine.context import RunContext
 from clipmachine.pipeline import STAGE_NAMES
 from clipmachine.preflight import MissingToolError
+from clipmachine.stages import report
+from test_report import stage_run_dir
 
 
 def make_media(project: Path, name: str = "sample.mp4") -> Path:
@@ -195,12 +197,33 @@ def test_missing_ffmpeg_exits_two_with_guidance(
     assert list((project / "runs").iterdir()) == []
 
 
-def test_report_stub(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_prints_the_report_path(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_dir, _ = stage_run_dir(project)
+    monkeypatch.setitem(pipeline.STAGES, "report", report.run)
+    report_path = run_dir / "report.html"
+
+    assert run_main(project, "run", str(run_dir)) == 0
+    assert f"report: {report_path}" in capsys.readouterr().out
+
+    assert run_main(project, "run", str(run_dir)) == 0  # nothing to do, path still printed
+    out = capsys.readouterr().out
+    assert "nothing to do" in out
+    assert f"report: {report_path}" in out
+
+    assert run_main(project, "report", str(run_dir)) == 0
+    assert str(report_path) in capsys.readouterr().out
+
+
+def test_report_without_a_report_file_says_how_to_build_it(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     run_main(project, "run", str(make_media(project)), "--client", "example-client")
     run_dir = only_run_dir(project)
     capsys.readouterr()
-    assert run_main(project, "report", str(run_dir)) == 0
-    assert "not implemented yet" in capsys.readouterr().out
+    assert run_main(project, "report", str(run_dir)) == 2
+    assert "--from-stage report" in capsys.readouterr().err
 
 
 def test_report_rejects_non_run_folder(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
