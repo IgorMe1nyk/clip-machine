@@ -268,7 +268,10 @@ def run(ctx: RunContext) -> None:
     root = (ctx.project_root if ctx.project_root is not None else REPO_ROOT).resolve()
     app = ctx.config.app
     if app.video.crop != "center":
-        raise RunError(f"video.crop {app.video.crop!r} is not implemented; use 'center'")
+        raise RunError(
+            f"video.crop {app.video.crop!r} is not implemented in the render stage yet; use "
+            "'center'"
+        )
 
     # Preflight: a missing font is an error, never a silent fallback.
     fonts_dir = root / FONTS_DIR

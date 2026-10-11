@@ -565,3 +565,16 @@ def test_json_from_before_the_offset_existed_is_still_valid_at_zero(
     render.run(resume(ctx))
 
     assert fake.ids == ["c01", "c02"]
+
+
+def test_speaker_crop_is_refused_until_the_render_stage_supports_it(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    ctx = make_ctx(project)
+    write_inputs(ctx.run_dir)
+    ctx.config.app.video.crop = "speaker"
+
+    with pytest.raises(RunError, match="not implemented in the render stage yet"):
+        render.run(ctx)
+
+    assert fake.calls == []

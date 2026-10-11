@@ -179,7 +179,45 @@ class TranscribeConfig(StrictModel):
 class VideoConfig(StrictModel):
     width: int = Field(gt=0)
     height: int = Field(gt=0)
-    crop: Literal["center", "face"]
+    # "speaker" is analysed by `clipmachine track` (Brief 8 Part A); the render stage does not
+    # use it yet and refuses it.
+    crop: Literal["center", "speaker"]
+
+    @field_validator("crop", mode="before")
+    @classmethod
+    def _face_was_never_implemented(cls, value: object) -> object:
+        if value == "face":
+            raise ValueError("'face' was never implemented; use 'center' or 'speaker'")
+        return value
+
+
+class SpeakerConfig(StrictModel):
+    """Speaker-following crop analysis (Brief 8). Every key has a default so run folders made
+    before this section existed still load."""
+
+    sample_fps: float = Field(default=10, gt=0, le=30)  # frames analysed per second of clip
+    analysis_width: int = Field(default=640, ge=64)  # pixels; frames are scaled to this width
+    max_faces: int = Field(default=4, ge=1, le=8)
+    window_seconds: float = Field(default=0.5, gt=0)  # the speaker is chosen per window
+    min_shot_seconds: float = Field(default=1.5, gt=0)  # no shot is shorter than this
+    # A challenger's mouth-movement variance must beat the speaker's by this factor ...
+    switch_ratio: float = Field(default=1.5, ge=1)
+    confirm_windows: int = Field(default=2, ge=1)  # ... for this many windows in a row
+    dead_zone: float = Field(default=0.08, ge=0, le=1)  # fraction of the crop width
+    smoothing: float = Field(default=0.25, gt=0, le=1)  # exponential factor; 1 = no smoothing
+    min_face_height: float = Field(default=0.08, gt=0, le=1)  # fraction of the frame height
+    link_max_distance: float = Field(default=0.12, gt=0, le=1)  # fraction of the frame width
+    min_speech_words_per_window: int = Field(default=1, ge=1)
+    debug_preview: bool = False  # also write clips/<id>.track.preview.mp4
+
+    @model_validator(mode="after")
+    def _check_relations(self) -> "SpeakerConfig":
+        if self.min_shot_seconds < self.window_seconds:
+            raise ValueError(
+                f"min_shot_seconds ({self.min_shot_seconds}) must not be less than "
+                f"window_seconds ({self.window_seconds})"
+            )
+        return self
 
 
 FONT_FILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.(?:ttf|otf)")
@@ -263,6 +301,7 @@ class AppConfig(StrictModel):
     candidates: CandidatesConfig = Field(default_factory=CandidatesConfig)
     score: ScoreConfig = Field(default_factory=ScoreConfig)
     render: RenderConfig = Field(default_factory=RenderConfig)
+    speaker: SpeakerConfig = Field(default_factory=SpeakerConfig)
 
     @model_validator(mode="after")
     def _check_preferred(self) -> "AppConfig":
@@ -668,6 +707,61 @@ class RenderedClip(StrictModel):
     caption_events: int
     output: RenderedOutput
     render_seconds: float
+
+
+class TrackSource(StrictModel):
+    """The source video as the track analysis saw it (from meta.json)."""
+
+    width: int
+    height: int
+    rotation: int
+    sha256: str
+
+
+class TrackFrame(StrictModel):
+    """Size in pixels of the frames that were analysed."""
+
+    w: int
+    h: int
+
+
+class TrackShot(StrictModel):
+    start: float  # seconds from the clip start
+    end: float
+    track: int | None  # None: no face was followed in this shot
+    face_cx: float | None  # mean face centre, 0..1 of the frame width
+
+
+class TrackSample(StrictModel):
+    t: float  # seconds from the clip start
+    crop_x: int  # left edge of the crop in source pixels (upright frame); even
+
+
+class TrackSummary(StrictModel):
+    faces_seen: int  # tracks found
+    switches: int  # shot changes
+    face_time_pct: float  # % of samples with at least one face
+    samples: int
+    analysis_seconds: float
+
+
+class TrackFile(StrictModel):
+    """The contents of clips/<id>.track.json. Numbers only: no transcript text."""
+
+    schema_version: int = 1
+    clip_id: str
+    clip_start: float
+    clip_end: float
+    source: TrackSource
+    settings: SpeakerConfig
+    mediapipe_version: str | None
+    model_sha256: str | None
+    frame: TrackFrame
+    crop_w: int  # width of the 9:16 window in source pixels
+    shots: list[TrackShot]
+    samples: list[TrackSample]
+    fallback_reason: str | None  # set: every crop_x is the centre crop
+    summary: TrackSummary
 
 
 CostStatus = Literal["ok", "refused", "failed", "unconfirmed"]

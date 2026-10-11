@@ -51,7 +51,21 @@ transcribe:                  # defaults chosen in D-011 from the Brief 3 benchma
 video:                       # the render stage's output size
   width: 1080
   height: 1920
-  crop: center               # v2: face
+  crop: center               # center | speaker (speaker: Brief 8; the render stage does not use it yet)
+speaker:                     # speaker-following crop analysis: clipmachine track <run-folder>
+  sample_fps: 10             # frames analysed per second of clip (0-30)
+  analysis_width: 640        # pixels; frames are scaled to this width before face detection
+  max_faces: 4               # faces looked for in each frame (1-8)
+  window_seconds: 0.5        # the speaker is chosen per window of this length
+  min_shot_seconds: 1.5      # no shot is shorter than this (no flicker); at least window_seconds
+  switch_ratio: 1.5          # a challenger's mouth movement must exceed the speaker's by this factor
+  confirm_windows: 2         # ... in this many windows in a row before the camera cuts
+  dead_zone: 0.08            # fraction of the crop width: smaller face movements do not move the crop
+  smoothing: 0.25            # 0-1, how fast the crop follows a face (1 = no smoothing)
+  min_face_height: 0.08      # fraction of frame height; smaller faces (webcam boxes) fall back to centre
+  link_max_distance: 0.12    # fraction of frame width: faces this close between samples are one person
+  min_speech_words_per_window: 1   # transcript words a window needs to count as speech
+  debug_preview: false       # also write clips/<id>.track.preview.mp4 (the track command's --preview)
 render:
   crf: 20                    # x264 quality, 0-51, lower is better
   preset: medium             # x264 speed/size trade-off
