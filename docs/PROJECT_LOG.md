@@ -89,9 +89,9 @@ into the next wide shot.
 **Next:** Igor re-watches the previews, c15 and c17 first. Checkpoint pass: the right person at
 least 90% of the time, no crop left on empty space after a cut, no flicker. Part B waits for it.
 
-## 2026-10-11 — Brief 9: Boundary repair (built; real run not done yet)
+## 2026-10-11 — Brief 9: Boundary repair (built; real run done on T1)
 
-**Done** (not committed yet; real-run results to be added)
+**Done**
 - **Score stage can repair boundaries:** `keep_sentences` may now start earlier or end later,
   not only trim. Each candidate shows up to `score.extend_before` (4) sentences before and
   `score.extend_after` (3) after, numbered continuously: before = ... -1, 0; clip = 1..n;
@@ -111,14 +111,33 @@ least 90% of the time, no crop left on empty space after a cut, no flicker. Part
 - **Report:** "extended" badge; "dropped adjust_ignored" (counts old `trim_ignored` too) and
   "dropped overlap" in the summary.
 - **Captions:** `captions.offset_seconds` default 0.0 -> 0.15 (config and model).
-- **Tests:** 888 passed, 2 skipped; ruff, format and mypy clean.
+- **Tests:** 888 passed, 2 skipped; ruff, format, mypy and pip-audit clean.
   `tests/test_render.py` pins the offset to 0.0 in its helper so those tests keep checking
   caption timing at the spoken time.
 
-**Not done yet**
-- The real run on `runs/2026-10-11_t1` (`--from-stage score`, candidates frozen) and its
-  before/after table.
-- `pip-audit`.
+**Real run** (T1, `--from-stage score`, candidates frozen, before-file in
+`runs/_scratch/t1-scored-before.json`)
+- **Kept:** 2 -> 8 of 19 (8 is `keep_top`). Rejected 17 -> 10. `needs_context` rejects 14 -> 6.
+- **Counts:** `extensions_applied` 9, `adjust_ignored` 0, `dropped_overlap` 0, `dropped_top_n` 1,
+  `dropped_min_score` 0, one trim applied. No warnings.
+- **Cost:** $0.0505 (one Sonnet call). `min_score` untouched.
+- **Igor's near-misses:** c03 (end +2), c06 (start -2) and c08 (start -1) became keeps at
+  score 8. c17 became a score-7 keep but was cut by `keep_top` alone. **c19 was not repaired**
+  (still 6, rejected `needs_context`, no extension).
+- **Overlap:** kept c08 and c09 overlap by 12.1 s (39% of the shorter), under the 50% rule, so
+  both are kept and rendered.
+- **Score drift:** six clips with no adjustment (c04, c05, c10, c11, c14, c16) each gained 1
+  point. That is either run-to-run variance or an effect of the new prompt wording.
+- **New keeps nobody has heard:** c02, c07, c13.
+
+**Igor's listening deferred:** boundary quality will be judged on the T3 re-score (1080p) after
+Brief 8 Part B.
+
+**Parked**
+- c19 not repaired: the judge did not extend its end.
+- Overlap threshold: consider about 30% if overlapping kept clips feel repetitive (c08/c09 are
+  at 39%).
+- Possible +1 score drift from the new prompt: watch precision on T3.
 
 ## 2026-10-11 — Brief 8, Part A: speaker-following crop analysis (stopped at the checkpoint)
 
