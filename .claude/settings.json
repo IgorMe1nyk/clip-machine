@@ -34,7 +34,10 @@
       "Bash(python *)",
       "Bash(python3 *)",
       "Bash(py *)",
+      "Bash(python.exe *)",
+      "Bash(pythonw *)",
       "Edit(//tmp/**)",
+      "Edit(//c/tmp/**)",
       "Edit(~/AppData/**)"
     ]
   },
