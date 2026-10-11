@@ -30,6 +30,9 @@ writes files in a run folder and can be restarted. Currently a walking skeleton:
 - Scratch and backup files go only in `<repo>/runs/_scratch/` (git-ignored), never %TEMP% or any
   folder outside the repo.
 - Always run Python through `uv run`, never bare `python`.
+- Never pipe test or check commands (pytest, ruff, mypy, pip-audit) through `tail`/`head` without
+  `set -o pipefail`, or check the exit code directly. A pipe hides a failing exit code and
+  `&& commit` then runs on red.
 - One brief at a time; small commits; out-of-scope ideas go to `docs/PROJECT_LOG.md`.
 
 ## Secrets
