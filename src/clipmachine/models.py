@@ -444,6 +444,118 @@ class CandidatesFile(StrictModel):
     warnings: list[str]
 
 
+Verdict = Literal["keep", "reject"]
+RejectReason = Literal[
+    "no_payoff",
+    "needs_context",
+    "weak_hook",
+    "too_long_or_rambling",
+    "off_brand",
+    "below_threshold",
+]
+REJECT_REASONS: tuple[str, ...] = RejectReason.__args__  # type: ignore[attr-defined]
+DroppedBy = Literal["min_score", "top_n"]  # our own selection, never the model's word
+MIN_SCORE, MAX_SCORE = 1, 10
+
+
+def _lower(value: object) -> object:
+    # The API may change the capitalisation of enum values.
+    return value.strip().lower() if isinstance(value, str) else value
+
+
+class KeepSentences(StrictModel):
+    # Sent to the API as part of the schema: no numeric constraints (the stage checks ranges).
+    first: int = Field(description="Number of the first sentence to keep")
+    last: int = Field(description="Number of the last sentence to keep")
+
+
+class ClipScore(StrictModel):
+    """The model's judgement of one candidate. Ranges are checked here, not by the API schema."""
+
+    id: str = Field(description="The candidate id, copied exactly")
+    score: int = Field(description="1 to 10")
+    verdict: Verdict
+    reject_reason: RejectReason | None = Field(description="null when the verdict is keep")
+    hook_line: str = Field(description="On-screen text line, at most 10 words")
+    suggested_title: str
+    reason: str = Field(description="Short explanation of the verdict, at most 25 words")
+    keep_sentences: KeepSentences | None = Field(
+        description="Optional tighter range of this candidate's own sentence numbers, or null"
+    )
+
+    @field_validator("verdict", "reject_reason", mode="before")
+    @classmethod
+    def _normalise_enum(cls, value: object) -> object:
+        return _lower(value)
+
+    @model_validator(mode="after")
+    def _check_rules(self) -> "ClipScore":
+        if not MIN_SCORE <= self.score <= MAX_SCORE:
+            raise ValueError(f"score must be {MIN_SCORE}-{MAX_SCORE}")
+        if (self.verdict == "reject") != (self.reject_reason is not None):
+            raise ValueError("reject_reason must be set exactly when the verdict is reject")
+        if not self.hook_line.strip() or not self.suggested_title.strip():
+            raise ValueError("hook_line and suggested_title must not be empty")
+        return self
+
+
+class ScoreBatch(StrictModel):
+    """The model's answer for one chunk of candidates."""
+
+    clips: list[ClipScore]
+
+
+class ScoredClip(StrictModel):
+    id: str
+    rank: int | None  # 1..N for kept clips, else None
+    kept: bool
+    score: int
+    verdict: Verdict  # the model's, unchanged
+    reject_reason: RejectReason | None  # the model's, unchanged; None when it said keep
+    dropped_by: DroppedBy | None  # why a clip the model kept was still not kept
+    hook_line: str
+    suggested_title: str
+    reason: str
+    start: float  # final, after any trim
+    end: float
+    candidate_start: float
+    candidate_end: float
+    trimmed: bool
+    notes: list[str]
+
+
+class ScoredSummary(StrictModel):
+    candidates: int
+    kept: int
+    rejected: int  # the model said reject
+    dropped_min_score: int  # model said keep, score under score.min_score
+    dropped_top_n: int  # model said keep, passed min_score, but outside clip.keep_top
+    trimmed: int
+    reject_reasons: dict[str, int]  # the model's reasons only; every reason is present
+    model: str
+    effort: str
+    thinking: str
+    min_score: int
+    keep_top: int
+    chunks: int
+    calls: int
+    input_tokens: int
+    output_tokens: int
+    thinking_tokens: int
+    estimated_usd: float
+    actual_usd: float
+
+
+class ScoredFile(StrictModel):
+    """The contents of scored.json. Text fields come from the model and are untrusted data."""
+
+    schema_version: int = 1
+    settings: ScoreConfig
+    summary: ScoredSummary
+    clips: list[ScoredClip]
+    warnings: list[str]
+
+
 CostStatus = Literal["ok", "refused", "failed", "unconfirmed"]
 EstimateSource = Literal["count_tokens", "chars_div_3", "none"]
 
