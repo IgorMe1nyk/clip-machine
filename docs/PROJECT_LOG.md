@@ -2,6 +2,37 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-10 — Brief 4: Claude client and candidates stage
+
+**Facts**
+- Commits: 9 (two docs commits first). Tests: 485 passed, 1 skipped (was 310). ruff, mypy and
+  pip-audit clean.
+- New runtime dependency: anthropic 1.13.0 (MIT); new packages docstring-parser, jiter, sniffio.
+- Real run (15.4-min interview, `general` client, Haiku 5.5, thinking disabled, effort low): 2 calls,
+  8,810 input and 830 output tokens, 0 thinking tokens, actual $0.001296 against a worst-case
+  estimate of $0.0029692. About 3-4 s per call. 8 candidates returned, 0 invalid, 0 dropped, 0
+  duplicates. Rerun: "nothing to do", ledger unchanged (2 lines).
+- Cost per hour of video for stage 3: about $0.005 (2 calls for 923 s).
+- Kill switch and budget refusal both checked on a real run folder with no network use.
+- `count_tokens` accepted `output_config` and `thinking`; the estimate source was `count_tokens`.
+
+**Observed**
+- Whisper words are contiguous (each word ends where the next starts), so the 0.2 s padding is
+  limited to 0.00 s at almost every boundary. The padding setting has no effect on this transcript.
+- 4 of 8 candidate starts and 3 of 8 ends sit at a segment edge with no sentence punctuation. These
+  are the boundaries most likely to fail rubric C1; Igor's spot check decides.
+- With the brief's numbers a 15-minute video gives at most 10 candidates, not about 20.
+
+**Parked**
+- Padding into the silence between words needs a different rule (midpoint of the gap, or a fixed
+  lead-in taken from the neighbouring word's start).
+- Per-block response caching, so a stage that fails midway does not repeat paid calls.
+- Abbreviations ("Dr.") count as sentence ends; a short last block is not merged.
+- The SDK still reads `ANTHROPIC_CUSTOM_HEADERS` from the environment; `ANTHROPIC_BASE_URL` and the
+  key are passed explicitly.
+- The ledger is not locked: two runs at the same moment could both pass the daily check.
+- CLAUDE.md's opening line still says only `fetch` is real.
+
 ## 2026-10-10 — Session 2 (17:47–20:00 ET): Briefs 2 and 3
 
 **Done**

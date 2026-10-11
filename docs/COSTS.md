@@ -144,13 +144,14 @@ Measured on one 15.4-minute, two-speaker interview with these settings: GTX 1660
 | Fetch | 0.3–0.8 s | $0 |
 | Transcribe, GPU (D-011) | 48–55 s (≈17–19× realtime) | $0 |
 | Transcribe, CPU fallback | 173–236 s (≈4–5× realtime) | $0 |
+| Candidates, Haiku 5.5 (Brief 4; 2 calls, 8,810 in / 830 out tokens) | about 7 s | $0.0013 (worst-case estimate $0.0030) |
 
 Local disk used:
 - Models: 2.1 GB
 - uv package cache: 2.4 GB (in the user folder)
 - Each run folder: roughly 75 MB per 15 min of 640×360 video
 
-API cost per hour of video is still an estimate until Brief 4 logs real calls.
+Stage 3 measured: $0.0013 for 15.4 minutes, about $0.005 per hour of video (the estimate was $0.004–0.01). Stage 4 (Sonnet) is still an estimate until Brief 5.
 
 ### Per client per month [estimate, using the plan's own estimates]
 
