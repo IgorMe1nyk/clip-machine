@@ -2,6 +2,30 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-10 — Brief 4.1: Candidate quality fixes
+
+**Evidence (Igor's spot check of 4 of 8 candidates):** 2 of 4 were understandable alone. One had its payoff cut short; two started mid-sentence.
+
+**Root causes**
+- Snapping treated every Whisper segment edge as a sentence start. Whisper breaks segments mid-sentence: 4 of 8 starts and 3 of 8 ends were segment edges.
+- All 8 moments were 20-27 s, right at the minimum. The model cut answers short.
+
+**Done**
+- A sentence ends only after `. ? !`. A segment edge is a boundary only after more than 40 unpunctuated words (`candidates.fallback_max_words`).
+- Prompt asks for a new thought at the start and a complete payoff, preferring 30-50 s.
+- New config `preferred_min_seconds` / `preferred_max_seconds`, validated against the clip range and clamped into a client's `clip_length`.
+- Snapping grows short moments toward the end only, never past the maximum. Under the hard minimum it may still grow backward as a last resort; that is noted in `snap_notes` and counted in `summary.grew_backward`.
+
+**Before vs after (same transcript, 8 candidates each)**
+- Segment-edge starts: 4 -> 1. Segment-edge ends: 3 -> 2.
+- Length min / median / max: 20.3 / 22.1 / 27.3 s -> 32.3 / 37.2 / 47.6 s.
+- Grew backward: 0 of 8.
+- No moments were invalid, dropped or duplicates.
+
+**Cost:** $0.0013 for the re-run (2 calls); the stage 3 run before it was $0.0013 too.
+
+**Open:** the 2 remaining segment-edge ends and 1 start are fallback boundaries; Igor spot-checks 4 new candidates before this brief is closed.
+
 ## 2026-10-10 — Brief 4: Claude client and candidates stage
 
 **Facts**
