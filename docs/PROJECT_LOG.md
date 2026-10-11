@@ -2,6 +2,53 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-11 — Brief 8, Part A: speaker-following crop analysis (stopped at the checkpoint)
+
+**Done** (7 commits, nothing pushed)
+- **Dependencies:** `mediapipe` 1.1.0 and `numpy` added with `uv add` (the lock pins 1.1.0).
+  Transitive packages accepted: opencv-contrib-python 5.0.0.93, matplotlib 3.11.2, sounddevice,
+  absl-py. `pip-audit`: no known vulnerabilities after the install and again at the end.
+- **Docs:** D-014 (MediaPipe Face Landmarker + lip-movement speaker choice + cut-based camera;
+  telemetry accepted by Igor, no hosts-file change). COSTS.md rows for mediapipe, its transitive
+  packages and the model file, plus the telemetry finding and a privacy line.
+- **Config:** `video.crop` is `center | speaker` (`face` was never implemented). New `speaker:`
+  section, defaults for every key, so old run folders load. The render stage still refuses
+  `speaker` until Part B.
+- **`utils/camera.py`** (pure Python): track linking, speech windows, speaker choice with
+  hysteresis, shots with a minimum length, camera path (smoothing, dead zone, clamp, hold),
+  fallback reasons, summary.
+- **`utils/ffmpeg.py`:** decode only the clip's range to RGB frames over a pipe; preview encoder.
+- **`utils/faces.py`:** the only module that imports mediapipe (lazily); model-file check with a
+  SHA-256 slot; explicit `fetch-face-model` command. The `track` command never downloads.
+- **`tracking.py` and `clipmachine track <run-folder> [--preview]`:** writes
+  `clips/<id>.track.json` (numbers only) and an optional `clips/<id>.track.preview.mp4` with face
+  boxes, the active speaker and the 9:16 window. It does not touch `run.json`.
+- Built by a Sonnet 5.5 (Medium) subagent; reviewed by the planner, who re-ran the checks.
+  Tests: 865 passed, 2 skipped (was 729). ruff, mypy, pip-audit clean.
+
+**Not yet done**
+- **The model file is not downloaded and no real face has been analysed.** Speed numbers and the
+  `min_face_height` default are still estimates. The real-landmarker test is opt-in
+  (`CLIPMACHINE_MEDIAPIPE_TESTS=1`) and skipped.
+- Whether mediapipe 1.1.0 really sends telemetry from a Python Tasks call, and what exactly, is
+  unverified: reported by others, not measured here.
+
+**Gaps and risks**
+- **Model licence unconfirmed** (model card PDFs not readable by the fetch tool). Must be settled
+  before any client work (COSTS.md).
+- Face Mesh lip and chin indices (13/14, 10/152) and the frame-height rounding of `scale=W:-2`
+  are checked only against synthetic data and one small real ffmpeg case.
+- If the short-range detector misses small faces in a wide studio shot, the contained fix is
+  tiling inside `utils/faces.py`; it would double analysis time.
+
+**Parked**
+- Part B (moving-crop render via `sendcmd`; times relative to the clip start because render seeks
+  with `-ss` before `-i`; the pixel test must check colour at a known time after the cut).
+- Linking uses position only; two faces that cross faster than they are apart can swap identity.
+
+**Next:** Igor approves the model download and supplies a two-person studio test video, then
+`track --preview` on its kept clips and the checkpoint review.
+
 ## 2026-10-11 — Brief 7: Report stage (report.html)
 
 **Done**
