@@ -11,6 +11,8 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
     "anthropic>=1.13.0",
     "faster-whisper>=1.2.1",
+    "mediapipe>=1.1.0",
+    "numpy>=2.4.6",
     "pydantic>=2.14.0",
     "pyyaml>=6.0.3",
 ]
@@ -44,11 +46,17 @@ check_untyped_defs = true
 module = ["faster_whisper", "faster_whisper.*", "ctranslate2"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# mediapipe ships no type information; only utils/faces.py imports it.
+module = ["mediapipe", "mediapipe.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
     "ffmpeg: needs ffmpeg and ffprobe on PATH; skipped when they are missing",
     "whisper: runs a real Whisper model on the CPU; skipped unless CLIPMACHINE_WHISPER_TESTS=1",
+    "mediapipe: runs the real Face Landmarker; skipped unless CLIPMACHINE_MEDIAPIPE_TESTS=1",
 ]
 
 [dependency-groups]

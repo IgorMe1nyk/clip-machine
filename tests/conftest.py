@@ -18,7 +18,10 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """
     skip_ffmpeg = pytest.mark.skip(reason="ffmpeg/ffprobe not on PATH")
     skip_whisper = pytest.mark.skip(reason=f"set {WHISPER_ENV}=1 to run real Whisper tests")
+    skip_mediapipe = pytest.mark.skip(reason=f"set {MEDIAPIPE_ENV}=1 to run real MediaPipe tests")
     for item in items:
+        if os.environ.get(MEDIAPIPE_ENV) != "1" and "mediapipe" in item.keywords:
+            item.add_marker(skip_mediapipe)
         if not FFMPEG_AVAILABLE and "ffmpeg" in item.keywords:
             item.add_marker(skip_ffmpeg)
         if os.environ.get(WHISPER_ENV) != "1" and "whisper" in item.keywords:
@@ -26,6 +29,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 
 WHISPER_ENV = "CLIPMACHINE_WHISPER_TESTS"
+MEDIAPIPE_ENV = "CLIPMACHINE_MEDIAPIPE_TESTS"
 
 
 @pytest.fixture(autouse=True)
