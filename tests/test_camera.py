@@ -11,6 +11,7 @@ from clipmachine.utils.camera import (
     FALLBACK_NO_FACE,
     FALLBACK_SOURCE_NOT_WIDER,
     FaceSample,
+    Followed,
     Shot,
     Track,
     _variance,
@@ -18,8 +19,12 @@ from clipmachine.utils.camera import (
     camera_path,
     choose_speakers,
     fallback_reason,
+    find_cuts,
+    follow_segments,
     link_tracks,
+    signature_distance,
     speech_windows,
+    split_at_cuts,
     summarise,
 )
 
@@ -382,3 +387,217 @@ def test_summary_counts() -> None:
     assert summary.faces_seen == 2
     assert summary.switches == 1
     assert summary.face_time_pct == pytest.approx(100.0 * 29 / 30, abs=0.1)
+
+
+def test_summary_counts_faces_per_sample_and_readable_mouths() -> None:
+    unreadable = FaceSample(t=0.0, cx=0.2, cy=0.5, w=0.15, h=0.3, mouth=None)
+    frames = [
+        [unreadable, face(0.0, 0.7)],
+        [],
+        [face(0.2, 0.7, mouth=0.3)],
+        [],
+    ]
+    summary = summarise(frames, link_tracks(frames, 0.12), [])
+    assert summary.faces_per_sample == 0.75
+    assert summary.mouth_read_pct == 66.7
+
+
+def test_summary_with_no_faces_has_zero_mouth_percentage() -> None:
+    summary = summarise([[], []], [], [])
+    assert (summary.faces_per_sample, summary.mouth_read_pct) == (0.0, 0.0)
+
+
+def test_summary_does_not_count_a_boundary_on_a_cut_as_a_switch() -> None:
+    shots = [Shot(0.0, 1.0, 0), Shot(1.0, 2.0, 1), Shot(2.0, 3.0, 0)]
+    assert summarise([], [], shots).switches == 2
+    assert summarise([], [], shots, cut_times=[1.0]).switches == 1
+    assert summarise([], [], shots, cut_times=[1.0000004]).switches == 1
+    assert summarise([], [], shots, cut_times=[1.5]).switches == 2
+
+
+# --- cuts and segments --------------------------------------------------------------------
+
+A = [1.0, 0.0, 0.0]
+B = [0.0, 1.0, 0.0]
+C = [0.0, 0.0, 1.0]
+
+
+def test_signature_distance_is_half_the_absolute_differences() -> None:
+    assert signature_distance(A, A) == 0.0
+    assert signature_distance(A, B) == 1.0
+    assert signature_distance([0.5, 0.5, 0.0], A) == pytest.approx(0.5)
+
+
+def test_a_hard_change_is_a_cut() -> None:
+    assert find_cuts([A, A, A, B, B, B], 0.5) == [3]
+
+
+def test_a_slow_drift_is_never_a_cut() -> None:
+    drift = [[1 - 0.1 * i, 0.1 * i, 0.0] for i in range(11)]  # A to B in steps of 0.1
+    assert signature_distance(drift[0], drift[-1]) == pytest.approx(1.0)
+    assert find_cuts(drift, 0.3) == []
+
+
+def test_a_one_sample_flash_is_not_a_cut() -> None:
+    assert find_cuts([A, A, B, A, A], 0.5) == []
+
+
+def test_two_real_cuts() -> None:
+    assert find_cuts([A, A, B, B, C, C], 0.5) == [2, 4]
+
+
+def test_a_cut_on_the_last_sample() -> None:
+    assert find_cuts([A, A, B], 0.5) == [2]
+
+
+def test_no_cuts_in_empty_or_single_sample_input() -> None:
+    assert find_cuts([], 0.5) == []
+    assert find_cuts([A], 0.5) == []
+
+
+def test_no_cuts_is_one_segment() -> None:
+    assert split_at_cuts(10, []) == [(0, 10)]
+
+
+def test_several_cuts_make_several_segments() -> None:
+    assert split_at_cuts(10, [3, 7]) == [(0, 3), (3, 7), (7, 10)]
+
+
+def test_out_of_range_and_duplicate_cuts_are_ignored() -> None:
+    assert split_at_cuts(10, [0, 10, 12, -1, 3, 3]) == [(0, 3), (3, 10)]
+    assert split_at_cuts(0, [1]) == []
+
+
+def clip_times(count: int) -> list[float]:
+    return [time_of(k) for k in range(count)]
+
+
+def follow(
+    frames: list[list[FaceSample]],
+    cuts: list[int] | None = None,
+    words: list[tuple[float, float]] | None = None,
+    **changes: float,
+) -> Followed:
+    return follow_segments(
+        frames,
+        clip_times(len(frames)),
+        words or [],
+        cuts or [],
+        len(frames) / FPS,
+        1000,
+        200,
+        cfg(**changes),
+    )
+
+
+def assert_gap_free(shots: list[Shot], duration: float) -> None:
+    assert shots[0].start == 0.0
+    assert shots[-1].end == pytest.approx(duration)
+    assert all(a.end == pytest.approx(b.start) for a, b in zip(shots, shots[1:], strict=False))
+
+
+def test_tracks_never_link_across_a_cut_even_at_the_same_position() -> None:
+    frames = [[face(time_of(k), 0.5)] for k in range(20)]
+    done = follow(frames, cuts=[10])
+    assert [t.id for t in done.tracks] == [0, 1]
+    assert sorted(done.tracks[0].by_frame) == list(range(10))
+    assert sorted(done.tracks[1].by_frame) == list(range(10, 20))
+    assert done.tracks[1].by_frame[12] is frames[12][0]  # the original sample, clip-relative t
+
+
+def test_no_crop_position_is_carried_across_a_cut_to_a_segment_without_a_face() -> None:
+    frames = [[face(time_of(k), 0.2)] if k < 10 else [] for k in range(20)]
+    done = follow(frames, cuts=[10])
+    assert done.crop_xs[:10] == [100] * 10
+    assert done.crop_xs[10:] == [400] * 10  # centred, not held at 100
+    assert follow(frames).crop_xs[10:] == [100] * 10  # without the cut it would be held
+
+
+def test_the_first_sample_after_a_cut_is_already_on_the_new_face() -> None:
+    frames = [[face(time_of(k), 0.2 if k < 10 else 0.8)] for k in range(20)]
+    done = follow(frames, cuts=[10], smoothing=0.25)
+    assert done.crop_xs[9] == 100
+    assert done.crop_xs[10] == 700  # a jump, not a glide
+
+
+def test_the_speaker_is_followed_in_a_fresh_segment() -> None:
+    frames = [
+        [face(time_of(k), 0.25, h=0.4, mouth=0.05), face(time_of(k), 0.75, h=0.2, mouth=talking(k))]
+        for k in range(20)
+    ]
+    done = follow(frames, words=[(0.0, 2.0)])
+    assert done.shots == [Shot(0.0, 2.0, 1)]  # the smaller face talks
+    assert set(done.crop_xs) == {650}
+
+
+def test_without_a_speaker_the_largest_face_is_followed() -> None:
+    frames = [[face(time_of(k), 0.25, h=0.2), face(time_of(k), 0.75, h=0.4)] for k in range(20)]
+    done = follow(frames)
+    assert done.shots == [Shot(0.0, 2.0, 1)]
+    assert set(done.crop_xs) == {650}
+
+
+def test_among_equal_faces_the_most_central_is_followed() -> None:
+    frames = [[face(time_of(k), 0.2), face(time_of(k), 0.55)] for k in range(20)]
+    done = follow(frames)
+    assert done.shots == [Shot(0.0, 2.0, 1)]  # not track 0, which has the lower id
+
+
+def test_without_any_face_the_crop_is_centred() -> None:
+    done = follow([[] for _ in range(20)])
+    assert done.shots == [Shot(0.0, 2.0, None)]
+    assert done.crop_xs == [400] * 20
+    assert done.tracks == []
+
+
+def test_a_cut_soon_after_a_speaker_change_still_moves_the_crop_at_once() -> None:
+    first = two_people(3, a_talks=lambda w: w < 2, b_talks=lambda w: w >= 2)
+    frames = first + [[face(time_of(k), 0.9)] for k in range(15, 30)]
+    done = follow(frames, cuts=[15], words=[(0.0, 3.0)], confirm_windows=1)
+    assert done.crop_xs[15:] == [800] * 15  # the minimum shot length does not hold it back
+    assert any(s.start == 1.5 for s in done.shots)
+    assert_gap_free(done.shots, 3.0)
+
+
+def test_a_segment_shorter_than_the_minimum_shot_stays_one_shot() -> None:
+    frames = [[face(time_of(k), 0.5)] for k in range(20)]
+    done = follow(frames, cuts=[15], min_shot_seconds=1.5)
+    assert [(s.start, s.end) for s in done.shots] == [(0.0, 1.5), (1.5, 2.0)]
+    assert_gap_free(done.shots, 2.0)
+
+
+def test_a_pending_challenger_does_not_complete_after_a_cut() -> None:
+    frames = two_people(8, a_talks=lambda w: w < 3, b_talks=lambda w: w >= 3)
+    words = [(0.0, 4.0)]
+    joined = follow(frames, words=words)
+    assert [(s.start, s.track) for s in joined.shots] == [(0.0, 0), (1.5, 1)]  # backdated
+
+    split = follow(frames, cuts=[20], words=words)
+    # B leads window 3 only once before the cut; the second window it would need is after it
+    assert split.shots[0] == Shot(0.0, 2.0, 0)
+    assert split.crop_xs[:20] == [150] * 20
+    assert split.shots[1].start == 2.0
+
+
+def test_switches_count_changes_inside_segments_only() -> None:
+    frames = two_people(8, a_talks=lambda w: w < 3, b_talks=lambda w: w >= 3)
+    words = [(0.0, 4.0)]
+    assert follow(frames, words=words).switches == 1
+    split = follow(frames, cuts=[20], words=words)
+    assert split.switches == 0  # A to B across the cut is a cut, not a switch
+    assert split.shots[0].track != split.shots[1].track
+
+
+def test_without_cuts_the_result_is_what_the_five_functions_give() -> None:
+    frames = two_people(8, a_talks=lambda w: w < 3, b_talks=lambda w: w >= 3)
+    words = [(0.0, 1.2), (1.6, 3.9)]
+    config = cfg()
+    done = follow(frames, words=words)
+
+    tracks = link_tracks(frames, config.link_max_distance)
+    speech = speech_windows(words, 4.0, config.window_seconds, config.min_speech_words_per_window)
+    choice = choose_speakers(tracks, speech, config.window_seconds, config)
+    shots = build_shots(choice, config.window_seconds, config.min_shot_seconds, 4.0)
+    assert done.tracks == tracks
+    assert done.shots == shots
+    assert done.crop_xs == camera_path(shots, tracks, 1000, 200, clip_times(40), config)

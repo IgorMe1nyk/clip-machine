@@ -9,6 +9,13 @@ The pipeline, each step a function below:
   tracks + speech      -> choose_speakers -> one track id (or None) per window
   choices              -> build_shots -> Shot (one person each, none shorter than the minimum)
   shots + tracks       -> camera_path -> crop x per sample
+
+Cuts: a camera shot (a "segment" here) is the stretch between two cuts in the source edit.
+  picture signatures   -> find_cuts -> sample indices where a new camera shot starts
+  cuts                 -> split_at_cuts -> sample ranges, one per segment
+  everything above, run on each segment alone and joined again -> follow_segments
+Nothing is carried across a cut: tracks, speaker choice, hysteresis and the crop position all
+start fresh in each segment, and a cut is never counted as a speaker switch.
 """
 
 import math
@@ -70,6 +77,8 @@ class CameraSummary:
     faces_seen: int  # tracks found
     switches: int  # shot changes
     face_time_pct: float  # % of samples with at least one face
+    faces_per_sample: float = 0.0  # mean number of faces per sample
+    mouth_read_pct: float = 0.0  # % of face samples whose mouth could be read
 
 
 # --- tracks -------------------------------------------------------------------------------
@@ -168,6 +177,10 @@ def _mean_height(track: Track) -> float:
     return statistics.fmean(s.h for s in track.by_frame.values())
 
 
+def _mean_cx(track: Track) -> float:
+    return statistics.fmean(s.cx for s in track.by_frame.values())
+
+
 def choose_speakers(
     tracks: Sequence[Track], speech: Sequence[bool], window: float, cfg: SpeakerConfig
 ) -> list[int | None]:
@@ -186,7 +199,8 @@ def choose_speakers(
     confirm_windows windows in a row, the best track present takes over (no backdating).
 
     With no speech or no mouth movement anywhere, the track with the largest faces is shown all
-    the time. With no tracks every window is None.
+    the time (equal sizes: the most central track, then the lowest id). With no tracks every
+    window is None.
     """
     count = len(speech)
     if not tracks:
@@ -252,7 +266,8 @@ def choose_speakers(
             choice[w] = current
 
     if current is None:  # nobody ever moved their mouth in a speech window
-        fallback = max(tracks, key=lambda t: (_mean_height(t), -t.id)).id
+        # the largest faces; among equal sizes the most central track, then the lowest id
+        fallback = max(tracks, key=lambda t: (_mean_height(t), -abs(_mean_cx(t) - 0.5), -t.id)).id
         return [fallback] * count
     return choice
 
@@ -374,6 +389,113 @@ def camera_path(
     return out
 
 
+# --- cuts and segments --------------------------------------------------------------------
+
+
+def signature_distance(a: Sequence[float], b: Sequence[float]) -> float:
+    """Half the sum of absolute differences: 0..1 for two normalised histograms."""
+    if len(a) != len(b):
+        raise ValueError("signatures must have the same length")
+    return sum(abs(x - y) for x, y in zip(a, b, strict=True)) / 2
+
+
+def find_cuts(signatures: Sequence[Sequence[float]], threshold: float) -> list[int]:
+    """Sample indices k (1 <= k < n) where a new camera shot starts.
+
+    A cut needs the picture to change by at least `threshold` from sample k-1 to k. A one-sample
+    flash is not a cut: when sample k+1 looks like k-1 again, k is an outlier and neither k nor
+    k+1 is reported. Only neighbours are compared, so a slow change (every step below the
+    threshold) is never a cut, however far the picture drifts.
+    """
+    cuts: list[int] = []
+    k = 1
+    while k < len(signatures):
+        if signature_distance(signatures[k - 1], signatures[k]) < threshold:
+            k += 1
+            continue
+        if k + 1 < len(signatures) and (
+            signature_distance(signatures[k - 1], signatures[k + 1]) < threshold
+        ):
+            k += 2  # a flash: the picture is back where it was
+            continue
+        cuts.append(k)
+        k += 1
+    return cuts
+
+
+def split_at_cuts(count: int, cuts: Sequence[int]) -> list[tuple[int, int]]:
+    """Half-open sample ranges [a, b) covering 0..count, split at the cuts. Cuts outside
+    1..count-1 and duplicates are ignored."""
+    if count <= 0:
+        return []
+    edges = [0, *sorted({c for c in cuts if 1 <= c < count}), count]
+    return list(zip(edges, edges[1:], strict=False))
+
+
+@dataclass(frozen=True)
+class Followed:
+    """The camera's work on a whole clip: clip-wide tracks and shots, a crop x per sample, and the
+    speaker switches inside camera shots (a cut is never a switch)."""
+
+    tracks: list[Track]
+    shots: list[Shot]
+    crop_xs: list[int]
+    switches: int
+
+
+def follow_segments(
+    frames: Sequence[Sequence[FaceSample]],
+    times: Sequence[float],
+    words: Sequence[tuple[float, float]],
+    cuts: Sequence[int],
+    duration: float,
+    frame_w_px: int,
+    crop_w_px: int,
+    cfg: SpeakerConfig,
+) -> Followed:
+    """Follow the speaker in each camera shot on its own and join the results.
+
+    `times` are seconds from the clip start per sample, `words` are (start, end) seconds from the
+    clip start, `cuts` are sample indices from find_cuts. Each segment is run through link_tracks,
+    speech_windows, choose_speakers, build_shots and camera_path as if it were a clip of its own,
+    so no track, hysteresis state or crop position crosses a cut and the minimum shot length
+    applies inside a segment only. Results are shifted back: shots to clip seconds, track ids
+    unique across the clip, Track.by_frame keyed by clip-wide sample index (holding the original
+    FaceSamples) and crop xs in sample order.
+    """
+    tracks: list[Track] = []
+    shots: list[Shot] = []
+    crop_xs: list[int] = []
+    switches = 0
+    for a, b in split_at_cuts(len(frames), cuts):
+        start = times[a]
+        end = times[b] if b < len(times) else duration
+        length = end - start
+        local_times = [round(t - start, 3) for t in times[a:b]]
+        local_words = [(w0 - start, w1 - start) for w0, w1 in words]
+        local_tracks = link_tracks(frames[a:b], cfg.link_max_distance)
+        speech = speech_windows(
+            local_words, length, cfg.window_seconds, cfg.min_speech_words_per_window
+        )
+        choice = choose_speakers(local_tracks, speech, cfg.window_seconds, cfg)
+        local_shots = build_shots(choice, cfg.window_seconds, cfg.min_shot_seconds, length)
+        crop_xs += camera_path(local_shots, local_tracks, frame_w_px, crop_w_px, local_times, cfg)
+        switches += sum(
+            1 for x, y in zip(local_shots, local_shots[1:], strict=False) if x.track != y.track
+        )
+        offset = len(tracks)
+        for t in local_tracks:
+            tracks.append(
+                Track(id=offset + t.id, by_frame={a + k: s for k, s in t.by_frame.items()})
+            )
+        if not local_shots:  # keep the shots gap-free
+            shots.append(Shot(start, end, None))
+        for shot in local_shots:
+            track = None if shot.track is None else offset + shot.track
+            shots.append(Shot(shot.start + start, shot.end + start, track))
+    return Followed(tracks=tracks, shots=shots, crop_xs=crop_xs, switches=switches)
+
+
 # --- fallback and summary -----------------------------------------------------------------
 
 
@@ -396,9 +518,26 @@ def fallback_reason(
 
 
 def summarise(
-    frames: Sequence[Sequence[FaceSample]], tracks: Sequence[Track], shots: Sequence[Shot]
+    frames: Sequence[Sequence[FaceSample]],
+    tracks: Sequence[Track],
+    shots: Sequence[Shot],
+    cut_times: Sequence[float] = (),
 ) -> CameraSummary:
+    """Counts for the report. A boundary between two shots that lies on a cut time (within 1e-6 s)
+    is a cut, not a speaker switch."""
     with_face = sum(1 for faces in frames if faces)
     pct = 100.0 * with_face / len(frames) if frames else 0.0
-    switches = sum(1 for a, b in zip(shots, shots[1:], strict=False) if a.track != b.track)
-    return CameraSummary(faces_seen=len(tracks), switches=switches, face_time_pct=round(pct, 1))
+    switches = sum(
+        1
+        for a, b in zip(shots, shots[1:], strict=False)
+        if a.track != b.track and not any(abs(a.end - c) <= 1e-6 for c in cut_times)
+    )
+    face_count = sum(len(faces) for faces in frames)
+    readable = sum(1 for faces in frames for f in faces if f.mouth is not None)
+    return CameraSummary(
+        faces_seen=len(tracks),
+        switches=switches,
+        face_time_pct=round(pct, 1),
+        faces_per_sample=round(face_count / len(frames), 2) if frames else 0.0,
+        mouth_read_pct=round(100.0 * readable / face_count, 1) if face_count else 0.0,
+    )
