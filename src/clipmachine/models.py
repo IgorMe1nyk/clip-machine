@@ -183,8 +183,8 @@ class TranscribeConfig(StrictModel):
 class VideoConfig(StrictModel):
     width: int = Field(gt=0)
     height: int = Field(gt=0)
-    # "speaker" is analysed by `clipmachine track` (Brief 8 Part A); the render stage does not
-    # use it yet and refuses it.
+    # "center": a fixed centre crop. "speaker": the crop follows the active speaker (the render
+    # stage uses a clip's track file, or analyses the clip; needs both face model files).
     crop: Literal["center", "speaker"]
 
     @field_validator("crop", mode="before")
@@ -734,6 +734,12 @@ class RenderedClip(StrictModel):
     caption_events: int
     output: RenderedOutput
     render_seconds: float
+    # "speaker": `crop` holds the window with the first x; the rest of the path is in
+    # clips/<id>.crop.cmd. Old files have none of these and read as centre crops.
+    crop_mode: Literal["center", "speaker"] = "center"
+    track_sha256: str | None = None  # SHA-256 of the track.json file this clip was rendered from
+    track_fallback: str | None = None  # the track's fallback reason: rendered as a centre crop
+    crop_changes: int = 0  # how many times the crop moves during the clip
 
 
 class TrackSource(StrictModel):

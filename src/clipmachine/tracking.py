@@ -524,6 +524,83 @@ def _write_preview(
     )
 
 
+def build_plan(
+    run_dir: Path,
+    root: Path,
+    app: AppConfig,
+    *,
+    video: VideoStreamInfo,
+    source: Path,
+    source_sha256: str,
+    segments: list[TranscriptSegment],
+) -> TrackPlan:
+    """The plan the track command and the render stage share. Checks both model files (a missing
+    or wrong one is a FacesError naming the fetch command; nothing is downloaded), hashes them and
+    reads the library versions. Creates <run folder>/clips/."""
+    model = faces.ensure_model(faces.model_dir(root))
+    detector = faces.ensure_model(faces.model_dir(root, faces.DETECTOR), spec=faces.DETECTOR)
+    clips_dir = run_dir / CLIPS_DIR
+    clips_dir.mkdir(exist_ok=True)
+    return TrackPlan(
+        clips_dir=clips_dir,
+        source=source,
+        video=video,
+        source_sha256=source_sha256,
+        target_width=app.video.width,
+        target_height=app.video.height,
+        segments=segments,
+        settings=app.speaker,
+        model_path=model,
+        model_sha256=faces.file_sha256(model),
+        mediapipe_version=faces.mediapipe_version(),
+        detector_path=detector,
+        detector_sha256=faces.file_sha256(detector),
+        opencv_version=faces.opencv_version(),
+    )
+
+
+def load_plan_track(
+    plan: TrackPlan, clip_id: str, start: float, end: float, *, crop_w: int | None = None
+) -> TrackFile | None:
+    """load_valid_track with the plan's values; with `crop_w`, a track for another window width is
+    not valid either."""
+    track = load_valid_track(
+        plan.clips_dir,
+        clip_id,
+        start=start,
+        end=end,
+        source_sha256=plan.source_sha256,
+        settings=plan.settings,
+        mediapipe_version=plan.mediapipe_version,
+        model_sha256=plan.model_sha256,
+        detector_sha256=plan.detector_sha256,
+        opencv_version=plan.opencv_version,
+    )
+    if track is not None and crop_w is not None and track.crop_w != crop_w:
+        return None
+    return track
+
+
+def track_for_clip(
+    plan: TrackPlan,
+    clip_id: str,
+    start: float,
+    end: float,
+    *,
+    preview: bool = False,
+    crop_w: int | None = None,
+) -> tuple[TrackFile, bool]:
+    """A valid clips/<id>.track.json if there is one (second value True: reused), else a fresh
+    analysis, written to that path. With `crop_w`, a track for another window width (the output
+    size changed) is not valid. `preview` only matters when the clip is analysed."""
+    track = load_plan_track(plan, clip_id, start, end, crop_w=crop_w)
+    if track is not None:
+        return track, True
+    track = analyse_clip(plan, clip_id, start, end, preview=preview)
+    write_json_atomic(track_path(plan.clips_dir, clip_id), track.model_dump(mode="json"))
+    return track, False
+
+
 # --- the run ------------------------------------------------------------------------------
 
 
@@ -551,32 +628,19 @@ def run_track(
     source = run_dir / meta.source_file
     if not source.is_file():
         raise RunError(f"source video not found in the run folder: {meta.source_file}")
-    segments = _load_transcript(run_dir).segments
-    model = faces.ensure_model(faces.model_dir(root))
-    detector = faces.ensure_model(faces.model_dir(root, faces.DETECTOR), spec=faces.DETECTOR)
-
-    clips_dir = run_dir / CLIPS_DIR
-    clips_dir.mkdir(exist_ok=True)
-    plan = TrackPlan(
-        clips_dir=clips_dir,
-        source=source,
+    plan = build_plan(
+        run_dir,
+        root,
+        app,
         video=video,
+        source=source,
         source_sha256=meta.sha256,
-        target_width=app.video.width,
-        target_height=app.video.height,
-        segments=segments,
-        settings=app.speaker,
-        model_path=model,
-        model_sha256=faces.file_sha256(model),
-        mediapipe_version=faces.mediapipe_version(),
-        detector_path=detector,
-        detector_sha256=faces.file_sha256(detector),
-        opencv_version=faces.opencv_version(),
+        segments=_load_transcript(run_dir).segments,
     )
     results: list[ClipTrackResult] = []
     for clip in kept:
         track = analyse_clip(plan, clip.id, clip.start, clip.end, preview=preview)
-        write_json_atomic(track_path(clips_dir, clip.id), track.model_dump(mode="json"))
+        write_json_atomic(track_path(plan.clips_dir, clip.id), track.model_dump(mode="json"))
         results.append(
             ClipTrackResult(
                 clip_id=clip.id,

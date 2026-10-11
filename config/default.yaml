@@ -53,7 +53,7 @@ transcribe:                  # defaults chosen in D-011 from the Brief 3 benchma
 video:                       # the render stage's output size
   width: 1080
   height: 1920
-  crop: center               # center | speaker (speaker: Brief 8; the render stage does not use it yet)
+  crop: center               # center | speaker (speaker: follow the active speaker; needs both face model files, see clipmachine fetch-face-model)
 speaker:                     # speaker-following crop analysis: clipmachine track <run-folder>
   sample_fps: 10             # frames analysed per second of clip (0-30)
   detect_width: 960          # pixels; frames are scaled to this width for the YuNet face detector

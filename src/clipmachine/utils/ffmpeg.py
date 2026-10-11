@@ -95,7 +95,7 @@ def _positive_int(value: object) -> int | None:
     return int(number)
 
 
-def _rate(value: object) -> Fraction | None:
+def frame_rate(value: object) -> Fraction | None:
     """A frame rate such as "30000/1001" as a fraction; None for "0/0", missing or garbage."""
     if not isinstance(value, str):
         return None
@@ -139,7 +139,7 @@ def _video_stream(stream: dict[str, Any]) -> VideoStreamInfo | None:
         return None
     avg_text = str(stream.get("avg_frame_rate", "0/0"))
     r_text = str(stream.get("r_frame_rate", "0/0"))
-    avg, real = _rate(avg_text), _rate(r_text)
+    avg, real = frame_rate(avg_text), frame_rate(r_text)
     return VideoStreamInfo(
         codec=str(stream.get("codec_name", "unknown")),
         width=width,

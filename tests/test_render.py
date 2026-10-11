@@ -1,14 +1,17 @@
 """The render stage with ffmpeg and ffprobe faked. All data is synthetic."""
 
+import hashlib
 import json
 import re
+import sys
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
 import pytest
 
-from clipmachine import pipeline
+import track_fakes
+from clipmachine import pipeline, tracking
 from clipmachine.config import ResolvedConfig, load_resolved
 from clipmachine.context import RunContext
 from clipmachine.models import (
@@ -19,6 +22,7 @@ from clipmachine.models import (
     ScoredClip,
     ScoredFile,
     ScoredSummary,
+    TrackFile,
     TranscribeConfig,
     Transcript,
     TranscriptSegment,
@@ -28,6 +32,8 @@ from clipmachine.models import (
 from clipmachine.pipeline import load_state, run_pipeline, start_new_run
 from clipmachine.runs import RunError, write_json_atomic
 from clipmachine.stages import render
+from clipmachine.utils import ffmpeg
+from clipmachine.utils.crop import frame_path
 from clipmachine.utils.ffmpeg import MediaError
 
 DRIVE_OR_BACKSLASH = re.compile(r"(?<![A-Za-z0-9_.])[A-Za-z]:|\\")
@@ -571,14 +577,359 @@ def test_json_from_before_the_offset_existed_is_still_valid_at_zero(
     assert fake.ids == ["c01", "c02"]
 
 
-def test_speaker_crop_is_refused_until_the_render_stage_supports_it(
-    project: Path, fake: FakeFfmpeg
-) -> None:
+# --- speaker crop --------------------------------------------------------------------------
+
+CENTRE_VF = (
+    "crop=202:360:218:0,scale=1080:1920,setsar=1,"
+    "subtitles=filename=clips/c01.ass:fontsdir=../../assets/fonts"
+)
+CUT_LOOK = track_fakes.cut_at(10.0, levels=(0, 120))
+TWO_PEOPLE = track_fakes.two_people(switch_at=10.0)
+
+
+def speaker_ctx(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: track_fakes.Scenario = TWO_PEOPLE,
+    look: track_fakes.Look = track_fakes.steady,
+    *,
+    models: bool = True,
+) -> tuple[RunContext, track_fakes.TrackFakes]:
+    """A run folder with the render stage set to speaker mode and the analysis faked."""
     ctx = make_ctx(project)
     write_inputs(ctx.run_dir)
     ctx.config.app.video.crop = "speaker"
+    if models:
+        track_fakes.write_model(project)
+    return ctx, track_fakes.install(monkeypatch, scenario, look)
 
-    with pytest.raises(RunError, match="not implemented in the render stage yet"):
+
+def read_json(path: Path) -> dict[str, object]:
+    data: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    return data
+
+
+def file_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def vf_of(args: list[str]) -> str:
+    return args[args.index("-vf") + 1]
+
+
+def expected_commands(ctx: RunContext, clip_id: str, duration: float) -> str:
+    """The command file text worked out from the clip's track file."""
+    track = TrackFile.model_validate_json(
+        tracking.track_path(ctx.run_dir / "clips", clip_id).read_text(encoding="utf-8")
+    )
+    path = frame_path(
+        [(s.t, s.crop_x) for s in track.samples],
+        [(s.start, s.end) for s in track.shots],
+        track.cuts,
+        track.cuts_exact,
+        30.0,
+        duration,
+    )
+    return ffmpeg.crop_commands(path)
+
+
+def test_a_valid_track_is_reused_and_becomes_a_command_file(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, fakes = speaker_ctx(project, monkeypatch)
+    render.run(ctx)  # analyses both clips and leaves their track files
+    assert fakes.opened == 2
+    fake.calls.clear()
+
+    render.run(ctx)  # a forced redo: the tracks are still valid
+
+    assert fakes.opened == 2  # no new analysis
+    clips = ctx.run_dir / "clips"
+    _, args, _ = fake.calls[0]
+    # a shot change at 10 s of the clip, from the face at 0.25 to the one at 0.75
+    assert vf_of(args) == (
+        "sendcmd=f=clips/c01.crop.cmd,crop=202:360:60:0,scale=1080:1920,setsar=1,"
+        "subtitles=filename=clips/c01.ass:fontsdir=../../assets/fonts"
+    )
+    text = (clips / "c01.crop.cmd").read_text(encoding="utf-8")
+    assert text == expected_commands(ctx, "c01", 20.0)
+    assert "10.000000 crop x 380;\n" in text
+    data = read_json(clips / "c01.json")
+    assert data["crop_mode"] == "speaker"
+    assert data["track_sha256"] == file_hash(clips / "c01.track.json")
+    assert data["track_fallback"] is None
+    assert data["crop_changes"] == len(text.splitlines()) >= 1
+    assert data["crop"] == {"w": 202, "h": 360, "x": 60, "y": 0}
+    assert "synthetic" not in json.dumps(data)
+
+
+def stale_by(change: str, ctx: RunContext) -> None:
+    track_file = ctx.run_dir / "clips" / "c01.track.json"
+    if change == "missing":
+        track_file.unlink()
+    elif change == "settings":
+        speaker = ctx.config.app.speaker
+        ctx.config.app.speaker = speaker.model_copy(update={"smoothing": 0.5})
+    else:
+        data = read_json(track_file)
+        if change == "times":
+            data["clip_start"] = 11.0
+        elif change == "schema":
+            data["schema_version"] = 1
+        elif change == "crop_w":
+            data["crop_w"] = 100
+        track_file.write_text(json.dumps(data), encoding="utf-8")
+
+
+@pytest.mark.parametrize("change", ["missing", "times", "schema", "settings", "crop_w"])
+def test_a_missing_or_stale_track_is_analysed_again_and_saved(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    ctx, fakes = speaker_ctx(project, monkeypatch)
+    render.run(ctx)
+    opened = fakes.opened
+    stale_by(change, ctx)
+
+    render.run(ctx)
+
+    # c01's track was spoiled; a settings change spoils both
+    assert fakes.opened == opened + (2 if change == "settings" else 1)
+    clips = ctx.run_dir / "clips"
+    track = TrackFile.model_validate_json((clips / "c01.track.json").read_text(encoding="utf-8"))
+    assert (track.clip_start, track.clip_end, track.schema_version) == (10.0, 30.0, 2)
+    assert track.crop_w == 202
+    data = read_json(clips / "c01.json")
+    assert data["track_sha256"] == file_hash(clips / "c01.track.json")  # rendered from the new one
+    assert (clips / "c01.crop.cmd").read_text(encoding="utf-8") == expected_commands(
+        ctx, "c01", 20.0
+    )
+
+
+def test_a_track_with_a_fallback_reason_renders_the_centre_crop(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = speaker_ctx(project, monkeypatch, track_fakes.nobody)
+
+    render.run(ctx)
+
+    assert vf_of(fake.calls[0][1]) == CENTRE_VF
+    assert not [n for n in clip_files(ctx.run_dir) if n.endswith(".crop.cmd")]
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    assert (data["crop_mode"], data["track_fallback"], data["crop_changes"]) == (
+        "speaker",
+        "no_face",
+        0,
+    )
+    assert data["crop"] == {"w": 202, "h": 360, "x": 218, "y": 0}
+    speaker_args = fake.calls[0][1]
+
+    ctx.config.app.video.crop = "center"  # the very same command as centre mode
+    fake.calls.clear()
+    render.run(ctx)
+    assert fake.calls[0][1] == speaker_args
+
+
+def test_a_crop_that_never_moves_is_a_plain_crop(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def one(t: float) -> list[track_fakes.RawFace]:
+        return [track_fakes.RawFace(0.25, 0.5, 0.15, 0.3, track_fakes.talking(t))]
+
+    ctx, _ = speaker_ctx(project, monkeypatch, one)
+
+    render.run(ctx)
+
+    vf = vf_of(fake.calls[0][1])
+    assert vf.startswith("crop=202:360:60:0,scale=")  # 0.25 of 640, minus half the window
+    assert not [n for n in clip_files(ctx.run_dir) if n.endswith(".crop.cmd")]
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    assert (data["crop_mode"], data["crop_changes"], data["track_fallback"]) == ("speaker", 0, None)
+
+
+def hop(t: float) -> list[track_fakes.RawFace]:
+    """One person who sits at the left for 10 s and at the right after a camera cut."""
+    return [track_fakes.RawFace(0.25 if t < 10 else 0.75, 0.5, 0.15, 0.3, track_fakes.talking(t))]
+
+
+def test_a_camera_cut_moves_the_crop_at_its_exact_time(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = speaker_ctx(project, monkeypatch, hop, CUT_LOOK)
+
+    render.run(ctx)
+
+    track = TrackFile.model_validate_json(
+        (ctx.run_dir / "clips" / "c01.track.json").read_text(encoding="utf-8")
+    )
+    assert track.cuts == [10.0] and track.cuts_exact == [pytest.approx(9.9 + 2.5 / 30, abs=1e-6)]
+    text = (ctx.run_dir / "clips" / "c01.crop.cmd").read_text(encoding="utf-8")
+    assert text == "9.983333 crop x 380;\n"  # the exact cut, not the sample time 10.0
+
+
+def test_speaker_mode_logs_numbers_only(
+    project: Path,
+    fake: FakeFfmpeg,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ctx, _ = speaker_ctx(project, monkeypatch, hop, CUT_LOOK)
+
+    with caplog.at_level("INFO", logger="clipmachine"):
+        render.run(ctx)
+
+    line = next(r.getMessage() for r in caplog.records if "render: c01" in r.getMessage())
+    assert "speaker, track analysed, 1 cuts, 0 switches, 1 crop changes" in line
+    assert "source.mp4" not in caplog.text and ".json" not in caplog.text
+
+
+# --- speaker mode: resume ------------------------------------------------------------------
+
+
+def test_resume_keeps_clips_with_the_same_mode_and_track(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, fakes = speaker_ctx(project, monkeypatch)
+    render.run(ctx)
+
+    render.run(resume(ctx))
+
+    assert fake.ids == ["c01", "c02"]  # nothing was rendered again
+    assert fakes.opened == 2
+
+
+def test_resume_rerenders_when_the_track_file_changed(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, fakes = speaker_ctx(project, monkeypatch)
+    render.run(ctx)
+    track_file = ctx.run_dir / "clips" / "c01.track.json"
+    track_file.write_text(json.dumps(read_json(track_file), indent=1), encoding="utf-8")
+
+    render.run(resume(ctx))
+
+    assert fake.ids == ["c01", "c02", "c01"]  # still a valid track, so no new analysis
+    assert fakes.opened == 2
+
+
+def test_resume_rerenders_when_the_track_is_missing(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, fakes = speaker_ctx(project, monkeypatch)
+    render.run(ctx)
+    (ctx.run_dir / "clips" / "c02.track.json").unlink()
+
+    render.run(resume(ctx))
+
+    assert fake.ids == ["c01", "c02", "c02"]
+    assert fakes.opened == 3  # c02 was analysed again
+
+
+def test_resume_rerenders_when_the_command_file_is_gone(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = speaker_ctx(project, monkeypatch)
+    render.run(ctx)
+    (ctx.run_dir / "clips" / "c01.crop.cmd").unlink()
+
+    render.run(resume(ctx))
+
+    assert fake.ids == ["c01", "c02", "c01"]
+    assert (ctx.run_dir / "clips" / "c01.crop.cmd").is_file()
+
+
+@pytest.mark.parametrize(("first", "second"), [("center", "speaker"), ("speaker", "center")])
+def test_resume_rerenders_when_the_crop_mode_changed(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch, first: str, second: str
+) -> None:
+    ctx, _ = speaker_ctx(project, monkeypatch)
+    ctx.config.app.video.crop = first
+    render.run(ctx)
+
+    ctx.config.app.video.crop = second
+    render.run(resume(ctx))
+
+    assert fake.ids == ["c01", "c02", "c01", "c02"]
+    assert read_json(ctx.run_dir / "clips" / "c01.json")["crop_mode"] == second
+
+
+# --- speaker mode: the sweep ---------------------------------------------------------------
+
+
+def test_a_forced_redo_removes_old_command_files(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = speaker_ctx(project, monkeypatch, track_fakes.nobody)  # nothing will write one
+    folder = ctx.run_dir / "clips"
+    folder.mkdir()
+    (folder / "c01.crop.cmd").write_text("1.000000 crop x 2;\n", encoding="utf-8")
+    (folder / "c01.track.json").write_text("{}", encoding="utf-8")  # a track file is not ours
+
+    render.run(ctx)
+
+    assert not (folder / "c01.crop.cmd").exists()
+    assert (folder / "c01.track.json").is_file()
+
+
+def test_command_files_of_clips_no_longer_kept_are_removed_and_kept_ones_survive_a_resume(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = speaker_ctx(project, monkeypatch)
+    render.run(ctx)
+    folder = ctx.run_dir / "clips"
+    assert (folder / "c01.crop.cmd").is_file() and (folder / "c02.crop.cmd").is_file()
+    write_scored(ctx.run_dir, [("c01", 1, 10.0, 30.0)])
+
+    render.run(resume(ctx))
+
+    assert fake.ids == ["c01", "c02"]  # c01 was kept as it was
+    assert (folder / "c01.crop.cmd").is_file()
+    assert not (folder / "c02.crop.cmd").exists()
+    assert (folder / "c01.track.json").is_file()
+    assert not (folder / "c02.track.json").exists()  # as before: gone with its clip
+
+
+# --- speaker mode: errors and centre mode --------------------------------------------------
+
+
+def test_a_missing_model_file_names_the_fetch_command_and_renders_nothing(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, fakes = speaker_ctx(project, monkeypatch, models=False)
+
+    with pytest.raises(RunError, match="fetch-face-model"):
+        render.run(ctx)
+
+    assert fake.calls == [] and fakes.opened == 0
+    assert clip_files(ctx.run_dir) == []
+
+
+def test_a_failed_analysis_is_a_run_error_naming_the_clip(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = speaker_ctx(project, monkeypatch)
+
+    def broken(*args: object, **kwargs: object) -> object:
+        raise MediaError("frame extraction failed: boom")
+
+    monkeypatch.setattr(tracking.ffmpeg, "read_frames", broken)
+
+    with pytest.raises(RunError, match="speaker tracking failed for c01: frame extraction failed"):
         render.run(ctx)
 
     assert fake.calls == []
+
+
+def test_centre_mode_needs_no_model_files_and_never_imports_tracking(
+    ctx: RunContext, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import clipmachine
+
+    monkeypatch.delitem(sys.modules, "clipmachine.tracking", raising=False)
+    monkeypatch.delattr(clipmachine, "tracking", raising=False)
+
+    render.run(ctx)  # no model files exist in this project
+
+    assert "clipmachine.tracking" not in sys.modules
+    assert vf_of(fake.calls[0][1]) == CENTRE_VF
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    assert (data["crop_mode"], data["track_sha256"], data["crop_changes"]) == ("center", None, 0)

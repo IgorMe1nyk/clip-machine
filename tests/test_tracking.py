@@ -731,3 +731,57 @@ def test_render_resume_also_keeps_track_files(project: Path, fake_render: FakeFf
     render.run(resumed)
 
     assert (ctx.run_dir / "clips" / "c01.track.json").is_file()
+
+
+# --- track_for_clip and build_plan --------------------------------------------------------
+
+
+def test_track_for_clip_analyses_and_saves_then_reuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fakes = track_fakes.install(monkeypatch, track_fakes.two_people())
+    plan = make_plan(tmp_path)
+
+    first, reused_first = tracking.track_for_clip(plan, "c01", 10.0, 30.0)
+    second, reused_second = tracking.track_for_clip(plan, "c01", 10.0, 30.0)
+
+    assert (reused_first, reused_second) == (False, True)
+    assert first == second and fakes.opened == 1
+    saved = tracking.track_path(plan.clips_dir, "c01").read_text(encoding="utf-8")
+    assert TrackFile.model_validate_json(saved) == first
+
+
+def test_track_for_clip_analyses_again_for_another_window_width(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fakes = track_fakes.install(monkeypatch, track_fakes.two_people())
+    plan = make_plan(tmp_path)
+    tracking.track_for_clip(plan, "c01", 10.0, 30.0)
+
+    _, reused = tracking.track_for_clip(plan, "c01", 10.0, 30.0, crop_w=100)
+    _, reused_same = tracking.track_for_clip(plan, "c01", 10.0, 30.0, crop_w=202)
+
+    assert (reused, reused_same) == (False, True) and fakes.opened == 2
+
+
+def test_build_plan_checks_both_model_files(project: Path) -> None:
+    from clipmachine.utils import faces
+
+    app = make_ctx(project).config.app
+    run_dir = project / "runs" / "run"
+    args = {"video": video(), "source": run_dir / "source.mp4", "source_sha256": "a" * 64}
+
+    with pytest.raises(faces.FacesError, match="fetch-face-model"):
+        tracking.build_plan(run_dir, project, app, segments=[], **args)  # type: ignore[arg-type]
+    track_fakes.write_model(project)
+    (faces.model_dir(project, faces.DETECTOR) / faces.DETECTOR.name).unlink()
+    with pytest.raises(faces.FacesError, match="fetch-face-model"):  # the detector is missing
+        tracking.build_plan(run_dir, project, app, segments=[], **args)  # type: ignore[arg-type]
+    track_fakes.write_model(project)
+
+    plan = tracking.build_plan(run_dir, project, app, segments=[], **args)  # type: ignore[arg-type]
+
+    assert plan.clips_dir == run_dir / "clips" and plan.clips_dir.is_dir()
+    assert plan.settings == app.speaker
+    assert (plan.target_width, plan.target_height) == (1080, 1920)
+    assert len(plan.model_sha256) == 64 and len(plan.detector_sha256) == 64
