@@ -63,14 +63,12 @@ def test_full_run_marks_everything_done(project: Path) -> None:
         assert stage.error is None
 
 
-def test_stubs_log_not_implemented(project: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_no_stage_logs_not_implemented(project: Path, caplog: pytest.LogCaptureFixture) -> None:
     run_dir = new_run(project)
     with caplog.at_level(logging.INFO, logger="clipmachine"):
         run_pipeline(run_dir)
-    # fetch, transcribe, candidates, score and render are real now (silent no-ops in unit tests)
-    for name in STAGE_NAMES[5:]:
-        assert f"stage {name} not implemented yet" in caplog.text
-    for name in STAGE_NAMES[:5]:
+    # every stage is real now (silent no-ops in unit tests)
+    for name in STAGE_NAMES:
         assert f"stage {name} not implemented yet" not in caplog.text
 
 

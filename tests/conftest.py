@@ -53,6 +53,9 @@ def _no_tools_needed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
     # render needs a real run folder (scored.json, source video): its own tests call render.run
     # with a faked ffmpeg, and the ffmpeg-marked test uses real tools.
     monkeypatch.setitem(pipeline.STAGES, "render", silent)
+    # report needs scored.json, transcript.json and meta.json: its own tests call report.run
+    # directly, or put it back with the other stages' outputs written by hand.
+    monkeypatch.setitem(pipeline.STAGES, "report", silent)
 
 
 @pytest.fixture(autouse=True)
