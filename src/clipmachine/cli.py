@@ -16,6 +16,8 @@ from clipmachine.pipeline import (
 from clipmachine.preflight import MissingToolError
 from clipmachine.runs import RunError
 from clipmachine.stages.report import REPORT_HTML
+from clipmachine.utils import faces
+from clipmachine.utils.faces import FacesError
 
 EXIT_OK = 0
 EXIT_STAGE_FAILED = 1
@@ -27,7 +29,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="clipmachine",
         description="Turn a long video into short vertical clips.",
     )
-    sub = parser.add_subparsers(dest="command", required=True, metavar="{run,report}")
+    sub = parser.add_subparsers(
+        dest="command", required=True, metavar="{run,report,fetch-face-model}"
+    )
 
     run = sub.add_parser(
         "run",
@@ -48,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     report = sub.add_parser("report", help="print the path of a run folder's report.html")
     report.add_argument("run_folder", type=Path)
+
+    sub.add_parser(
+        "fetch-face-model",
+        help="download the MediaPipe Face Landmarker model into models/mediapipe/ (once)",
+    )
     return parser
 
 
@@ -109,6 +118,15 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_fetch_face_model(root: Path) -> int:
+    """The only place the face model is downloaded; the track command never does it."""
+    downloaded = faces.download_model(faces.model_dir(root))
+    print(f"saved: {downloaded.path}")
+    print(f"size: {downloaded.size_bytes} bytes")
+    print(f"sha256: {downloaded.sha256}")
+    return EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None, root: Path | None = None) -> int:
     """root is the project folder holding config/, clients/ and runs/ (default: current dir)."""
     args = build_parser().parse_args(argv)
@@ -117,7 +135,9 @@ def main(argv: Sequence[str] | None = None, root: Path | None = None) -> int:
     try:
         if args.command == "run":
             return _cmd_run(args, project_root)
+        if args.command == "fetch-face-model":
+            return _cmd_fetch_face_model(project_root)
         return _cmd_report(args)
-    except (ConfigError, RunError, MissingToolError) as exc:
+    except (ConfigError, RunError, MissingToolError, FacesError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
