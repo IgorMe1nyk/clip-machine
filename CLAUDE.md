@@ -6,7 +6,7 @@ writes files in a run folder and can be restarted. Currently a walking skeleton:
 `fetch` is real; the other stages are stubs.
 
 ## Read first
-- `docs/brief-02-fetch.md` (current brief), `docs/clip-machine-plan.md` sections 4 and 6.
+- `docs/brief-04-candidates.md` (current brief), `docs/clip-machine-plan.md` sections 4 and 6.
 - Where the plan conflicts with `docs/MVP.md`, `COSTS.md`, `DECISIONS.md` or the brief, those win.
 
 ## Commands (run from the repo root)
