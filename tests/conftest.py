@@ -49,6 +49,7 @@ def _no_tools_needed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
     # candidates calls the API: pipeline tests never reach it. Tests of the stage itself call
     # candidates.run directly (or put it back) with a faked client.
     monkeypatch.setitem(pipeline.STAGES, "candidates", silent)
+    monkeypatch.setitem(pipeline.STAGES, "score", silent)
 
 
 @pytest.fixture(autouse=True)

@@ -83,6 +83,28 @@ class CandidatesConfig(StrictModel):
     preferred_max_seconds: float | None = Field(default=None, gt=0)
 
 
+class ScoreConfig(StrictModel):
+    """The scoring stage. Every key has a default so run folders made before it existed load."""
+
+    max_per_call: int = Field(default=20, gt=0)  # candidates judged together in one call
+    max_output_tokens: int = Field(default=8000, gt=0)
+    # Sonnet 5.5 rejects thinking "disabled"; between_tools is the lowest setting it accepts and
+    # only works at low, medium or high effort.
+    thinking: Literal["between_tools", "adaptive"] = "between_tools"
+    effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    min_score: int = Field(default=6, ge=1, le=10)
+    repair_attempts: int = Field(default=1, ge=0, le=1)  # the client makes at most one repair call
+
+    @model_validator(mode="after")
+    def _check_thinking_and_effort(self) -> "ScoreConfig":
+        if self.thinking == "between_tools" and self.effort in ("xhigh", "max"):
+            raise ValueError(
+                f"thinking 'between_tools' is not accepted at effort {self.effort!r}: use "
+                "'adaptive' or a lower effort"
+            )
+        return self
+
+
 DEFAULT_PREFERRED_MIN = 30.0
 DEFAULT_PREFERRED_MAX = 50.0
 
@@ -201,6 +223,7 @@ class AppConfig(StrictModel):
     pricing: PricingConfig = Field(default_factory=PricingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     candidates: CandidatesConfig = Field(default_factory=CandidatesConfig)
+    score: ScoreConfig = Field(default_factory=ScoreConfig)
 
     @model_validator(mode="after")
     def _check_preferred(self) -> "AppConfig":

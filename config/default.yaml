@@ -31,6 +31,13 @@ candidates:
   fallback_max_words: 40     # a segment edge is a sentence boundary only after this many unpunctuated words
   preferred_min_seconds: 30  # min_seconds <= preferred_min < preferred_max <= max_seconds
   preferred_max_seconds: 50  # asked of the model; short moments grow toward preferred_min
+score:
+  max_per_call: 20           # candidates judged together in one call; more are sent in chunks
+  max_output_tokens: 8000    # thinking and answer together
+  thinking: between_tools    # Sonnet 5.5 rejects "disabled"; this is the lowest it accepts
+  effort: medium             # low / medium / high (xhigh and max need thinking: adaptive)
+  min_score: 6               # 1-10; a keep below this is dropped (dropped_by: min_score)
+  repair_attempts: 1         # 0 or 1: extra call when the answer is invalid
 transcribe:                  # defaults chosen in D-011 from the Brief 3 benchmark (setting B)
   model: small               # tiny base small medium large-v3 turbo distil-large-v3 ...
   device: auto               # auto / cpu / cuda

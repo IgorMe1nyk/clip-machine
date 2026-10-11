@@ -278,11 +278,12 @@ def test_resolved_config_roundtrip(project: Path, tmp_path: Path) -> None:
 
 
 def test_default_yaml_has_every_new_key(project: Path) -> None:
-    from clipmachine.models import BudgetConfig, CandidatesConfig
+    from clipmachine.models import BudgetConfig, CandidatesConfig, ScoreConfig
 
     data = yaml.safe_load((project / "config" / "default.yaml").read_text(encoding="utf-8"))
     assert set(data["budget"]) == set(BudgetConfig.model_fields)
     assert set(data["candidates"]) == set(CandidatesConfig.model_fields)
+    assert set(data["score"]) == set(ScoreConfig.model_fields)
     assert set(data["pricing"]) == {"checked", "source", "models"}
 
 
@@ -309,6 +310,10 @@ def test_default_pricing_and_limits_match_the_brief(project: Path) -> None:
     assert (cand.block_minutes, cand.per_block_max, cand.max_output_tokens) == (10, 5, 2000)
     assert (cand.snap_padding_seconds, cand.dedupe_overlap) == (0.2, 0.5)
     assert (cand.thinking, cand.effort) == ("disabled", "low")
+    score = app.score
+    assert (score.max_per_call, score.max_output_tokens) == (20, 8000)
+    assert (score.thinking, score.effort) == ("between_tools", "medium")
+    assert (score.min_score, score.repair_attempts) == (6, 1)
 
 
 def test_general_client_loads_with_its_clip_length(project: Path) -> None:
@@ -322,7 +327,7 @@ def test_resolved_file_from_before_brief_4_still_loads(project: Path, tmp_path: 
     target = tmp_path / "config.resolved.yaml"
     dump_resolved(load_resolved(project, "example-client"), target)
     data = yaml.safe_load(target.read_text(encoding="utf-8"))
-    for key in ("pricing", "budget", "candidates"):
+    for key in ("pricing", "budget", "candidates", "score"):
         del data["config"][key]
     target.write_text(yaml.safe_dump(data), encoding="utf-8")
 
@@ -330,6 +335,7 @@ def test_resolved_file_from_before_brief_4_still_loads(project: Path, tmp_path: 
     assert app.pricing.models == {}  # no guessed prices: a call is refused instead
     assert app.budget.max_usd_per_run == 1.0
     assert app.candidates.per_block_max == 5
+    assert (app.score.max_per_call, app.score.thinking) == (20, "between_tools")
 
 
 @pytest.mark.parametrize(
@@ -345,6 +351,16 @@ def test_resolved_file_from_before_brief_4_still_loads(project: Path, tmp_path: 
         ("candidates", {"thinking": "enabled"}, "candidates.thinking"),
         ("candidates", {"effort": "extreme"}, "candidates.effort"),
         ("candidates", {"blocks": 3}, "candidates.blocks"),  # typo: unknown key
+        ("score", {"max_per_call": 0}, "score.max_per_call"),
+        ("score", {"max_output_tokens": 0}, "score.max_output_tokens"),
+        ("score", {"min_score": 0}, "score.min_score"),
+        ("score", {"min_score": 11}, "score.min_score"),
+        ("score", {"repair_attempts": 2}, "score.repair_attempts"),
+        ("score", {"repair_attempts": -1}, "score.repair_attempts"),
+        ("score", {"thinking": "disabled"}, "score.thinking"),  # Sonnet 5.5 rejects it
+        ("score", {"effort": "extreme"}, "score.effort"),
+        ("score", {"effort": "max"}, "between_tools"),  # not accepted with between_tools
+        ("score", {"min": 6}, "score.min"),  # typo: unknown key
     ],
 )
 def test_invalid_budget_and_candidates_settings_are_rejected(
