@@ -7,10 +7,10 @@ human review.
 
 **Status: walking skeleton.** The package, CLI, validated config, run folders and a
 restartable six-stage pipeline exist. The `fetch` stage (validates the input, copies it into
-the run folder, extracts audio) and the `transcribe` stage (local Whisper, word timestamps)
-are real; the other four stages are still stubs. There is no AI call yet. See `docs/MVP.md`
-for the finish line and `docs/brief-01-skeleton.md` to `docs/brief-03-transcribe.md` for what
-each step covers.
+the run folder, extracts audio), the `transcribe` stage (local Whisper, word timestamps) and
+the `candidates` stage (Claude Haiku proposes moments, snapped to sentence boundaries) are
+real; the other three stages are still stubs. See `docs/MVP.md` for the finish line and
+`docs/brief-01-skeleton.md` to `docs/brief-04-candidates.md` for what each step covers.
 
 ## How it works
 
@@ -136,7 +136,8 @@ appears in the compute apps list and memory used rises. The run also records `de
 
 ## Configuration
 
-- `config/default.yaml`: clip length, how many clips to keep, model names, caption style.
+- `config/default.yaml`: clip length, how many clips to keep, model names, prices, budget,
+  candidates settings, caption style.
 - `clients/<name>/rules.yaml`: per-client niche and tone. Its `clip_length` overrides the
   default clip length. The merged result is saved in each run as `config.resolved.yaml`.
 
@@ -159,17 +160,67 @@ Tests marked `whisper` run the real `tiny` model on the CPU and are skipped unle
 `CLIPMACHINE_WHISPER_TESTS=1` is set (the first such run downloads about 75 MB into `models/`). The same
 commands run in CI (`.github/workflows/ci.yml`), which installs ffmpeg so they run there too.
 
+## Claude API (candidates stage)
+
+Only the `candidates` stage calls the API, and only transcript text is sent (never video or
+audio). Everything else runs locally.
+
+**1. Create `.env`** in the repository root (copy `.env.example`) with one line:
+
+```
+CLIPMACHINE_ANTHROPIC_API_KEY=<your key>
+```
+
+`.env` is git-ignored. The key is read only from this file, by a small built-in parser, and
+passed to the SDK explicitly. **Never export `ANTHROPIC_API_KEY`**: the app ignores it, and
+Claude Code would start using it ahead of your subscription.
+
+**2. Spend limits.** Set a Console spend limit as a second lock (Settings > Billing > Spend
+limits), buy no credits and keep auto-reload off (see `docs/COSTS.md` section 3).
+
+**Kill switch.** `CLIPMACHINE_NO_API=1` makes every API call refuse before any network use or
+key lookup. The candidates stage then fails with "API disabled".
+
+```powershell
+$env:CLIPMACHINE_NO_API = "1"      # for this terminal only
+Remove-Item Env:CLIPMACHINE_NO_API # turn it off again
+```
+
+**Budget guard.** Before each call the worst-case cost is estimated: input tokens (the free
+token-counting endpoint plus 10 %, or characters / 3 if counting fails) and `max_tokens` of
+output, priced from `pricing:` in `config/default.yaml`. A call that would take the run past
+`budget.max_usd_per_run` (default $1) or today's total (UTC) past `budget.max_usd_per_day`
+(default $5) is refused before it is sent. Prices live in `pricing:` with the date they were
+copied from the live pricing page; a model without a price is refused, never guessed.
+
+**Where costs are logged.**
+
+| File | Holds |
+|---|---|
+| `runs/<run>/costs.json` | every call and every refusal of that run: purpose, model, input / output / thinking / cache tokens, estimated and actual USD, duration, request ID, totals |
+| `runs/_ledger/costs.jsonl` | one line per paid call from all runs (git-ignored); the source of the daily total |
+
+Neither file holds prompts, transcript text or the key. Errors that mean money or limits (your
+spend limit, no credits, a bad key, Anthropic's monthly cap) are never retried and stop the run
+with a one-line message that says what to check. Rate limits with a `retry-after` header and 5xx
+errors are retried up to three attempts in all.
+
+**Candidates output.** `candidates.json` holds each candidate's snapped `start` / `end`, the
+model's original `model_start` / `model_end`, `hook`, `reason`, `type`, the text rebuilt from the
+words, and `snap_notes`, plus a summary of the counts and cost. Tune `candidates:` in
+`config/default.yaml`; the prompt is `prompts/find_moments.md`.
+
 ## Secrets
 
-The Claude API key will live only in `.env` as `CLIPMACHINE_ANTHROPIC_API_KEY` (copy
-`.env.example`). `.env` is git-ignored. Nothing reads it yet.
+The Claude API key lives only in `.env` as `CLIPMACHINE_ANTHROPIC_API_KEY`. `.env` is
+git-ignored. No code prints, logs or writes the key or the environment.
 
 ## Layout
 
 ```
 config/            default settings
 clients/<name>/    per-client rules
-prompts/           prompt files (arrive with the stages that use them)
+prompts/           prompt files, one per stage that calls the model
 src/clipmachine/   cli, config, models, pipeline, run folders, stages/, utils/
 runs/              one folder per processed episode (git-ignored)
 models/            downloaded Whisper models (git-ignored)
