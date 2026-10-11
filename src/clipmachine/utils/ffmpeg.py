@@ -7,12 +7,14 @@ output. Inputs are absolute resolved paths with the `file:` prefix plus
 
 import json
 import math
+import re
 import subprocess
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 from clipmachine.models import AudioStreamInfo, FetchConfig, MediaInfo, VideoStreamInfo
+from clipmachine.utils.crop import CropBox
 
 PROBE_TIMEOUT_SECONDS = 60
 MAX_PROBE_OUTPUT_CHARS = 10_000_000
@@ -29,10 +31,13 @@ def input_url(path: Path) -> str:
     return f"file:{path.resolve()}"
 
 
-def run_tool(args: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+def run_tool(
+    args: list[str], timeout: float, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             args,
+            cwd=cwd,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -303,6 +308,129 @@ def verify_audio(audio: MediaInfo, source_duration_seconds: float) -> None:
         raise MediaError(
             f"extracted audio is {audio.duration_seconds:.1f} s but the source is "
             f"{source_duration_seconds:.1f} s (allowed difference {tolerance:.1f} s)"
+        )
+
+
+# --- clip rendering -----------------------------------------------------------------------
+
+RENDER_BASE_TIMEOUT_SECONDS = 120
+RENDER_TIMEOUT_PER_CLIP_SECOND = 20.0
+CLIP_DURATION_TOLERANCE_SECONDS = 0.15
+# What may appear in a path inside the -vf string: no drive colon, backslash, quote, comma or space.
+FILTER_PATH_RE = re.compile(r"[A-Za-z0-9._/-]+")
+
+
+def _filter_path(path: str, what: str) -> str:
+    """A relative, forward-slash path that is safe inside a filter string, or MediaError."""
+    if not FILTER_PATH_RE.fullmatch(path) or path.startswith("/"):
+        raise MediaError(
+            f"{what} cannot be used inside an ffmpeg filter: {path!r} (needs a relative path of "
+            "letters, digits and . _ - / only)"
+        )
+    return path
+
+
+def video_filter(
+    crop: CropBox, width: int, height: int, subtitles_rel: str, fontsdir_rel: str
+) -> str:
+    """crop -> scale -> setsar -> subtitles, all numbers plain integers.
+
+    The two paths must be relative to the directory ffmpeg runs in, so no drive letter ever
+    reaches the filter parser.
+    """
+    ass = _filter_path(subtitles_rel, "subtitle file path")
+    fonts = _filter_path(fontsdir_rel, "font folder path")
+    return (
+        f"crop={crop.w}:{crop.h}:{crop.x}:{crop.y},scale={width}:{height},setsar=1,"
+        f"subtitles=filename={ass}:fontsdir={fonts}"
+    )
+
+
+def render_args(
+    source: Path,
+    temp_out: Path,
+    *,
+    start: float,
+    duration: float,
+    vf: str,
+    crf: int,
+    preset: str,
+    audio_bitrate: str,
+    log_level: str = "error",
+) -> list[str]:
+    """One re-encoding pass: seek before the input (accurate when re-encoding), first video and
+    first audio stream only, H.264 + AAC in MP4. Never a stream copy."""
+    return [
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-v",
+        log_level,
+        "-protocol_whitelist",
+        "file",
+        "-ss",
+        f"{start:.3f}",
+        "-i",
+        input_url(source),
+        "-t",
+        f"{duration:.3f}",
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0",
+        "-vf",
+        vf,
+        "-c:v",
+        "libx264",
+        "-preset",
+        preset,
+        "-crf",
+        str(crf),
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        audio_bitrate,
+        "-movflags",
+        "+faststart",
+        "-f",
+        "mp4",
+        "-y",
+        str(temp_out.resolve()),
+    ]
+
+
+def render_timeout(duration_seconds: float) -> float:
+    return RENDER_BASE_TIMEOUT_SECONDS + RENDER_TIMEOUT_PER_CLIP_SECOND * duration_seconds
+
+
+def render_clip(args: list[str], cwd: Path, duration_seconds: float) -> None:
+    """Run a render command with `cwd` as working directory. The caller owns the temp file."""
+    result = run_tool(args, render_timeout(duration_seconds), cwd=cwd)
+    if result.returncode != 0:
+        raise MediaError(f"ffmpeg render failed: {_last_line(result.stderr)}")
+
+
+def verify_clip(info: MediaInfo, *, width: int, height: int, duration: float) -> None:
+    """An output clip must be MP4 with H.264 video of the exact size, AAC audio and the expected
+    length (within CLIP_DURATION_TOLERANCE_SECONDS)."""
+    if "mp4" not in info.format_name.split(","):
+        raise MediaError(f"output is {info.format_name!r}, expected mp4")
+    video, audio = info.video, info.audio
+    if video is None or video.codec != "h264":
+        raise MediaError(f"output video is {video.codec if video else 'missing'}, expected h264")
+    if (video.width, video.height) != (width, height):
+        raise MediaError(f"output is {video.width}x{video.height}, expected {width}x{height}")
+    if audio is None or audio.codec != "aac":
+        raise MediaError(f"output audio is {audio.codec if audio else 'missing'}, expected aac")
+    if info.duration_seconds is None:
+        raise MediaError("output has no duration")
+    gap = abs(info.duration_seconds - duration)
+    if gap > CLIP_DURATION_TOLERANCE_SECONDS:
+        raise MediaError(
+            f"output is {info.duration_seconds:.2f} s, expected {duration:.2f} s "
+            f"(allowed difference {CLIP_DURATION_TOLERANCE_SECONDS} s)"
         )
 
 
