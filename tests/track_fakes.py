@@ -66,6 +66,13 @@ class TrackFakes:
     closed: int = 0
     fps: float = 10.0
     index: int = 0  # frames handed to find_faces since read_frames was last called
+    # read_timed_frames: the source's own frames around a cut. Unless scripted, they come from
+    # `look` at timed_fps, with timestamps from the -ss point like ffmpeg's showinfo.
+    timed: list[tuple[float, int]] | None = None  # scripted (timestamp, grey level) pairs
+    timed_error: Exception | None = None  # raised instead of returning frames
+    timed_fps: float = 30.0
+    timed_requests: list[list[str]] = field(default_factory=list)
+    timed_sizes: list[tuple[int, int]] = field(default_factory=list)
 
     def read_frames(
         self,
@@ -84,6 +91,25 @@ class TrackFakes:
         for k in range(int(round(duration * self.fps))):
             grey = self.look(k / self.fps)
             yield np.full((frame_h, frame_w, 3), grey, dtype=np.uint8)
+
+    def read_timed_frames(
+        self, args: list[str], frame_w: int, frame_h: int, timeout: float
+    ) -> list[tuple[float, "np.ndarray[Any, Any]"]]:
+        self.timed_requests.append(args)
+        self.timed_sizes.append((frame_w, frame_h))
+        if self.timed_error is not None:
+            raise self.timed_error
+        if self.timed is not None:
+            return [(t, np.full((frame_h, frame_w, 3), g, dtype=np.uint8)) for t, g in self.timed]
+        # `look` is in clip time: the first analysis decode started at the clip start
+        origin = float(self.frame_requests[0][self.frame_requests[0].index("-ss") + 1])
+        offset = float(args[args.index("-ss") + 1]) - origin
+        duration = float(args[args.index("-t") + 1])
+        stamps = [k / self.timed_fps for k in range(int(round(duration * self.timed_fps)))]
+        return [
+            (t, np.full((frame_h, frame_w, 3), self.look(offset + t), dtype=np.uint8))
+            for t in stamps
+        ]
 
     def open_finder(
         self, detector_path: Path, landmarker_path: Path, **settings: Any
@@ -133,6 +159,7 @@ def install(
 ) -> TrackFakes:
     fakes = TrackFakes(scenario=scenario, look=look)
     monkeypatch.setattr(tracking.ffmpeg, "read_frames", fakes.read_frames)
+    monkeypatch.setattr(tracking.ffmpeg, "read_timed_frames", fakes.read_timed_frames)
     monkeypatch.setattr(tracking.ffmpeg, "write_preview", fakes.write_preview)
     monkeypatch.setattr(tracking.faces, "open_finder", fakes.open_finder)
     monkeypatch.setattr(tracking.faces, "find_faces", fakes.find_faces)

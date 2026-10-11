@@ -15,6 +15,8 @@ from clipmachine.utils.ffmpeg import (
     frame_size_after_scale,
     preview_args,
     read_frames,
+    read_timed_frames,
+    timed_frame_args,
     write_preview,
 )
 
@@ -186,6 +188,120 @@ def test_write_preview_failure_leaves_no_output(tmp_path: Path) -> None:
     assert not out.exists() and not temp.exists()
 
 
+# --- timed frames -------------------------------------------------------------------------
+
+
+def test_timed_frame_args_log_the_source_frames_without_resampling() -> None:
+    args = timed_frame_args(SOURCE, start=12.5, duration=0.2, width=320)
+    assert args[0] == "ffmpeg"
+    assert "-nostdin" in args and "-an" in args and "-nostats" in args
+    assert args[args.index("-v") + 1] == "info"  # showinfo logs at info level
+    assert args[args.index("-protocol_whitelist") + 1] == "file"
+    assert args.index("-ss") < args.index("-i") < args.index("-t")  # seek before the input
+    assert args[args.index("-ss") + 1] == "12.500"
+    assert args[args.index("-t") + 1] == "0.200"
+    assert args[args.index("-i") + 1] == ffmpeg.input_url(SOURCE)
+    chain = args[args.index("-vf") + 1]
+    assert chain == "showinfo,scale=320:-2"
+    assert chain.split(",")[0] == "showinfo" and "fps" not in chain
+    assert args[args.index("-fps_mode") + 1] == "passthrough"
+    assert args[args.index("-pix_fmt") + 1] == "rgb24"
+    assert args[args.index("-f") + 1] == "rawvideo"
+    assert args[-1] == "-"
+    assert all(isinstance(a, str) for a in args)
+
+
+def showinfo(*times: str) -> bytes:
+    """ffmpeg's log: banner lines and one showinfo line per frame."""
+    lines = ["Input #0, mov,mp4, from 'x':", "  Stream #0:0: Video: h264"]
+    lines += [
+        f"[Parsed_showinfo_0 @ 0000] n:{n:>4} pts:{n * 512:>6} pts_time:{t}  duration:512"
+        for n, t in enumerate(times)
+    ]
+    return ("\n".join(lines) + "\n").encode()
+
+
+def fake_run(
+    monkeypatch: pytest.MonkeyPatch, stdout: bytes, stderr: bytes, code: int = 0
+) -> list[dict[str, object]]:
+    calls: list[dict[str, object]] = []
+
+    def run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append({"args": args, **kwargs})
+        return subprocess.CompletedProcess(args, code, stdout, stderr)
+
+    monkeypatch.setattr(ffmpeg.subprocess, "run", run)
+    return calls
+
+
+def two_by_four(*levels: int) -> bytes:
+    return b"".join(bytes([level]) * (4 * 2 * 3) for level in levels)
+
+
+def test_read_timed_frames_pairs_each_frame_with_its_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = fake_run(monkeypatch, two_by_four(1, 2, 3), showinfo("0", "0.0333333", "0.0666667"))
+
+    pairs = read_timed_frames(["ffmpeg", "-x"], 4, 2, 30)
+
+    assert [t for t, _ in pairs] == [0.0, 0.0333333, 0.0666667]
+    for i, (_, frame) in enumerate(pairs):
+        assert frame.shape == (2, 4, 3) and frame.dtype == np.uint8
+        assert frame.flags.writeable
+        assert (frame == i + 1).all()
+    assert calls[0]["args"] == ["ffmpeg", "-x"]  # an argument list, not a shell string
+    assert calls[0]["stdin"] == subprocess.DEVNULL and calls[0]["timeout"] == 30
+    assert calls[0]["capture_output"] is True and not calls[0].get("shell")
+
+
+def test_read_timed_frames_ignores_the_extra_timestamp_past_the_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_run(monkeypatch, two_by_four(1, 2), showinfo("0.5", "0.6", "0.7"))
+    assert [t for t, _ in read_timed_frames(["ffmpeg"], 4, 2, 30)] == [0.5, 0.6]
+
+
+def test_read_timed_frames_reads_a_negative_start_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_run(monkeypatch, two_by_four(1), showinfo("-0.016"))
+    assert read_timed_frames(["ffmpeg"], 4, 2, 30)[0][0] == -0.016
+
+
+def test_read_timed_frames_with_too_few_timestamps_is_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_run(monkeypatch, two_by_four(1, 2, 3), showinfo("0", "0.03"))
+    with pytest.raises(MediaError, match="2 frame times for 3 frames"):
+        read_timed_frames(["ffmpeg"], 4, 2, 30)
+
+
+def test_read_timed_frames_with_no_frames_is_an_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_run(monkeypatch, b"", showinfo())
+    assert read_timed_frames(["ffmpeg"], 4, 2, 30) == []
+
+
+def test_read_timed_frames_failure_names_the_last_stderr_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_run(monkeypatch, two_by_four(1), b"first\nsecond problem\n", code=1)
+    with pytest.raises(MediaError, match="frame extraction failed: second problem"):
+        read_timed_frames(["ffmpeg"], 4, 2, 30)
+
+
+def test_read_timed_frames_timeout_is_a_media_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(args, 5)
+
+    monkeypatch.setattr(ffmpeg.subprocess, "run", run)
+    with pytest.raises(MediaError, match="timed out after 5 s"):
+        read_timed_frames(["ffmpeg"], 4, 2, 5)
+
+
+def test_read_timed_frames_missing_program_is_a_media_error() -> None:
+    with pytest.raises(MediaError, match="could not run"):
+        read_timed_frames(["clipmachine-no-such-program"], 4, 2, 30)
+
+
 # --- real ffmpeg --------------------------------------------------------------------------
 
 
@@ -230,3 +346,30 @@ def test_real_frame_pipe_and_preview(tmp_path: Path) -> None:
     assert preview.video is not None and preview.video.codec == "h264"
     assert preview.audio is not None and preview.audio.codec == "aac"
     assert preview.duration_seconds == pytest.approx(2.0, abs=0.4)
+
+
+@pytest.mark.ffmpeg
+def test_real_timed_frames_come_one_per_frame_with_increasing_timestamps(tmp_path: Path) -> None:
+    source = tmp_path / "source.mp4"
+    made = subprocess.run(
+        [
+            "ffmpeg", "-nostdin", "-v", "error",
+            "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25:duration=2",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )  # fmt: skip
+    assert made.returncode == 0, made.stderr
+
+    args = timed_frame_args(source, start=0.5, duration=0.5, width=160)
+    pairs = read_timed_frames(args, 160, 90, 60)
+
+    assert len(pairs) == pytest.approx(0.5 * 25, abs=1)
+    times = [t for t, _ in pairs]
+    assert all(b > a for a, b in zip(times, times[1:], strict=False))
+    assert all(
+        b - a == pytest.approx(1 / 25, abs=0.005) for a, b in zip(times, times[1:], strict=False)
+    )
+    assert pairs[0][1].shape == (90, 160, 3) and int(pairs[0][1].max()) > 0

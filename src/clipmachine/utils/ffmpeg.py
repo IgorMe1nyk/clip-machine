@@ -585,6 +585,91 @@ def read_frames(
             sink.close()
 
 
+SHOWINFO_TIME_RE = re.compile(r"Parsed_showinfo.*?pts_time:\s*(-?[0-9.]+)")
+
+
+def timed_frame_args(source: Path, *, start: float, duration: float, width: int) -> list[str]:
+    """Decode [start, start + duration) of the first video stream at the source's own frame rate,
+    to raw RGB on stdout, with one `showinfo` line per frame on stderr.
+
+    No `fps` filter and `-fps_mode passthrough`, so ffmpeg neither drops nor repeats a frame and
+    the frames line up one to one with the logged timestamps. showinfo comes first in the chain,
+    so it logs the timestamps of the decoded frames, and it logs at info level, hence `-v info`.
+    The timestamps are seconds from the `-ss` point.
+    """
+    return [
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-nostats",
+        "-v",
+        "info",
+        "-protocol_whitelist",
+        "file",
+        "-ss",
+        f"{start:.3f}",
+        "-i",
+        input_url(source),
+        "-t",
+        f"{duration:.3f}",
+        "-map",
+        "0:v:0",
+        "-an",
+        "-vf",
+        f"showinfo,scale={width}:-2",
+        "-fps_mode",
+        "passthrough",
+        "-pix_fmt",
+        "rgb24",
+        "-f",
+        "rawvideo",
+        "-",
+    ]
+
+
+def read_timed_frames(
+    args: list[str], frame_w: int, frame_h: int, timeout: float
+) -> list[tuple[float, "NDArray[np.uint8]"]]:
+    """Run a timed_frame_args command and return (timestamp, frame) pairs: the timestamp in
+    seconds from the `-ss` point and a writable (frame_h, frame_w, 3) uint8 array.
+
+    This is a fraction of a second of video, so the output is read whole. showinfo can log one
+    frame more than is written (the one past `-t`): the first len(frames) timestamps are used.
+    Fewer timestamps than frames, a non-zero exit or `timeout` seconds raise MediaError.
+    """
+    import numpy as np
+
+    try:
+        result = subprocess.run(
+            args,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise MediaError(f"{args[0]} timed out after {timeout:g} s") from exc
+    except OSError as exc:
+        raise MediaError(f"could not run {args[0]}: {exc.strerror or exc}") from exc
+    log_text = result.stderr.decode("utf-8", errors="replace")
+    if result.returncode != 0:
+        raise MediaError(f"frame extraction failed: {_last_line(log_text)}")
+    size = frame_w * frame_h * RGB_CHANNELS
+    count = len(result.stdout) // size  # a partial frame is dropped
+    times = [float(m) for m in SHOWINFO_TIME_RE.findall(log_text)]
+    if len(times) < count:
+        raise MediaError(f"ffmpeg logged {len(times)} frame times for {count} frames")
+    return [
+        (
+            times[i],
+            np.frombuffer(result.stdout, dtype=np.uint8, count=size, offset=i * size)
+            .reshape(frame_h, frame_w, 3)
+            .copy(),
+        )
+        for i in range(count)
+    ]
+
+
 def preview_args(
     source: Path,
     temp_out: Path,

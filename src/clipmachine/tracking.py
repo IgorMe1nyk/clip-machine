@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from clipmachine.models import (
+    TRACK_SCHEMA_VERSION,
     AppConfig,
     SpeakerConfig,
     TrackFile,
@@ -67,6 +68,8 @@ CUT_COLOR = (255, 255, 0)  # a border round the first samples after a cut
 CUT_BORDER_SAMPLES = 3
 SIGNATURE_BINS = 16
 SIGNATURE_GRID = 160  # the signature looks at about this many columns of the frame
+CUT_REFINE_WIDTH = 320  # frames decoded at this width to find the exact frame of a cut
+CUT_REFINE_MARGIN_SECONDS = 0.1  # decoded past the sample; also how far the answer may stray
 FACE_THICKNESS = 1
 ACTIVE_THICKNESS = 3
 WINDOW_THICKNESS = 2
@@ -156,7 +159,8 @@ def load_valid_track(
     except (OSError, ValueError, ValidationError):
         return None
     same = (
-        track.clip_id == clip_id
+        track.schema_version == TRACK_SCHEMA_VERSION
+        and track.clip_id == clip_id
         and track.clip_start == start
         and track.clip_end == end
         and track.source.sha256 == source_sha256
@@ -296,6 +300,46 @@ def _detect_faces(plan: TrackPlan, start: float, duration: float) -> Detected:
     return Detected(frames, largest, signatures, (frame_w, frame_h))
 
 
+def _exact_cut_time(plan: TrackPlan, start: float, before_t: float, sample_t: float) -> float:
+    """The time, seconds from the clip start, at which the picture cuts between the samples at
+    before_t and sample_t.
+
+    The source's own frames from before_t on are decoded and the frame that differs most from the
+    one before it is the first of the new shot; the answer is the midpoint between it and the last
+    frame of the old shot. Falls back to sample_t when there are fewer than two frames, when no
+    jump reaches cut_threshold, when the answer is more than the margin outside [before_t,
+    sample_t] or when ffmpeg fails.
+    """
+    cfg = plan.settings
+    video = plan.video
+    frame_w, frame_h = ffmpeg.frame_size_after_scale(
+        video.width, video.height, video.rotation, CUT_REFINE_WIDTH
+    )
+    length = (sample_t - before_t) + CUT_REFINE_MARGIN_SECONDS
+    args = ffmpeg.timed_frame_args(
+        plan.source, start=start + before_t, duration=length, width=frame_w
+    )
+    try:
+        timed = ffmpeg.read_timed_frames(args, frame_w, frame_h, ffmpeg.frames_timeout(length))
+    except ffmpeg.MediaError:
+        log.warning("could not read the source's frames at a cut; using the sample time")
+        return sample_t
+    if len(timed) < 2:
+        return sample_t
+    signatures = [frame_signature(frame) for _, frame in timed]
+    jumps = [
+        camera.signature_distance(a, b) for a, b in zip(signatures, signatures[1:], strict=False)
+    ]
+    biggest = max(range(len(jumps)), key=lambda i: jumps[i])  # the first of equal jumps
+    if jumps[biggest] < cfg.cut_threshold:
+        return sample_t
+    first_new = biggest + 1
+    exact = round(before_t + (timed[first_new - 1][0] + timed[first_new][0]) / 2, 6)
+    if not before_t - CUT_REFINE_MARGIN_SECONDS <= exact <= sample_t + CUT_REFINE_MARGIN_SECONDS:
+        return sample_t
+    return exact
+
+
 def _preview_frames(
     plan: TrackPlan,
     start: float,
@@ -353,6 +397,7 @@ def analyse_clip(
     times = [round(k / cfg.sample_fps, 3) for k in range(len(frames))]
     cut_samples = camera.find_cuts(detected.signatures, cfg.cut_threshold)
     cut_times = [times[k] for k in cut_samples]
+    cut_exact = [_exact_cut_time(plan, start, times[k - 1], times[k]) for k in cut_samples]
 
     words = [(w.start, w.end) for w in clip_words(plan.segments, start, end)]
     followed = camera.follow_segments(
@@ -432,6 +477,7 @@ def analyse_clip(
             mouth_read_pct=summary.mouth_read_pct,
         ),
         cuts=[round(t, 3) for t in cut_times],
+        cuts_exact=cut_exact,
     )
 
 

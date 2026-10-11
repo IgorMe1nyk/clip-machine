@@ -775,10 +775,13 @@ class TrackSummary(StrictModel):
     mouth_read_pct: float = 0.0  # % of face samples whose mouth could be read
 
 
+TRACK_SCHEMA_VERSION = 2  # 2: cuts_exact. load_valid_track recomputes files of any other version
+
+
 class TrackFile(StrictModel):
     """The contents of clips/<id>.track.json. Numbers only: no transcript text."""
 
-    schema_version: int = 1
+    schema_version: int = TRACK_SCHEMA_VERSION
     clip_id: str
     clip_start: float
     clip_end: float
@@ -794,7 +797,13 @@ class TrackFile(StrictModel):
     samples: list[TrackSample]
     fallback_reason: str | None  # set: every crop_x is the centre crop
     summary: TrackSummary
-    cuts: list[float] = []  # shot cuts, seconds from the clip start
+    cuts: list[
+        float
+    ] = []  # shot cuts as sample times (multiples of 1 / sample_fps), from clip start
+    # Parallel to `cuts`: the time, seconds from the clip start and to the frame, at which each new
+    # camera shot starts. Found from the source's own frames, so it can differ from the sample time
+    # by up to a few frames. Empty in files written before schema 2.
+    cuts_exact: list[float] = []
 
 
 CostStatus = Literal["ok", "refused", "failed", "unconfirmed"]

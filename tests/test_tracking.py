@@ -10,6 +10,7 @@ import track_fakes
 from clipmachine import tracking
 from clipmachine.context import RunContext
 from clipmachine.models import (
+    TRACK_SCHEMA_VERSION,
     SpeakerConfig,
     TrackFile,
     TranscriptSegment,
@@ -116,11 +117,13 @@ def test_two_speakers_give_two_shots_and_a_cut(
 
 
 def test_the_track_file_holds_numbers_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    track_fakes.install(monkeypatch, track_fakes.two_people())
+    track_fakes.install(monkeypatch, track_fakes.two_people(), CUT_LOOK)
     track = analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0)
 
     raw = json.dumps(track.model_dump(mode="json"))
     assert "w10" not in raw and "synthetic" not in raw  # no transcript words
+    assert "source.mp4" not in raw  # no file names
+    assert len(track.cuts_exact) == 1 and all(isinstance(t, float) for t in track.cuts_exact)
     assert TrackFile.model_validate_json(raw) == track  # round trip
 
 
@@ -262,6 +265,123 @@ def test_a_cut_is_still_recorded_when_the_clip_falls_back_to_the_centre(
     assert track.fallback_reason == "no_face"
     assert track.cuts == [10.0] and track.summary.cuts == 1
     assert {s.crop_x for s in track.samples} == {218}
+
+
+# --- frame-exact cut times ----------------------------------------------------------------
+
+
+CUT_LOOK = track_fakes.cut_at(10.0, levels=(0, 120))
+
+
+def exact_cut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **script: object
+) -> tuple[TrackFile, track_fakes.TrackFakes]:
+    """Analyse a clip with one cut at the sample at 10.0 s, with the timed frames scripted."""
+    fakes = track_fakes.install(monkeypatch, hop, CUT_LOOK)
+    for name, value in script.items():
+        setattr(fakes, name, value)
+    return analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0), fakes
+
+
+def jump_after(frame: int, grey: tuple[int, int] = (0, 120)) -> list[tuple[float, int]]:
+    """Seven frames at 30 per second; the picture changes at `frame`."""
+    return [(k / 30, grey[0] if k < frame else grey[1]) for k in range(7)]
+
+
+def test_the_exact_cut_is_the_midpoint_between_the_frames_around_the_jump(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    track, _ = exact_cut(tmp_path, monkeypatch)  # the default frames change at 10.0 s
+
+    assert track.cuts == [10.0]
+    # decoded from 9.9 s; the old shot's last frame is at 2/30 s and the new shot's first at 3/30
+    assert track.cuts_exact == [pytest.approx(9.9 + 2.5 / 30, abs=1e-6)]
+
+
+def test_the_exact_cut_can_be_later_than_the_sample_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    track, _ = exact_cut(tmp_path, monkeypatch, timed=jump_after(6))
+
+    assert track.cuts == [10.0]
+    assert track.cuts_exact == [pytest.approx(9.9 + 5.5 / 30, abs=1e-6)]
+    assert track.cuts_exact[0] > track.cuts[0]
+
+
+def test_the_exact_cut_falls_back_to_the_sample_time_when_the_jump_is_below_the_threshold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    track, _ = exact_cut(tmp_path, monkeypatch, timed=jump_after(3, grey=(0, 8)))  # same bin
+
+    assert track.cuts == [10.0] and track.cuts_exact == [10.0]
+
+
+def test_the_exact_cut_falls_back_to_the_sample_time_with_a_single_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    track, _ = exact_cut(tmp_path, monkeypatch, timed=[(0.0, 120)])
+
+    assert track.cuts_exact == [10.0]
+
+
+def test_the_exact_cut_falls_back_to_the_sample_time_when_it_strays_too_far(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timed = [(0.0, 0), (0.5, 0), (1.0, 120)]  # 0.75 s after the decode started: 0.65 s late
+    track, _ = exact_cut(tmp_path, monkeypatch, timed=timed)
+
+    assert track.cuts_exact == [10.0]
+
+
+def test_the_exact_cut_falls_back_to_the_sample_time_when_ffmpeg_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    error = tracking.ffmpeg.MediaError("frame extraction failed: details")
+    track, _ = exact_cut(tmp_path, monkeypatch, timed_error=error)
+
+    assert track.cuts == [10.0] and track.cuts_exact == [10.0]
+    assert [r.getMessage() for r in caplog.records if "cut" in r.getMessage()]
+    assert "details" not in caplog.text and "source.mp4" not in caplog.text
+
+
+def test_there_is_one_exact_time_per_cut(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fakes = track_fakes.install(
+        monkeypatch, track_fakes.nobody, track_fakes.cut_at(10.0, 15.0, levels=(0, 120))
+    )
+
+    track = analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0)
+
+    assert track.cuts == [10.0, 15.0]  # a centre fallback still records its cuts
+    assert track.fallback_reason == "no_face"
+    assert len(track.cuts_exact) == 2 and len(fakes.timed_requests) == 2
+    assert track.cuts_exact == [
+        pytest.approx(9.9 + 2.5 / 30, abs=1e-6),
+        pytest.approx(14.9 + 2.5 / 30, abs=1e-6),
+    ]
+
+
+def test_there_are_no_exact_times_without_cuts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fakes = track_fakes.install(monkeypatch, track_fakes.two_people())
+
+    track = analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0)
+
+    assert track.cuts == [] and track.cuts_exact == []
+    assert fakes.timed_requests == []  # nothing to look up
+
+
+def test_the_source_is_decoded_from_the_previous_sample_with_a_margin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, fakes = exact_cut(tmp_path, monkeypatch)
+
+    assert len(fakes.timed_requests) == 1
+    args = fakes.timed_requests[0]
+    assert args[args.index("-ss") + 1] == "19.900"  # clip start 10.0 + previous sample 9.9
+    assert args[args.index("-t") + 1] == "0.200"  # one sample step + 0.1 s
+    assert args[args.index("-vf") + 1] == "showinfo,scale=320:-2"
+    assert fakes.timed_sizes == [(320, 180)]
 
 
 def test_faces_below_the_minimum_height_are_not_tracked(
@@ -447,8 +567,9 @@ def test_a_track_file_from_before_brief_8_1_still_parses(
 ) -> None:
     track_fakes.install(monkeypatch, track_fakes.two_people())
     data = analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0).model_dump(mode="json")
-    for key in ("detector_sha256", "opencv_version", "cuts"):
+    for key in ("detector_sha256", "opencv_version", "cuts", "cuts_exact"):
         del data[key]
+    data["schema_version"] = 1
     for key in ("cuts", "faces_per_sample", "mouth_read_pct"):
         del data["summary"][key]
     data["settings"] = {"analysis_width": 640, "sample_fps": 10}
@@ -456,6 +577,7 @@ def test_a_track_file_from_before_brief_8_1_still_parses(
     old = TrackFile.model_validate(data)
 
     assert (old.detector_sha256, old.opencv_version, old.cuts) == (None, None, [])
+    assert old.schema_version == 1 and old.cuts_exact == []
     assert (old.summary.cuts, old.summary.faces_per_sample, old.summary.mouth_read_pct) == (
         0,
         0.0,
@@ -526,6 +648,21 @@ def test_a_changed_input_invalidates_the_track(
     plan = make_plan(tmp_path)
     saved_track(plan, monkeypatch)
     assert load(plan, **changes) is None
+
+
+def test_a_schema_1_track_file_parses_but_is_not_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = make_plan(tmp_path)
+    data = saved_track(plan, monkeypatch).model_dump(mode="json")
+    assert data["schema_version"] == TRACK_SCHEMA_VERSION == 2
+    data["schema_version"] = 1
+    del data["cuts_exact"]
+    write_json_atomic(tracking.track_path(plan.clips_dir, "c01"), data)
+
+    path = tracking.track_path(plan.clips_dir, "c01")
+    assert TrackFile.model_validate_json(path.read_text(encoding="utf-8")).cuts_exact == []
+    assert load(plan) is None  # recomputed
 
 
 def test_missing_or_broken_track_files_are_not_valid(tmp_path: Path) -> None:
