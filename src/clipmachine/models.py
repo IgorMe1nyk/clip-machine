@@ -194,6 +194,8 @@ class CaptionsConfig(StrictModel):
     font_file: str = "Montserrat-Bold.ttf"  # a file name inside assets/fonts/
     font_size: int = Field(default=80, gt=0)
     margin_v: int = Field(default=350, ge=0)  # pixels from the bottom edge
+    # Brief 6.1: moves every caption event in time; positive = captions appear later
+    offset_seconds: float = Field(default=0.0, ge=-1.0, le=1.0)
 
     @model_validator(mode="after")
     def _check_values(self) -> "CaptionsConfig":
@@ -636,6 +638,7 @@ class RenderedSettings(StrictModel):
     margin_v: int
     words_per_line: int
     highlight_color: str
+    caption_offset_seconds: float = 0.0  # added in Brief 6.1; old JSON files load as 0.0
 
 
 class RenderedOutput(StrictModel):

@@ -132,6 +132,7 @@ def _settings(ctx: RunContext) -> RenderedSettings:
         margin_v=app.captions.margin_v,
         words_per_line=app.captions.words_per_line,
         highlight_color=app.captions.highlight_color,
+        caption_offset_seconds=app.captions.offset_seconds,
     )
 
 
@@ -176,7 +177,10 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
     info.unlink(missing_ok=True)  # the JSON must never describe an output that is being replaced
     words = clip_words(plan.segments, clip.start, clip.end)
     events = build_events(
-        group_words(words, settings.words_per_line), settings.highlight_color, duration
+        group_words(words, settings.words_per_line),
+        settings.highlight_color,
+        duration,
+        settings.caption_offset_seconds,
     )
     write_text_atomic(
         ass,

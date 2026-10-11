@@ -91,13 +91,19 @@ def ass_color(hex_color: str) -> str:
 
 
 def build_events(
-    groups: list[list[CaptionWord]], highlight_color: str, clip_seconds: float
+    groups: list[list[CaptionWord]],
+    highlight_color: str,
+    clip_seconds: float,
+    offset_seconds: float = 0.0,
 ) -> list[CaptionEvent]:
     """One event per word: its whole group on screen, that word in the highlight colour.
 
     An event runs from the word's start to the next word's start, also across groups. When the
     silence before the next word is GAP_FILL_SECONDS or more, it ends at the word's own end
     instead, so captions disappear in real pauses. The clip's last word runs to its end.
+
+    offset_seconds then moves every event (positive = later), clamped to [0, clip_seconds];
+    events left with no length are dropped.
     """
     colour = ass_color(highlight_color)
     flat = [word for group in groups for word in group]
@@ -121,7 +127,21 @@ def build_events(
                 for i, w in enumerate(group)
             ]
             events.append(CaptionEvent(word.start, end, " ".join(parts)))
-    return events
+    return _shifted(events, offset_seconds, clip_seconds)
+
+
+def _shifted(
+    events: list[CaptionEvent], offset_seconds: float, clip_seconds: float
+) -> list[CaptionEvent]:
+    if offset_seconds == 0.0:
+        return events
+    shifted: list[CaptionEvent] = []
+    for event in events:
+        start = round(min(max(event.start + offset_seconds, 0.0), clip_seconds), 3)
+        end = round(min(max(event.end + offset_seconds, 0.0), clip_seconds), 3)
+        if end > start:
+            shifted.append(CaptionEvent(start, end, event.text))
+    return shifted
 
 
 def ass_time(seconds: float) -> str:

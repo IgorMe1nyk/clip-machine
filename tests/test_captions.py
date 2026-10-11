@@ -226,3 +226,56 @@ def test_font_name_cannot_break_the_style_line() -> None:
     text = build_ass([], font="Bad,\nName", font_size=80, margin_v=350, width=1080, height=1920)
     (style,) = [line for line in text.splitlines() if line.startswith("Style:")]
     assert len(style.split(",")) == 23
+
+
+# --- offset (Brief 6.1) -----------------------------------------------------------------------
+
+HIGHLIGHT_A = r"{\c&H00D4FF&}a{\r}"
+
+
+def offset_events(offset: float) -> list[tuple[float, float]]:
+    # gaps of 0.4 s are filled, so each event runs to the next word's start
+    words = [cw("a", 1.0, 1.4), cw("b", 1.8, 2.2), cw("c", 2.6, 3.0)]
+    events = build_events(group_words(words, 3), "#FFD400", 4.0, offset)
+    return [(e.start, e.end) for e in events]
+
+
+def test_offset_zero_is_identical_to_no_offset() -> None:
+    words = [cw("a", 1.0, 1.4), cw("b", 1.8, 2.2), cw("c", 2.6, 3.0)]
+    groups = group_words(words, 3)
+    assert build_events(groups, "#FFD400", 4.0, 0.0) == build_events(groups, "#FFD400", 4.0)
+    assert offset_events(0.0) == [(1.0, 1.8), (1.8, 2.6), (2.6, 3.0)]
+
+
+def test_positive_offset_moves_starts_and_ends_later() -> None:
+    assert offset_events(0.15) == [(1.15, 1.95), (1.95, 2.75), (2.75, 3.15)]
+
+
+def test_negative_offset_moves_starts_and_ends_earlier() -> None:
+    assert offset_events(-0.25) == [(0.75, 1.55), (1.55, 2.35), (2.35, 2.75)]
+
+
+def test_offset_clamps_at_zero_and_drops_events_left_empty() -> None:
+    words = [cw("a", 0.1, 0.3), cw("b", 0.3, 0.6), cw("c", 1.0, 1.4)]
+    events = build_events(group_words(words, 3), "#FFD400", 4.0, -0.5)
+    # a: 0.1-0.3 -> -0.4..-0.2 -> empty, dropped; b: 0.3-1.0 -> 0.0 (clamped)..0.5; c: 0.5-0.9
+    assert [(e.start, e.end) for e in events] == [(0.0, 0.5), (0.5, 0.9)]
+    assert all(HIGHLIGHT_A not in e.text for e in events)
+
+
+def test_offset_clamps_at_the_clip_duration() -> None:
+    words = [cw("a", 1.0, 1.4), cw("b", 3.5, 3.9)]
+    events = build_events(group_words(words, 3), "#FFD400", 4.0, 0.3)
+    assert [(e.start, e.end) for e in events] == [(1.3, 1.7), (3.8, 4.0)]
+
+
+def test_offset_drops_events_pushed_past_the_end() -> None:
+    words = [cw("a", 1.0, 1.4), cw("b", 3.5, 3.9)]
+    events = build_events(group_words(words, 3), "#FFD400", 4.0, 0.6)
+    assert [(e.start, e.end) for e in events] == [(1.6, 2.0)]  # b would start at 4.1 > 4.0
+
+
+def test_offset_keeps_millisecond_rounding() -> None:
+    words = [cw("a", 0.1, 0.2)]
+    (event,) = build_events(group_words(words, 3), "#FFD400", 4.0, 0.1)
+    assert (event.start, event.end) == (0.2, 0.3)  # not 0.30000000000000004

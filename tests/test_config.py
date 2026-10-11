@@ -420,3 +420,22 @@ def test_config_without_render_keys_still_loads(project: Path) -> None:
     app = load_app_config(project)
     assert app.render.crf == 20
     assert app.captions.font_size == 80
+
+
+def test_caption_offset_default_and_valid_values(project: Path) -> None:
+    assert load_app_config(project).captions.offset_seconds == 0.0
+    for value in (-1.0, -0.25, 0.15, 1.0):
+        _default(project, lambda d, v=value: d["captions"].update(offset_seconds=v))
+        assert load_app_config(project).captions.offset_seconds == value
+
+
+@pytest.mark.parametrize("value", [1.5, -1.01, 1.0001])
+def test_caption_offset_out_of_range_is_rejected(project: Path, value: float) -> None:
+    _default(project, lambda d: d["captions"].update(offset_seconds=value))
+    with pytest.raises(ConfigError, match="offset_seconds"):
+        load_app_config(project)
+
+
+def test_config_without_offset_loads(project: Path) -> None:
+    _default(project, lambda d: d["captions"].pop("offset_seconds"))
+    assert load_app_config(project).captions.offset_seconds == 0.0

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from clipmachine import pipeline
-from clipmachine.config import load_resolved
+from clipmachine.config import ResolvedConfig, load_resolved
 from clipmachine.context import RunContext
 from clipmachine.models import (
     AudioStreamInfo,
@@ -509,3 +509,59 @@ def test_pipeline_treats_an_interrupted_render_as_resuming(
     run_pipeline(run_dir)
 
     assert seen == [True]
+
+
+# --- caption offset (Brief 6.1) -------------------------------------------------------------
+
+
+def with_offset(ctx: RunContext, offset: float, *, resuming: bool = True) -> RunContext:
+    app = ctx.config.app.model_copy(
+        update={"captions": ctx.config.app.captions.model_copy(update={"offset_seconds": offset})}
+    )
+    return RunContext(
+        run_dir=ctx.run_dir,
+        config=ResolvedConfig(app=app, client_name=ctx.config.client_name, rules=ctx.config.rules),
+        input_path=ctx.input_path,
+        project_root=ctx.project_root,
+        resuming=resuming,
+    )
+
+
+def test_offset_is_recorded_and_moves_the_captions(ctx: RunContext, fake: FakeFfmpeg) -> None:
+    render.run(with_offset(ctx, 0.15, resuming=False))
+
+    data = json.loads((ctx.run_dir / "clips" / "c01.json").read_text(encoding="utf-8"))
+    assert data["settings"]["caption_offset_seconds"] == 0.15
+    text = (ctx.run_dir / "clips" / "c01.ass").read_text(encoding="utf-8")
+    assert "Dialogue: 0,0:00:00.15," in text  # the first word starts at 0 s, now 0.15 s
+
+
+def test_resume_rerenders_when_only_the_offset_changed(ctx: RunContext, fake: FakeFfmpeg) -> None:
+    render.run(ctx)
+    assert fake.ids == ["c01", "c02"]
+
+    render.run(with_offset(ctx, 0.15))  # resuming, same everything but the offset
+
+    assert fake.ids == ["c01", "c02", "c01", "c02"]
+
+
+def test_resume_keeps_clips_when_the_offset_is_unchanged(ctx: RunContext, fake: FakeFfmpeg) -> None:
+    render.run(with_offset(ctx, 0.15, resuming=False))
+
+    render.run(with_offset(ctx, 0.15))
+
+    assert fake.ids == ["c01", "c02"]
+
+
+def test_json_from_before_the_offset_existed_is_still_valid_at_zero(
+    ctx: RunContext, fake: FakeFfmpeg
+) -> None:
+    render.run(ctx)
+    path = ctx.run_dir / "clips" / "c01.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["settings"]["caption_offset_seconds"]  # a Brief 6 file
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    render.run(resume(ctx))
+
+    assert fake.ids == ["c01", "c02"]

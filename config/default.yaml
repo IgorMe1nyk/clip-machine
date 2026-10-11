@@ -67,3 +67,4 @@ captions:
   font_file: Montserrat-Bold.ttf   # inside assets/fonts/; a missing file fails the render stage
   font_size: 80              # pixels on the 1080x1920 canvas
   margin_v: 350              # pixels from the bottom edge, clear of phone UI
+  offset_seconds: 0.0        # -1.0 to 1.0; positive = captions appear later (sync tuning)
