@@ -1,6 +1,6 @@
 # COSTS.md — Cost & Dependency Register
 
-> **Status:** APPROVED by Igor 2026-10-10 (Gate 0). v2 adds D-003 to D-006 status (Max 5x, budget and repo approved).
+> **Status:** APPROVED by Igor 2026-10-10 (Gate 0). v3 (2026-10-10, after Brief 3) adds the measured transcription numbers, the NVIDIA GPU libraries, and local disk use. No new paid dependency.
 > **Prices checked:** 2026-10-10, from live pages (sources at the bottom). Re-check at the end of every phase.
 > **Labels:** **[fact]** = read on a live page today · **[estimate]** = my math on stated assumptions · **[judgment]** = my recommendation · **[gap]** = could not confirm.
 
@@ -79,7 +79,8 @@ Column key:
 | FFmpeg (gyan.dev Windows build) | Cut, crop, captions, audio | Free [fact] | gyan.dev builds are GPLv3. The GPL only matters if you *give copies* of FFmpeg to others; using it on your own PC and delivering videos is fine. [fact, GPL FAQ] | n/a | BtbN LGPL build | $0 |
 | faster-whisper + CTranslate2 | Local transcription with word timestamps | Free [fact] | MIT [fact] | n/a | — | $0 cash. Time depends on hardware: **measure it**. |
 | Whisper model weights (downloaded from Hugging Face) | Speech model | Free download [fact] | MIT, including the weights [fact] | n/a | — | $0 |
-| NVIDIA CUDA 12 + cuDNN 9 (only if you have an NVIDIA GPU) | GPU speed-up for Whisper | Free [fact] | NVIDIA terms | n/a | CPU mode (works with no GPU) [fact] | $0 |
+| NVIDIA cuBLAS 12 + cuDNN 9 + nvrtc (`gpu` dependency group, Windows wheels) | GPU speed-up for Whisper on the GTX 1660 Ti | Free; about 1.3 GB download [fact, from Brief 3] | **NVIDIA proprietary license** (package metadata). Local use only; optional group; never bundled or redistributed | n/a | CPU mode (measured 3.9× realtime) | $0 |
+| Whisper model files in `<repo>/models/` | Speech models | Free. Disk: tiny 75 MB, small 464 MB, turbo 1.6 GB [measured] | MIT | n/a | — | $0 |
 | Claude API: Haiku 5.5 `claude-haiku-5-5` | Stage 3: cheap candidate pass | $0.10 input / $0.50 output per million tokens, for prompts up to 100K tokens [fact] | API commercial terms | Credits run out → requests stop, no charge [fact] | Skip this stage; use Sonnet only (section 5) | ~$0.004–0.01 [estimate] |
 | Claude API: Sonnet 5.5 `claude-sonnet-5-5` | Stage 4: scoring | $2 input / $10 output per million tokens. Batch API is 50% off. [fact] | API commercial terms | Same as above | Haiku for testing | ~$0.16–0.56 [estimate] |
 | anthropic Python SDK | API client, structured output via `messages.parse()` + Pydantic | Free | Open-source SDK (license not checked; check in Brief 5) [gap] | n/a | — | $0 |
@@ -133,6 +134,23 @@ Column key:
 **Comparison point:** one Sonnet call over the whole transcript (≈20K in, 5K out) would cost about $0.09.
 - So the two-model design is **not** clearly cheaper at this scale. Its value would be better per-candidate judgment, not saving money. [judgment]
 - Per your rule, we measure first. Both model choices stay in config; we decide after real runs.
+
+### Measured so far (real runs, 2026-10-10)
+
+Measured on one 15.4-minute, two-speaker interview with these settings: GTX 1660 Ti, `small`, `int8_float16`.
+
+| Stage | Time | Cash |
+|---|---|---|
+| Fetch | 0.3–0.8 s | $0 |
+| Transcribe, GPU (D-011) | 48–55 s (≈17–19× realtime) | $0 |
+| Transcribe, CPU fallback | 173–236 s (≈4–5× realtime) | $0 |
+
+Local disk used:
+- Models: 2.1 GB
+- uv package cache: 2.4 GB (in the user folder)
+- Each run folder: roughly 75 MB per 15 min of 640×360 video
+
+API cost per hour of video is still an estimate until Brief 4 logs real calls.
 
 ### Per client per month [estimate, using the plan's own estimates]
 

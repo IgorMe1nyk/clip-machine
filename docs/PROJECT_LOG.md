@@ -2,6 +2,40 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-10 — Session 2 (17:47–20:00 ET): Briefs 2 and 3
+
+**Done**
+- **Brief 2 (fetch)** and **Brief 3 (transcribe)** shipped. CI is green.
+- The default transcription setting is GPU `small` (D-011). A 15-minute interview transcribes in about 50 s.
+- **Laptop check:**
+  - Hardware: HP Omen, Ryzen 7 4800H, 16 GB RAM, GTX 1660 Ti 6 GB.
+  - Free RAM went from 1.9 GB to 8.3 GB after a restart and turning off unneeded startup apps. Disk is fine (300 GB free).
+
+**Decisions**
+- D-011: default transcription setting.
+- D-012: test inputs. The fetch and transcribe checks used third-party clips, privately and locally only. They are deleted after testing and are not used for evaluation material, demos or samples. The sample run for the finish line needs a video Igor owns or a CC-licensed one.
+
+**Caught in reviews**
+- Extraction now picks a fixed audio track (`-map 0:a:0`).
+- The audio-duration tolerance scales with length.
+- One run folder per benchmark setting.
+- `nvidia-smi` added to the allow-list, so routine GPU checks don't need a click each time.
+- Hugging Face cache and telemetry are kept inside the repo.
+
+**What I did vs what AI did**
+- **Igor:** decisions D-011 and D-012, laptop cleanup, test inputs, pushes and checks.
+- **Claude (chat):** Briefs 2 and 3, plan and report reviews, the laptop check, the cost register update.
+- **Claude Code:** Opus 5.5 wrote the plans and Sonnet 5.5 wrote the code and tests.
+
+**Cost:** $0. No API calls yet.
+
+**Parked**
+- A rejected input still creates a run folder.
+- Probe the copied file rather than the original.
+- The Purfview GPU library route is untested.
+- Segment timestamps in batched mode.
+- Optional RAM upgrade (a purchase; Igor's call).
+
 ## 2026-10-10 — Brief 3: Transcribe stage (benchmark done, default not chosen yet)
 
 **Facts**
