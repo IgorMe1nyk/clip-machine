@@ -4,9 +4,10 @@ Pure functions, no I/O. The transcript text is untrusted data: nothing here puts
 or a log line; notes carry seconds and counts only.
 
 A sentence ends after a word that ends in . ? ! (or an ellipsis), optionally followed by closing
-quotes or brackets, and also at the last word of a segment. So with no punctuation at all the
-sentences are the segments. Boundaries that came from a segment edge instead of punctuation are
-flagged, because Whisper segments do not always break at sentence ends.
+quotes or brackets. Whisper segments often break mid-sentence, so a segment edge is a boundary
+only as a fallback: when more than fallback_max_words words have passed since the last sentence
+end. The first word of the transcript always starts a sentence. Boundaries that came from the
+fallback instead of punctuation are flagged.
 """
 
 from bisect import bisect_right
@@ -20,6 +21,7 @@ CLOSERS = "\"')]}”’»"
 EPSILON = 1e-9
 ROUND = 3
 TIE_DIGITS = 6  # overlaps closer than this are a tie (float noise is not a preference)
+DEFAULT_FALLBACK_WORDS = 40
 
 
 @dataclass(frozen=True)
@@ -52,9 +54,10 @@ class Snapped:
     end: float
     first_word: int
     last_word: int
-    edge_start: bool  # starts at a segment edge, not after sentence punctuation
+    edge_start: bool  # starts at a fallback segment edge, not after sentence punctuation
     edge_end: bool
     notes: tuple[str, ...]
+    grew_backward: int = 0  # sentences added at the start to reach the minimum length
 
 
 @dataclass(frozen=True)
@@ -66,7 +69,9 @@ def ends_sentence(text: str) -> bool:
     return text.rstrip(CLOSERS).endswith(SENTENCE_ENDERS)
 
 
-def build_index(segments: Sequence[TranscriptSegment]) -> SentenceIndex:
+def build_index(
+    segments: Sequence[TranscriptSegment], fallback_max_words: int = DEFAULT_FALLBACK_WORDS
+) -> SentenceIndex:
     """Words and sentences of a whole transcript.
 
     A segment without word timestamps contributes one pseudo-word spanning the segment, so its
@@ -86,8 +91,10 @@ def build_index(segments: Sequence[TranscriptSegment]) -> SentenceIndex:
     sentences: list[Sentence] = []
     first = 0
     for i, word in enumerate(words):
-        at_end = i == len(words) - 1 or words[i + 1].segment != word.segment
-        if at_end or ends_sentence(word.text):
+        last_word = i == len(words) - 1
+        segment_edge = not last_word and words[i + 1].segment != word.segment
+        too_long = segment_edge and i + 1 - first > fallback_max_words
+        if last_word or too_long or ends_sentence(word.text):
             sentences.append(Sentence(first, i))
             first = i + 1
     return SentenceIndex(
@@ -129,6 +136,24 @@ def _padded_bounds(
     return max(round(start, ROUND), 0.0), min(round(end, ROUND), duration)
 
 
+def _can_add(
+    index: SentenceIndex,
+    a: int,
+    b: int,
+    number: int,
+    removed: set[int],
+    padding: float,
+    duration: float,
+    max_length: float,
+) -> bool:
+    """Whether sentence `number` (b + 1 or a - 1) exists, was not removed, and fits the maximum."""
+    if not 0 <= number < len(index.sentences) or number in removed:
+        return False
+    low, high = (a, number) if number > b else (number, b)
+    start, end = _padded_bounds(index, low, high, padding, duration)
+    return end - start <= max_length + EPSILON
+
+
 def snap(
     index: SentenceIndex,
     model_start: float,
@@ -138,14 +163,18 @@ def snap(
     duration: float,
     min_length: float,
     max_length: float,
+    preferred_min: float = 0.0,
 ) -> Snapped | Dropped:
     """Snap one moment. Returns the snapped span, or why it had to be dropped.
 
     Start: the first word of the sentence containing model_start. End: the last word of the
     sentence containing model_end. A time between two words belongs to the sentence of the
     word after it (start) or before it (end). Then padding is added. If the padded length is
-    outside min_length..max_length, whole sentences are added or removed, preferring the
-    sentence that overlaps the model's own range more (ties keep the first sentence).
+    over max_length, whole sentences are removed, preferring to keep the sentence that overlaps
+    the model's own range more (ties keep the first sentence). If it is under min_length,
+    whole sentences are added at the end (the payoff side), and at the start only when the end
+    is blocked. If it is under preferred_min, sentences are added at the end only, as long as
+    it stays within max_length.
     """
     words = index.words
     if not words:
@@ -157,8 +186,7 @@ def snap(
     first_chosen, last_chosen = a, b
 
     removed: set[int] = set()
-    grown_front = grown_back = shrunk_front = shrunk_back = 0
-    total = len(index.sentences)
+    grown_end = grown_backward = grown_preferred = shrunk_front = shrunk_back = 0
 
     while True:
         start, end = _padded_bounds(index, a, b, padding, duration)
@@ -183,27 +211,28 @@ def snap(
                 shrunk_back += 1
             continue
 
-        options: list[tuple[float, int, int]] = []  # (overlap, tie order, sentence)
-        for number, order in ((b + 1, 0), (a - 1, 1)):
-            if not 0 <= number < total or number in removed:
-                continue
-            trial = (a, number) if number > b else (number, b)
-            low, high = _padded_bounds(index, trial[0], trial[1], padding, duration)
-            if high - low <= max_length + EPSILON:
-                gain = round(_sentence_overlap(index, number, model_start, model_end), TIE_DIGITS)
-                options.append((-gain, order, number))
-        if not options:
+        # toward the end (the payoff side) first; backward only when the end is blocked
+        if _can_add(index, a, b, b + 1, removed, padding, duration, max_length):
+            b += 1
+            grown_end += 1
+        elif _can_add(index, a, b, a - 1, removed, padding, duration, max_length):
+            a -= 1
+            grown_backward += 1
+        else:
             return Dropped(
                 f"{length:.1f} s is shorter than the {min_length:g} s minimum and no whole "
                 "sentence can be added without passing the maximum"
             )
-        _, _, chosen = min(options)
-        if chosen > b:
-            b = chosen
-            grown_back += 1
-        else:
-            a = chosen
-            grown_front += 1
+
+    # Preferred length: toward the end only, never backward and never past the maximum.
+    while True:
+        start, end = _padded_bounds(index, a, b, padding, duration)
+        if end - start >= preferred_min - EPSILON:
+            break
+        if not _can_add(index, a, b, b + 1, removed, padding, duration, max_length):
+            break
+        b += 1
+        grown_preferred += 1
 
     first = words[index.sentences[a].first]
     last = words[index.sentences[b].last]
@@ -222,8 +251,9 @@ def snap(
         if abs(moved) >= 0.005:
             notes.append(f"end moved {moved:+.2f} s to the end of its sentence")
     for amount, what in (
-        (grown_front, "grew by {n} sentence(s) at the start to reach the minimum length"),
-        (grown_back, "grew by {n} sentence(s) at the end to reach the minimum length"),
+        (grown_end, "grew by {n} sentence(s) at the end to reach the minimum length"),
+        (grown_backward, "grew backward by {n} sentence(s) at the start to reach the minimum"),
+        (grown_preferred, "grew by {n} sentence(s) at the end toward the preferred length"),
         (shrunk_front, "dropped {n} sentence(s) at the start to fit the maximum length"),
         (shrunk_back, "dropped {n} sentence(s) at the end to fit the maximum length"),
     ):
@@ -248,6 +278,7 @@ def snap(
         edge_start=edge_start,
         edge_end=edge_end,
         notes=tuple(notes),
+        grew_backward=grown_backward,
     )
 
 

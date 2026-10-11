@@ -69,6 +69,8 @@ def run_snap(
     duration: float = 1000.0,
     min_length: float = 1.0,
     max_length: float = 500.0,
+    preferred_min: float = 0.0,
+    fallback_words: int = 40,
     gap: float = GAP,
 ) -> Snapped | Dropped:
     segments = (
@@ -77,13 +79,14 @@ def run_snap(
         else spec_or_segments
     )
     return snap(
-        build_index(segments),  # type: ignore[arg-type]
+        build_index(segments, fallback_words),  # type: ignore[arg-type]
         model_start,
         model_end,
         padding=padding,
         duration=duration,
         min_length=min_length,
         max_length=max_length,
+        preferred_min=preferred_min,
     )
 
 
@@ -127,9 +130,32 @@ def test_sentence_end_detection(text: str, expected: bool) -> None:
     assert ends_sentence(text) is expected
 
 
-def test_sentences_end_at_punctuation_and_at_segment_edges() -> None:
+def test_a_mid_sentence_segment_edge_is_not_a_boundary() -> None:
     index = build_index(build(["Alpha beta. Gamma delta", "epsilon zeta."]))
-    assert [(s.first, s.last) for s in index.sentences] == [(0, 1), (2, 3), (4, 5)]
+    assert [(s.first, s.last) for s in index.sentences] == [(0, 1), (2, 5)]
+
+
+def test_segment_edge_becomes_a_boundary_after_more_than_the_fallback_words() -> None:
+    spec = [" ".join(f"s{n}w{k}" for k in range(10)) for n in range(6)]  # 60 unpunctuated words
+    index = build_index(build(spec), fallback_max_words=40)
+    # edges after 10, 20, 30 and 40 words are not far enough; the one after 50 is
+    assert [(s.first, s.last) for s in index.sentences] == [(0, 49), (50, 59)]
+
+
+def test_exactly_the_fallback_number_of_words_is_not_enough() -> None:
+    spec = [" ".join(f"s{n}w{k}" for k in range(10)) for n in range(4)]  # 40 words in all
+    index = build_index(build(spec + ["tail words."]), fallback_max_words=40)
+    assert [(s.first, s.last) for s in index.sentences] == [(0, 41)]
+    shorter = build_index(build(spec + ["tail words."]), fallback_max_words=39)
+    assert [(s.first, s.last) for s in shorter.sentences] == [(0, 39), (40, 41)]
+
+
+def test_the_first_word_of_the_transcript_starts_a_sentence() -> None:
+    index = build_index(build(["starts mid thought and goes on", "until it ends."]))
+    assert index.sentences[0].first == 0
+    result = snapped(run_snap(["starts mid thought and goes on", "until it ends."], -1.0, 1.0))
+    assert result.first_word == 0
+    assert result.edge_start is False
 
 
 def test_segment_without_words_becomes_one_pseudo_word() -> None:
@@ -176,13 +202,20 @@ def test_single_sentence_moment() -> None:
     assert (result.first_word, result.last_word) == (7, 9)
 
 
-def test_no_punctuation_falls_back_to_segment_boundaries() -> None:
+def test_no_punctuation_falls_back_to_segment_boundaries_after_the_word_limit() -> None:
     spec = ["alpha beta gamma delta", "epsilon zeta eta theta", "iota kappa lambda mu"]
-    result = snapped(run_snap(spec, ws(5), ws(6)))
-    assert (result.first_word, result.last_word) == (4, 7)
+    result = snapped(run_snap(spec, ws(9), ws(10), fallback_words=5))
+    assert (result.first_word, result.last_word) == (8, 11)
     assert (result.edge_start, result.edge_end) == (True, True)
     assert "start is a segment edge: no sentence punctuation before it" in result.notes
     assert "end is a segment edge: no sentence punctuation after it" in result.notes
+
+
+def test_no_punctuation_under_the_word_limit_is_one_sentence() -> None:
+    spec = ["alpha beta gamma delta", "epsilon zeta eta theta", "iota kappa lambda mu"]
+    result = snapped(run_snap(spec, ws(5), ws(6)))
+    assert (result.first_word, result.last_word) == (0, 11)
+    assert (result.edge_start, result.edge_end) == (False, True)
 
 
 def test_audio_start_is_not_a_segment_edge() -> None:
@@ -190,7 +223,7 @@ def test_audio_start_is_not_a_segment_edge() -> None:
     result = snapped(run_snap(spec, 0.0, ws(2)))
     assert result.first_word == 0
     assert result.edge_start is False  # the audio begins here
-    assert result.edge_end is True
+    assert result.edge_end is True  # and ends here, unpunctuated
 
 
 def test_a_time_in_a_gap_belongs_to_the_next_sentence_for_a_start() -> None:
@@ -270,8 +303,44 @@ def test_growth_goes_to_the_front_when_there_is_nothing_after() -> None:
     start, end = sentence_times(7)
     result = snapped(run_snap(EIGHT, start, end, min_length=10.0, max_length=30.0))
     assert (result.first_word, result.last_word) == (16, 31)
-    assert any("at the start to reach the minimum" in n for n in result.notes)
+    assert any(n.startswith("grew backward by 3 sentence(s)") for n in result.notes)
     assert not any("at the end" in n for n in result.notes)
+    assert result.grew_backward == 3
+
+
+def test_a_short_moment_grows_toward_the_end_to_the_preferred_length() -> None:
+    start, end = sentence_times(2)  # one sentence is about 3.3 s: above the 1 s minimum
+    result = snapped(run_snap(EIGHT, start, end, min_length=1.0, preferred_min=10.0))
+    assert (result.first_word, result.last_word) == (
+        8,
+        23,
+    )  # sentences 2 to 5; three are only 9.7 s
+    assert result.end - result.start >= 10.0 - 1e-6
+    assert "grew by 3 sentence(s) at the end toward the preferred length" in result.notes
+    assert result.grew_backward == 0
+
+
+def test_preferred_growth_never_goes_backward() -> None:
+    start, end = sentence_times(7)  # the last sentence: nothing after it
+    result = snapped(run_snap(EIGHT, start, end, min_length=1.0, preferred_min=10.0))
+    assert (result.first_word, result.last_word) == (28, 31)
+    assert result.grew_backward == 0
+
+
+def test_preferred_growth_stops_before_the_maximum() -> None:
+    start, end = sentence_times(0)
+    result = snapped(
+        run_snap(EIGHT, start, end, min_length=1.0, max_length=7.0, preferred_min=30.0)
+    )
+    assert result.end - result.start <= 7.0
+    assert (result.first_word, result.last_word) == (0, 7)  # two sentences; a third passes 7 s
+
+
+def test_a_moment_already_at_the_preferred_length_is_not_grown() -> None:
+    start, end = sentence_times(2)
+    result = snapped(run_snap(EIGHT, start, ws(4 * 4 + 3), min_length=1.0, preferred_min=6.0))
+    assert result.last_word == 19
+    assert not any("preferred" in n for n in result.notes)
 
 
 def test_growth_will_not_pass_the_maximum() -> None:
