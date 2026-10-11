@@ -2,6 +2,38 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-11 — Brief 7: Report stage (report.html)
+
+**Done**
+- Stage 6 writes one offline `report.html` per run, laid out as in `docs/PRODUCT.md` section 5:
+  summary bar (kept of candidates, cost from `costs.json`, processing time from `run.json`,
+  reject-reason and dropped counts), one card per kept clip in rank order (relative-path `<video>`,
+  title, hook, reason, collapsed transcript, C1–C9 reminder), and a collapsed rejected list.
+- States: zero kept shows "No clips passed the judge." with the rejected list open; a kept clip
+  whose `.mp4` or `.json` is missing, invalid or does not match `scored.json` shows
+  "Render missing: <reason>" with no player and the other cards are normal.
+- Standard library only: one `_esc()` helper (`html.escape`, quote=True) for every text value;
+  it also breaks up `://`, so the page can never hold a URL even if model text contains one.
+  Inline CSS, no JavaScript. Written atomically.
+- CLI: `run` prints the report path when it exists; `report <run-folder>` prints the path, or says
+  which command builds it (it used to print "not implemented yet").
+- Built by a Sonnet 5.5 (Medium) subagent from the approved plan; reviewed and re-checked by the
+  planner. Tests: 729 passed, 1 skipped (was 709). ruff, mypy, pip-audit clean.
+
+**Real run** (`runs/2026-10-10_source --from-stage report`, local, no API cost)
+- `report.html` is 4,549 bytes: 1 kept clip of 7 candidates, 6 rejected entries, 0 render missing,
+  one `<video src="clips/c04.mp4">`, no `http(s)://` in the file.
+- Ledger unchanged (8 lines); a rerun says "nothing to do".
+
+**Decisions**
+- Wording is "Render missing" (Igor's change); `docs/PRODUCT.md` states table updated to match.
+- The page holds transcript text and lives only in the git-ignored run folder.
+
+**Parked**
+- `run` prints the report path whenever `report.html` exists, even for a stale file; harmless
+  while report is the last stage.
+- Igor's own review of c04, the text and the rejected list in the browser is still to be logged.
+
 ## 2026-10-11 — Brief 6.1: Caption timing offset
 
 **Evidence:** in the Brief 6 real run Igor watched c04 and the yellow highlight landed on a word
