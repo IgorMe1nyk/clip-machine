@@ -514,3 +514,16 @@ def test_locate_returns_none_for_times_that_are_not_a_snapped_span() -> None:
 
     index, duration = _index_of_three_sentences()
     assert locate(index, 0.123, 4.567, padding=0.2, duration=duration) is None  # type: ignore[arg-type]
+
+
+def test_edge_flags_read_back_what_snap_wrote() -> None:
+    from clipmachine.utils.snapping import EDGE_END_NOTE, EDGE_START_NOTE, edge_flags
+
+    # three unpunctuated 45-word segments: with the 40-word fallback a segment edge is a boundary
+    words = " ".join(f"w{k}" for k in range(45))
+    result = run_snap([words, words, words], 40.0, 60.0, min_length=1.0, fallback_words=40)
+    assert isinstance(result, Snapped)
+    assert edge_flags(result.notes) == (result.edge_start, result.edge_end)
+    assert edge_flags(["something else"]) == (False, False)
+    assert edge_flags([EDGE_START_NOTE]) == (True, False)
+    assert edge_flags([EDGE_END_NOTE]) == (False, True)

@@ -22,6 +22,10 @@ EPSILON = 1e-9
 ROUND = 3
 TIE_DIGITS = 6  # overlaps closer than this are a tie (float noise is not a preference)
 DEFAULT_FALLBACK_WORDS = 40
+# The notes snap() writes for a boundary that is a fallback segment edge. Named so the score stage
+# can read the flags back from candidates.json without matching on a copy of the text.
+EDGE_START_NOTE = "start is a segment edge: no sentence punctuation before it"
+EDGE_END_NOTE = "end is a segment edge: no sentence punctuation after it"
 
 
 @dataclass(frozen=True)
@@ -102,6 +106,11 @@ def build_index(
         sentences=tuple(sentences),
         firsts=tuple(s.first for s in sentences),
     )
+
+
+def edge_flags(notes: Sequence[str]) -> tuple[bool, bool]:
+    """(start_at_segment_edge, end_at_segment_edge) from a candidate's snap notes."""
+    return EDGE_START_NOTE in notes, EDGE_END_NOTE in notes
 
 
 def words_text(index: SentenceIndex, first: int, last: int) -> str:
@@ -293,9 +302,9 @@ def snap(
         if amount:
             notes.append(what.format(n=amount))
     if edge_start:
-        notes.append("start is a segment edge: no sentence punctuation before it")
+        notes.append(EDGE_START_NOTE)
     if edge_end:
-        notes.append("end is a segment edge: no sentence punctuation after it")
+        notes.append(EDGE_END_NOTE)
     start_pad = first.start - start
     end_pad = end - last.end
     if start_pad < padding - 0.005:
