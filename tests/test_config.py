@@ -81,6 +81,15 @@ def test_client_without_clip_length_keeps_defaults(project: Path) -> None:
         (lambda d: d["fetch"].update(min_duration_seconds=0), "fetch.min_duration_seconds"),
         (lambda d: d["fetch"].update(max_size_gb="big"), "fetch.max_size_gb"),
         (lambda d: d["fetch"].update(max_size=8), "fetch.max_size"),  # typo: unknown key
+        (lambda d: d["render"].update(crf=52), "render.crf"),
+        (lambda d: d["render"].update(preset="turbo"), "render.preset"),
+        (lambda d: d["render"].update(audio_bitrate="fast"), "audio_bitrate"),
+        (lambda d: d["render"].update(width=1080), "render.width"),  # size lives in video:
+        (lambda d: d["captions"].update(font_file="../x.ttf"), "font_file"),
+        (lambda d: d["captions"].update(font_file="C:/fonts/a.ttf"), "font_file"),
+        (lambda d: d["captions"].update(font_file="font.exe"), "font_file"),
+        (lambda d: d["captions"].update(font_size=0), "font_size"),
+        (lambda d: d["captions"].update(margin_v=-1), "margin_v"),
         (
             lambda d: d["fetch"].update(min_duration_seconds=600, max_duration_minutes=10),
             "min_duration_seconds",
@@ -387,3 +396,27 @@ def test_old_resolved_file_keeps_its_own_per_block_max(project: Path, tmp_path: 
     data["config"]["candidates"]["per_block_max"] = 5  # a run folder made before Brief 5.1
     target.write_text(yaml.safe_dump(data), encoding="utf-8")
     assert load_resolved_file(target).app.candidates.per_block_max == 5
+
+
+def test_render_and_caption_defaults(project: Path) -> None:
+    app = load_app_config(project)
+    assert (app.render.crf, app.render.preset, app.render.audio_bitrate) == (20, "medium", "160k")
+    assert (app.video.width, app.video.height) == (1080, 1920)
+    captions = app.captions
+    assert (captions.font_file, captions.font_size, captions.margin_v) == (
+        "Montserrat-Bold.ttf",
+        80,
+        350,
+    )
+
+
+def test_config_without_render_keys_still_loads(project: Path) -> None:
+    def drop(d: dict[str, Any]) -> None:
+        d.pop("render")
+        for key in ("font_file", "font_size", "margin_v"):
+            d["captions"].pop(key)
+
+    _default(project, drop)
+    app = load_app_config(project)
+    assert app.render.crf == 20
+    assert app.captions.font_size == 80

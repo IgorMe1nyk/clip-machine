@@ -48,10 +48,14 @@ transcribe:                  # defaults chosen in D-011 from the Brief 3 benchma
   condition_on_previous_text: false   # false reduces repetition loops on long audio
   batch_size: 0              # 0 = normal; >0 = batched pipeline (needs vad_filter)
   cpu_threads: 0             # 0 = library default
-video:
+video:                       # the render stage's output size
   width: 1080
   height: 1920
   crop: center               # v2: face
+render:
+  crf: 20                    # x264 quality, 0-51, lower is better
+  preset: medium             # x264 speed/size trade-off
+  audio_bitrate: 160k
 fetch:
   max_size_gb: 8             # GiB (1024^3 bytes)
   max_duration_minutes: 240
@@ -60,3 +64,6 @@ captions:
   words_per_line: 3
   font: Montserrat
   highlight_color: "#FFD400"
+  font_file: Montserrat-Bold.ttf   # inside assets/fonts/; a missing file fails the render stage
+  font_size: 80              # pixels on the 1080x1920 canvas
+  margin_v: 350              # pixels from the bottom edge, clear of phone UI

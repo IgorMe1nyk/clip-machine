@@ -182,17 +182,53 @@ class VideoConfig(StrictModel):
     crop: Literal["center", "face"]
 
 
+FONT_FILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.(?:ttf|otf)")
+BITRATE_RE = re.compile(r"[1-9][0-9]{1,3}k")
+
+
 class CaptionsConfig(StrictModel):
     words_per_line: int = Field(gt=0)
     font: str = Field(min_length=1)
     highlight_color: str
+    # added in Brief 6; defaults keep run folders made before it loadable
+    font_file: str = "Montserrat-Bold.ttf"  # a file name inside assets/fonts/
+    font_size: int = Field(default=80, gt=0)
+    margin_v: int = Field(default=350, ge=0)  # pixels from the bottom edge
 
     @model_validator(mode="after")
-    def _check_color(self) -> "CaptionsConfig":
+    def _check_values(self) -> "CaptionsConfig":
         if not HEX_COLOR_RE.fullmatch(self.highlight_color):
             raise ValueError(
                 f"highlight_color must look like #RRGGBB, got {self.highlight_color!r}"
             )
+        if not FONT_FILE_RE.fullmatch(self.font_file):
+            raise ValueError(
+                f"font_file must be a plain .ttf or .otf file name, got {self.font_file!r}"
+            )
+        return self
+
+
+class RenderConfig(StrictModel):
+    """The render stage's encoder settings. Output size is video.width/video.height."""
+
+    crf: int = Field(default=20, ge=0, le=51)
+    preset: Literal[
+        "ultrafast",
+        "superfast",
+        "veryfast",
+        "faster",
+        "fast",
+        "medium",
+        "slow",
+        "slower",
+        "veryslow",
+    ] = "medium"
+    audio_bitrate: str = "160k"
+
+    @model_validator(mode="after")
+    def _check_bitrate(self) -> "RenderConfig":
+        if not BITRATE_RE.fullmatch(self.audio_bitrate):
+            raise ValueError(f"audio_bitrate must look like '160k', got {self.audio_bitrate!r}")
         return self
 
 
@@ -224,6 +260,7 @@ class AppConfig(StrictModel):
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     candidates: CandidatesConfig = Field(default_factory=CandidatesConfig)
     score: ScoreConfig = Field(default_factory=ScoreConfig)
+    render: RenderConfig = Field(default_factory=RenderConfig)
 
     @model_validator(mode="after")
     def _check_preferred(self) -> "AppConfig":
