@@ -797,9 +797,8 @@ class TrackFile(StrictModel):
     samples: list[TrackSample]
     fallback_reason: str | None  # set: every crop_x is the centre crop
     summary: TrackSummary
-    cuts: list[
-        float
-    ] = []  # shot cuts as sample times (multiples of 1 / sample_fps), from clip start
+    # Shot cuts as sample times (multiples of 1 / sample_fps), seconds from the clip start.
+    cuts: list[float] = []
     # Parallel to `cuts`: the time, seconds from the clip start and to the frame, at which each new
     # camera shot starts. Found from the source's own frames, so it can differ from the sample time
     # by up to a few frames. Empty in files written before schema 2.
