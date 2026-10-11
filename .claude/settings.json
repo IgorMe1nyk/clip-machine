@@ -30,7 +30,12 @@
       "Read(./.env.*)",
       "Read(!.env.example)",
       "Bash(rm -rf *)",
-      "Bash(git push --force *)"
+      "Bash(git push --force *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(py *)",
+      "Edit(//tmp/**)",
+      "Edit(~/AppData/**)"
     ]
   },
   "hooks": {
