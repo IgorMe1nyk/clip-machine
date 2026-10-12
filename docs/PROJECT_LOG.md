@@ -2,6 +2,53 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-12 — Brief R1: captions v2 (karaoke box), hook overlay, safe zones (built; real run and Igor's ratings pending)
+
+**Why:** make clips more watchable at $0: captions that read at a glance and do not feel cramped,
+the hook line on screen at the start, and nothing under the TikTok, Reels and Shorts buttons.
+
+**Order:** the brief places R1 after Brief 8.3 and the edit-point guard. Igor chose to run it
+first (2026-10-12): normal shots only, with a `TODO(Brief 8.3)` where stacked shots plug in.
+
+**Measured before building** (a spike on a synthetic colour source, this ffmpeg's libass)
+- libass turns the ASS font size into letter size through the font's OS/2 win ascent and descent:
+  Montserrat Bold at 64 has a 41 px em and capitals about 28 px tall (the old 80: about 35 px).
+- A drawn rounded box sized from the font file's advance widths sits on the text as intended
+  (estimated text width 594 px, measured ink 590 px).
+- `\k` switches each word from the secondary to the primary colour at its start; `\fsp` on the
+  space character alone widens the gap between words.
+
+**Done** (8 commits plus the brief and this one, nothing pushed)
+- **Captions (D-022, `captions.style: box_karaoke`, the new default):** one line of at most 4
+  words on a dark rounded box, 75% opaque; spoken words yellow, upcoming words white, native ASS
+  karaoke with one event per line; the gap between words is 0.45 × font size. A line is also
+  split when it is too wide for the box or at a pause of 0.5 s. `style: legacy` keeps the old
+  captions, and a run folder made before R1 re-renders as it did (a golden test compares the
+  `.ass` bytes).
+- **Hook:** `hook_line` as white text on the same dark band for the first 2 s with a 150 ms
+  fade-out, at most 2 lines, at the top of the safe area. It moves below a face that is under it
+  in those 2 s. An empty hook shows nothing and leaves a note in the clip's json.
+- **Safe zones (D-023):** top 290, bottom 672, left 120, right 192, in config. Captions and hook
+  are centred on the safe area (x = 504). The clip's json counts anything outside the margins.
+- **Track files are schema 4:** the face boxes of every sample of the whole clip are saved (Igor:
+  Brief 11's full-length hook and watermark need them too, so one schema change instead of two).
+  Existing run folders analyse each clip again once.
+- **`clipmachine safe-zones <run> --clip <id>`:** renders one clip with the margins and TikTok's
+  button column drawn, into `runs/_scratch/safe-zones/` only; the run folder is only read.
+- Hook text and transcript words are untrusted: `{`, `}`, `\` and newlines are removed before
+  they reach the `.ass`. Neither appears in a clip's json or in the log.
+- Built by a Sonnet 5.5 (Medium) subagent in two steps; each diff reviewed by the planner, who
+  re-ran every check separately. **Review caught one thing:** a word with no length (Whisper
+  writes some) was dropped from karaoke captions (fixed with tests).
+- Tests: 1413 passed, 2 skipped. ruff, format, mypy and pip-audit clean.
+
+**Not done**
+- Stacked-shot caption and hook placement, and their tests: moved to Brief 8.3.
+- Font weight 500–600: only Montserrat Bold (700) is installed.
+- The real run on `runs/2026-10-12_t3`, the per-clip numbers, render time, and Igor's ratings.
+
+**Cost:** $0. No API calls, no new dependency.
+
 ## 2026-10-12 — Brief 8.2: camera polish (built; real run done; Igor's re-rating pending)
 
 **Why:** both needs-edit clips of `runs/2026-10-11_t3-2` (c09, c04) fail only on the camera: late

@@ -86,6 +86,16 @@ On **3 real podcasts** of the target layout:
 | D4 | **MVP finish line:** one run of T2 with ≥3 usable clips, rated with the full rubric; **EVAL.md row 1** (video named only as "T2, third-party, private") | Igor rates; Claude Code writes | Row committed |
 | **Gate D** | Igor would post these clips without touching them | | |
 
+### Retention pack (added 2026-10-12)
+Planned place: after Brief 8.3 (stacked layout) and the edit-point guard. R1 itself was built first (Igor, 2026-10-12); its stacked-shot caption and hook placement moves into 8.3. R1 covers D2 and D3 above.
+
+| # | Step | Owner / model | Done when |
+|---|---|---|---|
+| R1 | **Captions v2 and hook:** karaoke words on a dark rounded box, the hook line for the first 2 s, safe zones (D-022, D-023) | Sonnet Medium builds; Opus reviews | Igor rates 3 clips on a phone; next EVAL row |
+| B3 | **Vocabulary brief** (per-client hint words) moves here, before R2 | Sonnet Medium | Names correct on a re-run |
+| R2 | **Punch-in zooms** | Sonnet Medium | Igor likes them on real clips |
+| R3 | **B-roll:** parked, off by default | — | — |
+
 ### Phase E — The UI (design first, then build)
 | # | Step | Owner / model | Done when |
 |---|---|---|---|
