@@ -342,7 +342,7 @@ class SafeConfig(StrictModel):
     """Pixels on the output canvas that the apps cover; captions and hook stay inside the rest."""
 
     top: int = Field(default=290, ge=0)
-    bottom: int = Field(default=672, ge=0)
+    bottom: int = Field(default=560, ge=0)
     left: int = Field(default=120, ge=0)
     right: int = Field(default=192, ge=0)
 

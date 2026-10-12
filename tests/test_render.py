@@ -1223,7 +1223,7 @@ def test_the_clip_json_and_log_hold_counts_and_codes_but_never_the_hook(
     assert data["notes"] == ["hook_faces_unknown"]
     settings = data["settings"]
     assert settings["caption_style"] == "box_karaoke" and settings["hook_enabled"] is True
-    assert (settings["safe_top"], settings["safe_bottom"]) == (290, 672)
+    assert (settings["safe_top"], settings["safe_bottom"]) == (290, 560)
     assert (settings["spoken_color"], settings["box_opacity"]) == ("#FFD400", 0.75)
     assert "captions 10 lines, hook shown" in caplog.text
 

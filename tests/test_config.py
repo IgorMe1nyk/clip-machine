@@ -414,7 +414,7 @@ def test_render_and_caption_defaults(project: Path) -> None:
     captions = app.captions
     assert (captions.font_file, captions.font_size, captions.margin_v) == (
         "Montserrat-Bold.ttf",
-        64,
+        96,
         350,
     )
 
@@ -770,7 +770,7 @@ def test_the_shipped_default_is_box_karaoke_with_the_hook_on(project: Path) -> N
     assert set(data["hook"]) == set(HookConfig.model_fields)
     assert set(data["safe"]) == set(SafeConfig.model_fields)
     app = load_app_config(project)
-    assert (app.captions.style, app.captions.font_size) == ("box_karaoke", 64)
+    assert (app.captions.style, app.captions.font_size) == ("box_karaoke", 96)
     assert app.hook == HookConfig(enabled=True)
     assert app.safe == SafeConfig()
     assert app.captions.model_dump(include=set(R1_CAPTION_KEYS)) == CaptionsConfig(
@@ -787,7 +787,7 @@ def test_config_without_the_r1_keys_loads_as_legacy(project: Path) -> None:
     assert (app.captions.spoken_color, app.captions.upcoming_color) == ("#FFD400", "#FFFFFF")
     assert (app.captions.box_opacity, app.captions.box_padding_px) == (0.75, 18)
     assert app.hook == HookConfig() and app.hook.enabled is False
-    assert (app.safe.top, app.safe.bottom, app.safe.left, app.safe.right) == (290, 672, 120, 192)
+    assert (app.safe.top, app.safe.bottom, app.safe.left, app.safe.right) == (290, 560, 120, 192)
 
 
 def _box_karaoke(d: dict[str, Any]) -> None:

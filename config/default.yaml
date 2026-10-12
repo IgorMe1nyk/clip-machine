@@ -98,7 +98,7 @@ captions:
   style: box_karaoke         # box_karaoke: karaoke words on a dark rounded box, D-022 | legacy: the older white outlined captions
   font: Montserrat
   font_file: Montserrat-Bold.ttf   # inside assets/fonts/; a missing file fails the render stage
-  font_size: 64              # ASS font size = line height in pixels on the 1080x1920 canvas; capital letters are about 0.45 of it
+  font_size: 96              # ASS font size = line height in pixels on the 1080x1920 canvas; capital letters are about 0.45 of it (D-022)
   offset_seconds: 0.15       # -1.0 to 1.0; positive = captions appear later (sync tuning)
   max_words: 4               # words on one line (1-12)
   max_width_px: 760          # the box, padding included; must fit between safe.left and safe.right
@@ -116,8 +116,8 @@ hook:                        # the clip's hook line as big text at the start (ne
   enabled: true
   seconds: 2.0               # shown from 0 to this
   fade_ms: 150               # fade-out at the end
-safe:                        # pixels the TikTok / Reels / Shorts apps cover (strictest published numbers, D-023)
+safe:                        # pixels the TikTok / Reels / Shorts apps cover (D-023)
   top: 290
-  bottom: 672
+  bottom: 560                # organic posts; the strictest published number is 672. To be checked against the real TikTok UI
   left: 120
   right: 192
