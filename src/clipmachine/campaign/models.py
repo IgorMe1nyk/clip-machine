@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from clipmachine.models import ClipLength, StrictModel
+from clipmachine.models import ClipLength, RenderedOutput, RenderedSettings, StrictModel
 from clipmachine.utils.captions import clean_word
 
 Platform = Literal["tiktok", "instagram", "youtube"]
@@ -202,3 +202,62 @@ class UsedLog(StrictModel):
     next_closer: int = Field(default=0, ge=0)  # where the closer rotation goes next
     last_closer: str | None = None
     entries: list[UsedEntry] = Field(default_factory=list)
+
+
+CHECKS = (
+    "length_in_range",
+    "hook_from_start",
+    "captions_on",
+    "watermark_full_and_clear",
+    "source_audio_only",
+    "closer_present",
+    "not_previously_used",
+    "names_listed",
+)
+
+
+class CampaignClipWatermark(StrictModel):
+    sha256: str
+    blend: str
+    x: int  # top-left of the scaled canvas on the output frame
+    y: int
+    width: int  # the scaled canvas
+    height: int
+    rect: tuple[float, float, float, float]  # the visible content box on the frame
+    background: str
+    color_type: str
+
+
+class CampaignClip(StrictModel):
+    """The contents of campaign/<slug>/<id>_<platform>.json. Holds no transcript text and no
+    hook or caption text; the closer is the one piece of text it keeps."""
+
+    schema_version: int = 1
+    id: str
+    platform: Platform
+    status: Literal["rendered", "failed"]
+    error: str | None = None
+    requested_start: float
+    requested_end: float | None
+    start: float | None = None
+    end: float | None = None
+    duration: float | None = None
+    end_mode: Literal["given", "auto"]
+    auto_end_target: float | None = None  # the target length in seconds, when the end is auto
+    snap_notes: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)  # reason codes from captions, hook, watermark
+    spelling_replacements: int = 0
+    names_to_check: dict[str, list[float]] = Field(default_factory=dict)
+    checks: dict[str, Literal["pass", "warn", "fail"]] = Field(default_factory=dict)
+    closer: str | None = None
+    hook_mode: str
+    hook_font_size: int
+    watermark: CampaignClipWatermark
+    settings: RenderedSettings | None = None
+    crop_mode: Literal["center", "speaker"] | None = None
+    output: RenderedOutput | None = None
+    render_seconds: float | None = None
+    rendered_at: str | None = None
+    source_sha256: str
+    api_calls: int = 0

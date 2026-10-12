@@ -384,3 +384,70 @@ def test_a_resume_that_does_not_reach_render_does_not_check_the_models(
     with pytest.raises(FacesError):  # but a redo that includes render is checked
         run_pipeline(run_dir, from_stage="render", project_root=project)
     assert ran == ["report"]
+
+
+# --- until (Brief 11: campaign mode stops after transcribe) ---------------------------------------
+
+
+def test_until_stops_after_that_stage(project: Path) -> None:
+    run_dir = new_run(project)
+
+    outcome = run_pipeline(run_dir, until="transcribe")
+
+    assert outcome.ok and outcome.ran == ["fetch", "transcribe"]
+    stages = load_state(run_dir).stages
+    assert [stages[n].status for n in STAGE_NAMES] == ["done", "done"] + ["pending"] * 4
+
+
+def test_until_a_stage_that_is_already_done_runs_nothing_and_changes_nothing(
+    project: Path,
+) -> None:
+    run_dir = new_run(project)
+    run_pipeline(run_dir, until="transcribe")
+    before = (run_dir / "run.json").read_text(encoding="utf-8")
+
+    outcome = run_pipeline(run_dir, until="transcribe")
+
+    assert outcome.ok and outcome.ran == []
+    assert load_state(run_dir).stages["candidates"].status == "pending"
+    assert (run_dir / "run.json").read_text(encoding="utf-8") == before
+
+
+def test_until_after_the_earlier_stages_were_done_finishes_the_ones_up_to_it(
+    project: Path,
+) -> None:
+    run_dir = new_run(project)
+    run_pipeline(run_dir, until="fetch")
+
+    outcome = run_pipeline(run_dir, until="score")
+
+    assert outcome.ran == ["transcribe", "candidates", "score"]
+    assert load_state(run_dir).stages["render"].status == "pending"
+
+
+def test_a_failing_stage_before_until_is_reported(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(ctx: RunContext) -> None:
+        raise RuntimeError("stage broke")
+
+    monkeypatch.setitem(pipeline.STAGES, "transcribe", boom)
+    run_dir = new_run(project)
+
+    outcome = run_pipeline(run_dir, until="transcribe")
+
+    assert outcome.failed_stage == "transcribe" and "stage broke" in (outcome.error or "")
+
+
+def test_an_unknown_until_is_an_error_before_anything_is_touched(project: Path) -> None:
+    run_dir = new_run(project)
+    before = (run_dir / "run.json").read_text(encoding="utf-8")
+
+    with pytest.raises(RunError, match="unknown stage 'nope'"):
+        run_pipeline(run_dir, until="nope")
+
+    assert (run_dir / "run.json").read_text(encoding="utf-8") == before
+
+
+def test_without_until_every_stage_runs(project: Path) -> None:
+    assert run_pipeline(new_run(project)).ran == list(STAGE_NAMES)

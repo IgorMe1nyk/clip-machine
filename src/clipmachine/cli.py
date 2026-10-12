@@ -9,6 +9,7 @@ from pathlib import Path
 
 from clipmachine import tracking
 from clipmachine.campaign.loader import campaign_dir
+from clipmachine.campaign.run import run_campaign
 from clipmachine.campaign.used import load_used, mark_posted, save_used
 from clipmachine.config import ConfigError, load_resolved_file
 from clipmachine.pipeline import (
@@ -39,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{run,report,track,safe-zones,campaign-posted,fetch-face-model}",
+        metavar="{run,report,track,safe-zones,campaign,campaign-posted,fetch-face-model}",
     )
 
     run = sub.add_parser(
@@ -80,6 +81,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     safe.add_argument("run_folder", type=Path)
     safe.add_argument("--clip", required=True, help="the id of a kept clip, e.g. c01")
+
+    campaign = sub.add_parser(
+        "campaign",
+        help="render the moments listed in campaigns/<name>/moments.yaml, with the watermark "
+        "and a post caption each (no Claude API calls)",
+    )
+    campaign.add_argument("target", metavar="<source-video | run-folder>")
+    campaign.add_argument("--campaign", required=True, help="the folder name under campaigns/")
+    campaign.add_argument("--only", help="render only these moment ids, e.g. A03,B05")
+    campaign.add_argument(
+        "--force-reuse",
+        action="store_true",
+        help="render moments that are already marked as posted again",
+    )
 
     posted = sub.add_parser(
         "campaign-posted",
@@ -190,6 +205,12 @@ def _cmd_safe_zones(args: argparse.Namespace, root: Path) -> int:
     return EXIT_OK
 
 
+def _cmd_campaign(args: argparse.Namespace, root: Path) -> int:
+    return run_campaign(
+        root, Path(args.target), args.campaign, only=args.only, force_reuse=args.force_reuse
+    )
+
+
 def _cmd_campaign_posted(args: argparse.Namespace, root: Path) -> int:
     """Mark the latest rendered, unposted entry of a moment as posted in used.json. Needs only
     the campaign folder: campaign.yaml and the watermark are not read."""
@@ -233,6 +254,8 @@ def main(argv: Sequence[str] | None = None, root: Path | None = None) -> int:
             return _cmd_track(args, project_root)
         if args.command == "safe-zones":
             return _cmd_safe_zones(args, project_root)
+        if args.command == "campaign":
+            return _cmd_campaign(args, project_root)
         if args.command == "campaign-posted":
             return _cmd_campaign_posted(args, project_root)
         if args.command == "fetch-face-model":
