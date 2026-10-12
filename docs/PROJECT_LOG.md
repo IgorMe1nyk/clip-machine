@@ -180,7 +180,41 @@ command, no config edit and no manual step)
   (16 against 17) and two keeps were dropped by the overlap and weak-boundary rules. Nobody has
   watched these six yet.
 
-**Next:** Igor rates the clips (EVAL.md row 2); Brief 8.3.
+**Igor's ratings of `runs/2026-10-12_t3`** (EVAL.md row 2)
+- **Usable: 5** (c05, c11, c14, c01, c12). **Needs edit: 0. Reject: 1** (c09, checks C1 and C2: it
+  starts without its context, then runs into a different conversation, and ends mid-sentence).
+  No camera complaints.
+
+**Diagnosis of c09** (read-only; 1448.44–1504.45 s of the source, 56.0 s; numbers only)
+- **Root cause: the clip crosses an edit point of the source.** T3 is a compilation (Igor). The
+  track has a burst of 6 camera cuts between 17.07 s and 19.94 s of the clip (1465.51–1468.38 s
+  of the source), no face for the 2.9 s between them, and a different framing afterwards (face at
+  0.52 of the frame width, 0.68 before). The transcript changes subject in the same place.
+- How it got there: the moment the find model chose was 16.5 s long (1452.15–1468.67 s) and
+  ended at the edit point. It was under the 20 s minimum, so snapping grew it by 4 sentences at
+  the end (2 to reach the minimum, 2 toward the preferred length), across the edit point, to
+  1497.00 s. The judge then extended it by one sentence at each end.
+- Start: kind `.`, gap 0.82 s. The judge's one extra sentence is inside the same run of thought;
+  the two sentences that set it up come before and were not taken.
+- End: kind `.`, gap 0.86 s, so it passed the clean-cut rules. But the full stop is inside a
+  sentence: the speaker pauses and the same sentence goes on after it. The candidate's own end
+  (1497.00 s, gap 1.48 s) was a complete sentence; the judge's extension moved the end onto the
+  false full stop, giving "ends cleanly on the finding" as its reason, while the finding is in
+  the next sentence.
+- **Not caused by the style prompt (D-017):** the transcript from before D-017
+  (`runs/2026-10-11_t3`) has the same full stop there, with a 0.98 s gap.
+- Audio at the edit point: a 0.7 s stretch below -65 dB (1468.03–1468.73 s) inside the burst of
+  cuts. On its own that proves little: the recording has 54 such stretches (its quietest 5% is at
+  -65 dB), and c11, rated usable, has 6 inside it. The camera evidence is the strong one.
+
+**Parked (added)**
+- **Source edit points: clips must not cross them (compilations).** A burst of camera cuts with
+  no face in between marks one in c09. Candidate growth and the judge's extensions should stop
+  at such a point. Not built or measured beyond this one clip.
+- A full stop that Whisper writes at a pause inside a sentence passes the clean-cut rules
+  (kind `.`, gap 0.86 s). One case seen.
+
+**Next:** Brief 8.3 (stacked layout for wide two-person shots).
 
 ## 2026-10-11 — MVP walking-skeleton finish line met on private validation (6 usable of 8); public samples pending permissioned content (D-012)
 
