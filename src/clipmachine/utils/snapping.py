@@ -4,12 +4,18 @@ Pure functions, no I/O. The transcript text is untrusted data: nothing here puts
 or a log line; notes carry seconds and counts only.
 
 A sentence ends after a word that ends in . ? ! (or an ellipsis), optionally followed by closing
-quotes or brackets. Whisper segments often break mid-sentence, so a segment edge is a boundary
-only as a fallback: when more than fallback_max_words words have passed since the last sentence
-end. The first word of the transcript always starts a sentence. Boundaries that came from the
-fallback instead of punctuation are flagged.
+quotes or brackets, and at the last word of the transcript. A stretch between two such ends that
+is longer than fallback_max_words words is split further, with no regard for Whisper segments:
+first at every gap between words of at least min_pause seconds (end kind "pause"), then any piece
+still too long at its largest gap, ties to the middle of the piece (end kind "edge"). The first
+word of the transcript always starts a sentence.
+
+Every sentence carries how it ends and the gap after it. A punctuated end with a gap under
+min_cut_gap seconds is an "edge" too: a cut there would land inside continuous speech. The last
+sentence of the transcript is never an edge. Boundaries that are edges are flagged.
 """
 
+import math
 from bisect import bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -22,6 +28,10 @@ EPSILON = 1e-9
 ROUND = 3
 TIE_DIGITS = 6  # overlaps closer than this are a tie (float noise is not a preference)
 DEFAULT_FALLBACK_WORDS = 40
+END_PAUSE = "pause"  # a sentence that ends at a pause with no punctuation
+END_EDGE = "edge"  # a weak end: a forced split, or punctuation inside continuous speech
+DEFAULT_MIN_PAUSE = 0.35
+DEFAULT_MIN_CUT_GAP = 0.15
 # The notes snap() writes for a boundary that is a fallback segment edge. Named so the score stage
 # can read the flags back from candidates.json without matching on a copy of the text.
 EDGE_START_NOTE = "start is a segment edge: no sentence punctuation before it"
@@ -40,6 +50,8 @@ class Word:
 class Sentence:
     first: int  # index of the first word
     last: int  # index of the last word (inclusive)
+    end: str = "."  # how it ends: ".", "?", "!", END_PAUSE or END_EDGE
+    gap: float = 0.0  # seconds from its last word to the next word's start; inf after the last
 
 
 @dataclass(frozen=True)
@@ -50,6 +62,14 @@ class SentenceIndex:
 
     def sentence_of(self, word_index: int) -> int:
         return bisect_right(self.firsts, word_index) - 1
+
+    def cut_after(self, n: int) -> bool:
+        """Whether a clip may end after sentence n (its end is not weak)."""
+        return self.sentences[n].end != END_EDGE
+
+    def cut_before(self, n: int) -> bool:
+        """Whether a clip may start at sentence n (the transcript start, or a real end before)."""
+        return n == 0 or self.cut_after(n - 1)
 
 
 @dataclass(frozen=True)
@@ -73,13 +93,38 @@ def ends_sentence(text: str) -> bool:
     return text.rstrip(CLOSERS).endswith(SENTENCE_ENDERS)
 
 
+def _gap_after(words: Sequence[Word], i: int) -> float:
+    if i + 1 >= len(words):
+        return math.inf
+    return max(0.0, words[i + 1].start - words[i].end)
+
+
+def _punctuation_mark(text: str) -> str:
+    stripped = text.rstrip(CLOSERS)
+    return stripped[-1] if stripped.endswith(("?", "!")) else "."
+
+
+def _split_point(words: Sequence[Word], first: int, last: int) -> int:
+    """The word after which to split first..last: the largest gap (to 3 decimals), ties to the
+    split nearest the middle, then to the earlier word."""
+    half = (last - first + 1) / 2
+    return min(
+        range(first, last),
+        key=lambda i: (-round(_gap_after(words, i), ROUND), abs(i - first + 1 - half), i),
+    )
+
+
 def build_index(
-    segments: Sequence[TranscriptSegment], fallback_max_words: int = DEFAULT_FALLBACK_WORDS
+    segments: Sequence[TranscriptSegment],
+    fallback_max_words: int = DEFAULT_FALLBACK_WORDS,
+    *,
+    min_pause: float = DEFAULT_MIN_PAUSE,
+    min_cut_gap: float = DEFAULT_MIN_CUT_GAP,
 ) -> SentenceIndex:
     """Words and sentences of a whole transcript.
 
     A segment without word timestamps contributes one pseudo-word spanning the segment, so its
-    text is not lost.
+    text is not lost. Whisper segment edges are not boundaries.
     """
     words: list[Word] = []
     for number, segment in enumerate(segments):
@@ -93,14 +138,43 @@ def build_index(
             words.append(Word(segment.start, segment.end, segment.text.strip(), number))
 
     sentences: list[Sentence] = []
-    first = 0
+    run_first = 0
     for i, word in enumerate(words):
-        last_word = i == len(words) - 1
-        segment_edge = not last_word and words[i + 1].segment != word.segment
-        too_long = segment_edge and i + 1 - first > fallback_max_words
-        if last_word or too_long or ends_sentence(word.text):
-            sentences.append(Sentence(first, i))
-            first = i + 1
+        is_last = i == len(words) - 1
+        punctuated = ends_sentence(word.text)
+        if not (is_last or punctuated):
+            continue
+        # the run run_first..i ends here; its own end kind comes from the punctuation and the gap
+        gap = _gap_after(words, i)
+        if punctuated:
+            run_end = _punctuation_mark(word.text) if gap >= min_cut_gap else END_EDGE
+        else:
+            run_end = END_PAUSE
+        if is_last and run_end == END_EDGE:
+            run_end = _punctuation_mark(word.text)
+        if i + 1 - run_first <= fallback_max_words:
+            sentences.append(Sentence(run_first, i, run_end, gap))
+            run_first = i + 1
+            continue
+
+        # a long run: split at pauses, then pieces still too long at their largest gap
+        pieces: list[tuple[int, int, str]] = []
+        start = run_first
+        for k in range(run_first, i):
+            if _gap_after(words, k) >= min_pause:
+                pieces.append((start, k, END_PAUSE))
+                start = k + 1
+        pieces.append((start, i, run_end))
+        work = list(reversed(pieces))
+        while work:
+            first, last, kind = work.pop()
+            if last + 1 - first <= fallback_max_words:
+                sentences.append(Sentence(first, last, kind, _gap_after(words, last)))
+                continue
+            cut = _split_point(words, first, last)
+            work.append((cut + 1, last, kind))
+            work.append((first, cut, END_EDGE))
+        run_first = i + 1
     return SentenceIndex(
         words=tuple(words),
         sentences=tuple(sentences),
@@ -280,8 +354,8 @@ def snap(
     last = words[index.sentences[b].last]
     first_index = index.sentences[a].first
     last_index = index.sentences[b].last
-    edge_start = first_index != 0 and not ends_sentence(words[first_index - 1].text)
-    edge_end = not ends_sentence(last.text)
+    edge_start = not index.cut_before(a)
+    edge_end = not index.cut_after(b)
 
     notes: list[str] = []
     if a == first_chosen:

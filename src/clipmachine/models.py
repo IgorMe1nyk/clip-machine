@@ -75,12 +75,35 @@ class CandidatesConfig(StrictModel):
     # setting is thinking off at low effort. Sonnet 5.5 rejects "disabled" (Brief 5).
     thinking: Literal["disabled", "adaptive"] = "disabled"
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
-    # A segment edge is a sentence boundary only after this many unpunctuated words.
+    # An unpunctuated run longer than this many words is split: at pauses, then its largest gap.
     fallback_max_words: int = Field(default=40, gt=0)
     # The length the model is asked for and snapping grows short moments toward. None = the
     # defaults below, clamped into clip.min_seconds..max_seconds (see AppConfig.preferred_range).
     preferred_min_seconds: float | None = Field(default=None, gt=0)
     preferred_max_seconds: float | None = Field(default=None, gt=0)
+
+
+class SnapConfig(StrictModel):
+    """Where a clip may be cut (Brief 10). Every key has a default so older configs load."""
+
+    min_pause_seconds: float = Field(
+        default=0.35, gt=0
+    )  # an unpunctuated gap this long is a boundary
+    min_cut_gap: float = Field(
+        default=0.15, ge=0
+    )  # never cut where the gap between words is smaller
+    # Not used until the next Brief 10 commit (pause-centred cut times in the padding rule).
+    max_start_pad_seconds: float = Field(default=0.25, ge=0)
+    max_end_pad_seconds: float = Field(default=0.5, ge=0)
+
+    @model_validator(mode="after")
+    def _check_relations(self) -> "SnapConfig":
+        if self.min_cut_gap > self.min_pause_seconds:
+            raise ValueError(
+                f"min_cut_gap ({self.min_cut_gap}) must not exceed min_pause_seconds "
+                f"({self.min_pause_seconds})"
+            )
+        return self
 
 
 class ScoreConfig(StrictModel):
@@ -326,6 +349,7 @@ class AppConfig(StrictModel):
     pricing: PricingConfig = Field(default_factory=PricingConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     candidates: CandidatesConfig = Field(default_factory=CandidatesConfig)
+    snap: SnapConfig = Field(default_factory=SnapConfig)
     score: ScoreConfig = Field(default_factory=ScoreConfig)
     render: RenderConfig = Field(default_factory=RenderConfig)
     speaker: SpeakerConfig = Field(default_factory=SpeakerConfig)
@@ -544,6 +568,8 @@ class CandidatesFile(StrictModel):
     clip_min_seconds: float
     clip_max_seconds: float
     settings: CandidatesConfig
+    # The snap settings the candidates were made with; None = a file from before Brief 10.
+    snap: SnapConfig | None = None
     summary: CandidatesSummary
     candidates: list[Candidate]
     warnings: list[str]

@@ -1,12 +1,17 @@
 """Sentence snapping and de-duplication, on synthetic word lists (no real transcript text)."""
 
+import math
 import random
 
 import pytest
 
 from clipmachine.models import TranscriptSegment, TranscriptWord
 from clipmachine.utils.snapping import (
+    END_EDGE,
+    END_PAUSE,
     Dropped,
+    Sentence,
+    SentenceIndex,
     Snapped,
     build_index,
     dedupe,
@@ -135,19 +140,20 @@ def test_a_mid_sentence_segment_edge_is_not_a_boundary() -> None:
     assert [(s.first, s.last) for s in index.sentences] == [(0, 1), (2, 5)]
 
 
-def test_segment_edge_becomes_a_boundary_after_more_than_the_fallback_words() -> None:
+def test_a_long_unpunctuated_run_is_split_at_its_middle_when_all_gaps_are_equal() -> None:
     spec = [" ".join(f"s{n}w{k}" for k in range(10)) for n in range(6)]  # 60 unpunctuated words
     index = build_index(build(spec), fallback_max_words=40)
-    # edges after 10, 20, 30 and 40 words are not far enough; the one after 50 is
-    assert [(s.first, s.last) for s in index.sentences] == [(0, 49), (50, 59)]
+    # segment edges play no part; every gap is 0.3 s (under min_pause), so the split is balanced
+    assert [(s.first, s.last) for s in index.sentences] == [(0, 29), (30, 59)]
 
 
 def test_exactly_the_fallback_number_of_words_is_not_enough() -> None:
     spec = [" ".join(f"s{n}w{k}" for k in range(10)) for n in range(4)]  # 40 words in all
-    index = build_index(build(spec + ["tail words."]), fallback_max_words=40)
-    assert [(s.first, s.last) for s in index.sentences] == [(0, 41)]
-    shorter = build_index(build(spec + ["tail words."]), fallback_max_words=39)
-    assert [(s.first, s.last) for s in shorter.sentences] == [(0, 39), (40, 41)]
+    spec[-1] += "."
+    index = build_index(build(spec), fallback_max_words=40)
+    assert [(s.first, s.last) for s in index.sentences] == [(0, 39)]
+    shorter = build_index(build(spec), fallback_max_words=39)
+    assert [(s.first, s.last) for s in shorter.sentences] == [(0, 19), (20, 39)]
 
 
 def test_the_first_word_of_the_transcript_starts_a_sentence() -> None:
@@ -176,6 +182,218 @@ def test_segment_without_words_becomes_one_pseudo_word() -> None:
     assert words_text(index, 2, 2) == "a segment with no word times."
 
 
+# --- end kinds, pauses and gaps (Brief 10) ------------------------------------------------------
+
+# Times here are multiples of 0.125 so gaps compare exactly: words are 0.5 s long, a "quarter" gap
+# is 0.25 s. The thresholds the tests pass are min_pause 0.5 and min_cut_gap 0.25.
+QUARTER = 0.25
+PAUSE = 0.5
+MIN_PAUSE = 0.5
+MIN_CUT = 0.25
+
+
+def timed(
+    items: list[tuple[str, float]], *, breaks: frozenset[int] = frozenset()
+) -> list[TranscriptSegment]:
+    """Words with explicit gaps: (token, seconds from its end to the next word's start; negative
+    = overlap). `breaks` are word indices that begin a new segment."""
+    groups: list[list[TranscriptWord]] = [[]]
+    t = 0.0
+    for i, (token, gap_after) in enumerate(items):
+        if i in breaks and groups[-1]:
+            groups.append([])
+        groups[-1].append(TranscriptWord(start=t, end=t + WORD, word=" " + token, probability=0.9))
+        t += WORD + gap_after
+    return [
+        TranscriptSegment(
+            id=n,
+            start=g[0].start,
+            end=g[-1].end,
+            text="x",
+            avg_logprob=0.0,
+            no_speech_prob=0.0,
+            words=g,
+        )
+        for n, g in enumerate(groups)
+    ]
+
+
+def make_index(
+    items: list[tuple[str, float]],
+    fallback: int = 40,
+    *,
+    breaks: frozenset[int] = frozenset(),
+) -> SentenceIndex:
+    return build_index(
+        timed(items, breaks=breaks), fallback, min_pause=MIN_PAUSE, min_cut_gap=MIN_CUT
+    )
+
+
+def plain(count: int, gap: float = QUARTER, final: str = "") -> list[tuple[str, float]]:
+    """`count` unpunctuated words with equal gaps; the last carries `final`."""
+    items = [(f"w{k}", gap) for k in range(count)]
+    items[-1] = (items[-1][0] + final, gap)
+    return items
+
+
+def spans(index: SentenceIndex) -> list[tuple[int, int]]:
+    return [(s.first, s.last) for s in index.sentences]
+
+
+@pytest.mark.parametrize(
+    ("token", "gap_after", "expected"),
+    [
+        ("end.", 0.5, "."),
+        ("end?", 0.5, "?"),
+        ("end!", 0.5, "!"),
+        ("end...", 0.5, "."),
+        ("end…", 0.5, "."),
+        ('end?"', 0.5, "?"),
+        ('end."', 0.5, "."),
+        ("(end!)", 0.5, "!"),
+        ("end.", MIN_CUT, "."),  # exactly min_cut_gap is enough
+        ("end?", 0.125, END_EDGE),
+        ("end.", 0.0, END_EDGE),
+        ("end!", -0.25, END_EDGE),
+        ('end."', 0.125, END_EDGE),
+    ],
+)
+def test_a_punctuated_end_is_its_mark_or_an_edge_when_the_gap_is_too_small(
+    token: str, gap_after: float, expected: str
+) -> None:
+    index = make_index([("a", QUARTER), (token, gap_after), ("b", QUARTER), ("c.", 0.0)])
+    assert spans(index) == [(0, 1), (2, 3)]
+    assert index.sentences[0].end == expected
+    assert index.sentences[1].end == "."
+
+
+def test_the_last_sentence_is_never_an_edge() -> None:
+    punctuated = make_index([("a", QUARTER), ("b.", 0.0)])
+    assert (punctuated.sentences[-1].end, punctuated.sentences[-1].gap) == (".", math.inf)
+    unpunctuated = make_index([("a", QUARTER), ("b", 0.0)])
+    assert unpunctuated.sentences[-1].end == END_PAUSE
+    assert unpunctuated.sentences[-1].gap == math.inf
+    questioning = make_index([("a?", 0.0)])
+    assert questioning.sentences[-1].end == "?"
+
+
+def test_a_long_unpunctuated_run_splits_at_every_gap_of_min_pause_or_more() -> None:
+    items = plain(12, final=".")
+    items[3] = (items[3][0], PAUSE)
+    items[7] = (items[7][0], PAUSE + 0.25)
+    index = make_index(items, fallback=4)
+    assert spans(index) == [(0, 3), (4, 7), (8, 11)]
+    assert [s.end for s in index.sentences] == [END_PAUSE, END_PAUSE, "."]
+    assert [s.gap for s in index.sentences] == [PAUSE, PAUSE + 0.25, math.inf]
+
+
+def test_a_gap_just_under_min_pause_is_not_a_pause_boundary() -> None:
+    items = plain(8)
+    items[3] = (items[3][0], PAUSE - 0.125)
+    index = make_index(items, fallback=4)
+    # no pause: the 8 words are split at their largest gap, which is that one (an edge)
+    assert spans(index) == [(0, 3), (4, 7)]
+    assert [s.end for s in index.sentences] == [END_EDGE, END_PAUSE]
+
+
+def test_a_piece_still_too_long_splits_at_its_largest_gap_then_at_its_middle() -> None:
+    items = plain(8)
+    items[2] = (items[2][0], 0.375)  # the largest gap, under min_pause
+    index = make_index(items, fallback=4)
+    # 0-2 | 3-7; the 5-word piece has equal gaps: 2/3 and 3/2 are equally central, the earlier wins
+    assert spans(index) == [(0, 2), (3, 4), (5, 7)]
+    assert [s.end for s in index.sentences] == [END_EDGE, END_EDGE, END_PAUSE]
+
+
+def test_equal_gaps_give_balanced_pieces_not_slivers() -> None:
+    index = make_index(plain(100), fallback=40)
+    assert spans(index) == [(0, 24), (25, 49), (50, 74), (75, 99)]
+    assert [s.end for s in index.sentences] == [END_EDGE, END_EDGE, END_EDGE, END_PAUSE]
+
+
+def test_pieces_between_pauses_are_split_further_when_they_are_still_too_long() -> None:
+    items = plain(20)
+    items[9] = (items[9][0], PAUSE)  # two pieces of 10 words
+    index = make_index(items, fallback=6)
+    assert spans(index) == [(0, 4), (5, 9), (10, 14), (15, 19)]
+    assert [s.end for s in index.sentences] == [END_EDGE, END_PAUSE, END_EDGE, END_PAUSE]
+    assert all(s.last - s.first + 1 <= 6 for s in index.sentences)
+
+
+def test_gaps_are_compared_to_three_decimals() -> None:
+    items = plain(6)
+    items[1] = (items[1][0], 0.3754)  # both round to 0.375: a tie, so the middle wins
+    items[2] = (items[2][0], 0.3746)
+    index = make_index(items, fallback=4)
+    assert spans(index) == [(0, 2), (3, 5)]
+
+
+def test_exactly_fallback_max_words_is_not_split_even_across_a_pause() -> None:
+    items = plain(4)
+    items[1] = (items[1][0], 2.0)
+    assert spans(make_index(items, fallback=4)) == [(0, 3)]
+    assert spans(make_index(items, fallback=3)) == [(0, 1), (2, 3)]
+
+
+def test_segment_edges_alone_create_no_boundary() -> None:
+    items = plain(12, final=".")
+    index = make_index(items, fallback=8, breaks=frozenset({3, 7}))
+    assert spans(index) == [(0, 5), (6, 11)]  # 12 words > 8: split at the middle, not at 3 or 7
+    assert [s.end for s in index.sentences] == [END_EDGE, "."]
+    # with a pause at word 5 the split is the pause; the segment edges at 3 and 7 still play no part
+    items[5] = (items[5][0], PAUSE)
+    index = make_index(items, fallback=8, breaks=frozenset({3, 7}))
+    assert spans(index) == [(0, 5), (6, 11)]
+    assert [s.end for s in index.sentences] == [END_PAUSE, "."]
+    # a run that is short enough stays whole whatever the segments do
+    assert spans(make_index(plain(6, final="."), fallback=8, breaks=frozenset({2, 4}))) == [(0, 5)]
+
+
+def test_gap_is_the_time_to_the_next_word_never_negative() -> None:
+    index = make_index([("a", QUARTER), ("b.", 0.75), ("c", QUARTER), ("d.", -0.25), ("e.", 0.0)])
+    assert [s.gap for s in index.sentences] == [0.75, 0.0, math.inf]
+    assert [s.end for s in index.sentences] == [".", END_EDGE, "."]
+
+
+def test_sentence_defaults_keep_old_constructions_valid() -> None:
+    sentence = Sentence(0, 3)
+    assert (sentence.end, sentence.gap) == (".", 0.0)
+
+
+def test_cut_after_and_cut_before() -> None:
+    items = [
+        ("a.", PAUSE),  # 0: a real end
+        ("b.", 0.0),  # 1: punctuation in continuous speech: an edge
+        ("c", QUARTER),
+        ("d", PAUSE),  # 2: a pause end
+        ("e", QUARTER),
+        ("f.", 0.0),  # 3: the last sentence
+    ]
+    index = make_index(items, fallback=2)
+    assert [s.end for s in index.sentences] == [".", END_EDGE, END_PAUSE, "."]
+    assert [index.cut_after(n) for n in range(4)] == [True, False, True, True]
+    assert [index.cut_before(n) for n in range(4)] == [True, True, False, True]
+
+
+def test_snap_flags_follow_the_end_kinds() -> None:
+    index = make_index(
+        [("a", QUARTER), ("b.", PAUSE), ("c", QUARTER), ("d.", 0.0), ("e", QUARTER), ("f.", 0.0)]
+    )
+    assert [s.end for s in index.sentences] == [".", END_EDGE, "."]
+    # the middle sentence starts after a real end and ends at an edge
+    middle = snapped(
+        snap(index, 1.5, 2.5, padding=0.0, duration=10.0, min_length=0.1, max_length=500.0)
+    )
+    assert (middle.first_word, middle.last_word) == (2, 3)
+    assert (middle.edge_start, middle.edge_end) == (False, True)
+    # the last sentence starts after an edge
+    last = snapped(
+        snap(index, 3.5, 4.5, padding=0.0, duration=10.0, min_length=0.1, max_length=500.0)
+    )
+    assert (last.first_word, last.last_word) == (4, 5)
+    assert (last.edge_start, last.edge_end) == (True, False)
+
+
 # --- boundaries ----------------------------------------------------------------------------------
 
 
@@ -202,10 +420,11 @@ def test_single_sentence_moment() -> None:
     assert (result.first_word, result.last_word) == (7, 9)
 
 
-def test_no_punctuation_falls_back_to_segment_boundaries_after_the_word_limit() -> None:
+def test_no_punctuation_splits_at_equal_gaps_after_the_word_limit() -> None:
     spec = ["alpha beta gamma delta", "epsilon zeta eta theta", "iota kappa lambda mu"]
-    result = snapped(run_snap(spec, ws(9), ws(10), fallback_words=5))
-    assert (result.first_word, result.last_word) == (8, 11)
+    # 12 words, limit 5: split 6/6, then 3/3 each; the middle sentences end at an edge
+    result = snapped(run_snap(spec, ws(4), ws(4) + 0.1, fallback_words=5))
+    assert (result.first_word, result.last_word) == (3, 5)
     assert (result.edge_start, result.edge_end) == (True, True)
     assert "start is a segment edge: no sentence punctuation before it" in result.notes
     assert "end is a segment edge: no sentence punctuation after it" in result.notes
@@ -215,7 +434,8 @@ def test_no_punctuation_under_the_word_limit_is_one_sentence() -> None:
     spec = ["alpha beta gamma delta", "epsilon zeta eta theta", "iota kappa lambda mu"]
     result = snapped(run_snap(spec, ws(5), ws(6)))
     assert (result.first_word, result.last_word) == (0, 11)
-    assert (result.edge_start, result.edge_end) == (False, True)
+    # the recording ends here: always a legal cut, never an edge
+    assert (result.edge_start, result.edge_end) == (False, False)
 
 
 def test_audio_start_is_not_a_segment_edge() -> None:
@@ -223,7 +443,7 @@ def test_audio_start_is_not_a_segment_edge() -> None:
     result = snapped(run_snap(spec, 0.0, ws(2)))
     assert result.first_word == 0
     assert result.edge_start is False  # the audio begins here
-    assert result.edge_end is True  # and ends here, unpunctuated
+    assert result.edge_end is False  # and ends here: the end of the recording is no edge
 
 
 def test_a_time_in_a_gap_belongs_to_the_next_sentence_for_a_start() -> None:
@@ -373,7 +593,7 @@ def test_too_long_with_a_tie_keeps_the_first_sentence() -> None:
 
 def test_a_single_sentence_over_the_maximum_is_dropped() -> None:
     spec = [" ".join(["word"] * 99 + ["end."])]  # 100 words, 79.7 s
-    result = run_snap(spec, ws(10), ws(20), min_length=20.0, max_length=60.0)
+    result = run_snap(spec, ws(10), ws(20), min_length=20.0, max_length=60.0, fallback_words=200)
     assert isinstance(result, Dropped)
     assert "longer than the 60 s maximum" in result.reason
 
@@ -406,7 +626,7 @@ def test_snapped_spans_always_hold_the_invariants() -> None:
         " ".join(f"w{n}_{k}" + ("." if k == size - 1 else "") for k in range(size))
         for n, size in enumerate(rng.randint(2, 15) for _ in range(40))
     ]
-    segments = build(spec, gap=0.1)
+    segments = build(spec, gap=0.2)  # at least min_cut_gap, so a full stop is a real end
     index = build_index(segments)
     duration = segments[-1].words[-1].end + 0.1
     for _ in range(400):

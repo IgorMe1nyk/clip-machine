@@ -30,6 +30,7 @@ from clipmachine.models import (
     CostsFile,
     KeepSentences,
     ScoredFile,
+    SnapConfig,
     TranscriptSegment,
 )
 from clipmachine.pipeline import load_state, run_pipeline, start_new_run
@@ -110,13 +111,24 @@ class Rig:
         write_transcript(self.run_dir, segments)
 
     def candidates(
-        self, *ranges: tuple[int, int], notes: dict[int, list[str]] | None = None
+        self,
+        *ranges: tuple[int, int],
+        notes: dict[int, list[str]] | None = None,
+        snap: SnapConfig | None = None,
+        with_snap: bool = True,
     ) -> list[Candidate]:
         """Write candidates.json for inclusive sentence ranges (0-based, global).
 
-        `notes` maps a candidate number (1-based) to its snap notes.
+        `notes` maps a candidate number (1-based) to its snap notes. `snap` is recorded in the
+        file (the defaults when None); with_snap=False writes a file from before Brief 10.
         """
-        index = build_index(self.segments, 40)
+        recorded = snap if snap is not None else SnapConfig()
+        index = build_index(
+            self.segments,
+            40,
+            min_pause=recorded.min_pause_seconds,
+            min_cut_gap=recorded.min_cut_gap,
+        )
         duration = round(self.segments[-1].end + 0.2, 3)
         made = []
         for number, (a, b) in enumerate(ranges, start=1):
@@ -161,6 +173,7 @@ class Rig:
             clip_min_seconds=20,
             clip_max_seconds=60,
             settings=CandidatesConfig(),
+            snap=recorded if with_snap else None,
             summary=summary,
             candidates=made,
             warnings=[],
@@ -1042,6 +1055,31 @@ def test_candidates_that_do_not_match_the_transcript_fail_before_any_call(rig: R
     with pytest.raises(RunError, match=r"does not match transcript\.json \(candidate c01\)"):
         rig.run()
     assert fake.create_calls == [] and rig.keys == []
+
+
+def test_candidates_from_before_brief_10_fail_before_any_call(rig: Rig) -> None:
+    rig.candidates((0, 2), with_snap=False)
+    fake = rig.script(answer(batch(clip("c01"))))
+    with pytest.raises(RunError, match=r"before Brief 10 .*rerun from the candidates stage"):
+        rig.run()
+    assert fake.create_calls == [] and rig.keys == []
+    assert not (rig.run_dir / "scored.json").exists()
+
+
+def test_the_index_is_rebuilt_from_the_recorded_snap_settings(rig: Rig) -> None:
+    # sentences 1-3 have no full stop: a 60-word run with 0.2 s between words
+    segments = make_segments(12)
+    for n in (1, 2, 3, 4):
+        words = [w.model_copy(update={"word": w.word.rstrip(".")}) for w in segments[n].words]
+        segments[n] = segments[n].model_copy(update={"words": words})
+    rig.set_transcript(segments)
+    # recorded: any 0.2 s gap is a pause, so every word of the run is its own sentence
+    recorded = SnapConfig(min_pause_seconds=0.1, min_cut_gap=0.05)
+    rig.candidates((3, 6), snap=recorded)
+    rig.script(answer(batch(clip("c01"))))
+    out = rig.run()  # the current config (min_pause 0.35) would not find these sentences
+    assert [c.id for c in out.clips] == ["c01"]
+    assert out.clips[0].sentences == 4
 
 
 def test_no_candidates_makes_no_call_and_writes_an_empty_result(rig: Rig) -> None:

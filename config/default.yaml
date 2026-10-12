@@ -28,9 +28,14 @@ candidates:
   dedupe_overlap: 0.5        # overlap / shorter length; above this the later one is dropped
   thinking: disabled         # disabled / adaptive (Haiku 5.5 accepts both)
   effort: low                # low / medium / high / xhigh / max
-  fallback_max_words: 40     # a segment edge is a sentence boundary only after this many unpunctuated words
+  fallback_max_words: 40     # an unpunctuated run longer than this many words is split (at pauses, then at its largest gap)
   preferred_min_seconds: 30  # min_seconds <= preferred_min < preferred_max <= max_seconds
   preferred_max_seconds: 50  # asked of the model; short moments grow toward preferred_min
+snap:                        # where a clip may be cut (Brief 10)
+  min_pause_seconds: 0.35    # an unpunctuated gap between words this long is a sentence boundary
+  min_cut_gap: 0.15          # never cut where the gap between words is smaller; <= min_pause_seconds
+  max_start_pad_seconds: 0.25   # cap on the pause before a clip's first word that the cut may use (used from the next commit)
+  max_end_pad_seconds: 0.5   # cap on the pause after a clip's last word that the cut may use (used from the next commit)
 score:
   max_per_call: 20           # candidates judged together in one call; more are sent in chunks
   max_output_tokens: 8000    # thinking and answer together

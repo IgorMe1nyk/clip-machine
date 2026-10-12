@@ -13,7 +13,7 @@ from clipmachine.config import (
     load_resolved_file,
     validate_client_name,
 )
-from clipmachine.models import SpeakerConfig
+from clipmachine.models import SnapConfig, SpeakerConfig
 from helpers import edit_yaml
 
 
@@ -565,4 +565,55 @@ def test_invalid_speaker_settings_are_rejected(
 ) -> None:
     _default(project, lambda d: d["speaker"].update(update))
     with pytest.raises(ConfigError, match=expected):
+        load_app_config(project)
+
+
+# --- Brief 10: snap section ----------------------------------------------------------------------
+
+
+def test_snap_defaults_match_default_yaml(project: Path) -> None:
+    data = yaml.safe_load((project / "config" / "default.yaml").read_text(encoding="utf-8"))
+    assert set(data["snap"]) == {
+        "min_pause_seconds",
+        "min_cut_gap",
+        "max_start_pad_seconds",
+        "max_end_pad_seconds",
+    }
+    assert load_app_config(project).snap == SnapConfig()
+    assert SnapConfig(**data["snap"]) == SnapConfig()
+    assert (SnapConfig().min_pause_seconds, SnapConfig().min_cut_gap) == (0.35, 0.15)
+
+
+def test_config_without_snap_section_still_loads(project: Path, tmp_path: Path) -> None:
+    _default(project, lambda d: d.pop("snap"))
+    assert load_app_config(project).snap == SnapConfig()
+
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "example-client"), target)
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    del data["config"]["snap"]
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert load_resolved_file(target).app.snap == SnapConfig()
+
+
+def test_min_cut_gap_may_equal_but_not_exceed_min_pause(project: Path) -> None:
+    _default(project, lambda d: d["snap"].update(min_pause_seconds=0.3, min_cut_gap=0.3))
+    assert load_app_config(project).snap.min_cut_gap == 0.3
+    _default(project, lambda d: d["snap"].update(min_pause_seconds=0.3, min_cut_gap=0.31))
+    with pytest.raises(ConfigError, match="min_cut_gap"):
+        load_app_config(project)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("min_pause_seconds", 0),
+        ("min_cut_gap", -0.1),
+        ("max_start_pad_seconds", -0.1),
+        ("max_end_pad_seconds", -0.1),
+    ],
+)
+def test_invalid_snap_settings_are_rejected(project: Path, key: str, value: float) -> None:
+    _default(project, lambda d: d["snap"].update({key: value}))
+    with pytest.raises(ConfigError, match=key):
         load_app_config(project)

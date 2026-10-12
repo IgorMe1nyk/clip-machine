@@ -233,7 +233,12 @@ def _find(ctx: RunContext, run_dir: Path) -> None:
     system_template, user_template = load_prompt(root)
     client = ClaudeClient(run_dir, root, app)
     summary_rules = rules_summary(ctx.config.rules)
-    index = build_index(transcript.segments, cfg.fallback_max_words)
+    index = build_index(
+        transcript.segments,
+        cfg.fallback_max_words,
+        min_pause=app.snap.min_pause_seconds,
+        min_cut_gap=app.snap.min_cut_gap,
+    )
 
     for block in blocks:
         values = {
@@ -336,6 +341,7 @@ def _find(ctx: RunContext, run_dir: Path) -> None:
         clip_min_seconds=min_length,
         clip_max_seconds=max_length,
         settings=cfg,
+        snap=app.snap,
         summary=summary,
         candidates=candidates,
         warnings=warnings,

@@ -408,6 +408,11 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
     root = ctx.project_root if ctx.project_root is not None else REPO_ROOT
     transcript = _load_transcript(run_dir)
     found = _load_candidates(run_dir)
+    if found.snap is None:
+        raise RunError(
+            f"{CANDIDATES_JSON} was made before Brief 10 (it records no snap settings): "
+            "rerun from the candidates stage"
+        )
     candidates = found.candidates
     min_length, max_length = app.clip.min_seconds, app.clip.max_seconds
     padding = found.settings.snap_padding_seconds
@@ -417,7 +422,12 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
     if not candidates:
         warnings.append("there are no candidates, so nothing was scored")
 
-    index = build_index(transcript.segments, found.settings.fallback_max_words)
+    index = build_index(
+        transcript.segments,
+        found.settings.fallback_max_words,
+        min_pause=found.snap.min_pause_seconds,
+        min_cut_gap=found.snap.min_cut_gap,
+    )
     located = locate_all(index, candidates, padding=padding, duration=duration)
 
     system_template, user_template = load_prompt(root, PROMPT_FILE)

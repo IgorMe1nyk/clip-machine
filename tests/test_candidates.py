@@ -4,6 +4,7 @@ Transcript layout: 12 sentences of 15 words. Every word is 0.4 s long with 0.2 s
 sentence n runs from 9.0 * n to 9.0 * n + 8.8 and the 0.2 s padding exactly fills the gaps.
 """
 
+import dataclasses
 import json
 import logging
 from datetime import date
@@ -20,6 +21,7 @@ from clipmachine.context import RunContext
 from clipmachine.models import (
     CandidatesFile,
     CostsFile,
+    SnapConfig,
     TranscribeConfig,
     Transcript,
     TranscriptSegment,
@@ -462,18 +464,34 @@ def test_candidates_come_out_in_time_order(rig: Rig) -> None:
 def test_segment_edge_boundaries_are_counted(rig: Rig) -> None:
     rig.block_minutes = 10.0
     segments = make_segments(12)
-    # segments 1-3 and 5-7 have no full stop: 45 unpunctuated words each, so the fallback
-    # (more than 40 words) makes the segment edge after 3 and after 7 a boundary
+    # segments 1-3 and 5-7 have no full stop: each run of 60 unpunctuated words (segments 1-4 and
+    # 5-8, all gaps 0.2 s, under min_pause) is split at its middle, which is an edge
     for n in (1, 2, 3, 5, 6, 7):
         words = [w.model_copy(update={"word": w.word.rstrip(".")}) for w in segments[n].words]
         segments[n] = segments[n].model_copy(update={"words": words})
     write_transcript(rig.run_dir, segments)
-    rig.script(answer(moments(moment(40.0, 70.0))))
+    rig.script(answer(moments(moment(40.0, 55.0))))
     out = rig.run()
     (only,) = out.candidates
     assert (out.summary.segment_edge_starts, out.summary.segment_edge_ends) == (1, 1)
     assert "start is a segment edge: no sentence punctuation before it" in only.snap_notes
     assert "end is a segment edge: no sentence punctuation after it" in only.snap_notes
+
+
+def test_candidates_json_records_the_snap_settings(rig: Rig) -> None:
+    rig.block_minutes = 10.0
+    rig.script(answer(moments(moment(20.0, 45.0))))
+    assert rig.run().snap == SnapConfig()
+
+
+def test_candidates_json_records_changed_snap_settings(rig: Rig) -> None:
+    rig.block_minutes = 10.0
+    rig.script(answer(moments(moment(20.0, 45.0))))
+    custom = SnapConfig(min_pause_seconds=0.5, min_cut_gap=0.1)
+    ctx = rig.ctx()
+    app = ctx.config.app.model_copy(update={"snap": custom})
+    candidates.run(dataclasses.replace(ctx, config=dataclasses.replace(ctx.config, app=app)))
+    assert rig.output().snap == custom
 
 
 def test_short_moment_grows_toward_the_preferred_length(rig: Rig) -> None:
