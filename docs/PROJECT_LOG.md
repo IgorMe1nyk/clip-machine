@@ -2,7 +2,7 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
-## 2026-10-12 — Brief 8.2: camera polish (built; real run and Igor's re-rating pending)
+## 2026-10-12 — Brief 8.2: camera polish (built; real run done; Igor's re-rating pending)
 
 **Why:** both needs-edit clips of `runs/2026-10-11_t3-2` (c09, c04) fail only on the camera: late
 switches, missed short replies, laugh steals, robotic motion.
@@ -72,8 +72,40 @@ every third sample; share of speech time with the camera on the labelled speaker
 - Diarization (who is talking, from the audio) as the dependable answer for wide shots.
 - A reply by a person outside the source frame cannot be shown.
 
-**Next:** the real run on `runs/2026-10-11_t3-2` (ask Igor first), Igor's labels for the held-out
-stretch (c12, 15–35 s), his re-rating of c09 and c04, then Part 4.
+**Real run** (`runs/2026-10-11_t3-2`, local, $0; `speaker.sample_fps` 30, `detect_every` 3 and
+`dead_zone` 0.15 set in the run folder's config, the files from before in `runs/_scratch/b82/before/`;
+`track --preview` 366 s, then `--from-stage render` 108 s with every track reused)
+
+| Clip | Length | Crop changes (was) | Moving episodes (was) | Time moving (was) | Switches (was) | Windows sync / motion / unscored | Analysis (was) |
+|---|---|---|---|---|---|---|---|
+| c05 | 20.3 s | 2 (4) | 0 (1) | 0% (0%) | 1 (0) | 4 / 31 / 4 | 27.3 s (12.9 s) |
+| c06 | 35.1 s | 35 (69) | 2 (7) | 3% (6%) | 0 (0) | 9 / 49 / 10 | 46.5 s (19.4 s) |
+| c09 | 44.7 s | 19 (20) | 1 (5) | 1% (1%) | 0 (1) | 55 / 14 / 16 | 51.8 s (23.4 s) |
+| c04 | 29.7 s | 5 (8) | 0 (2) | 0% (1%) | 4 (0) | 11 / 30 / 9 | 37.6 s (16.5 s) |
+| c12 | 58.5 s | 20 (47) | 1 (5) | 1% (2%) | 2 (0) | 17 / 95 / 2 | 71.8 s (32.9 s) |
+| c13 | 28.5 s | 52 (100) | 3 (6) | 6% (11%) | 2 (0) | 1 / 55 / 0 | 36.2 s (17.1 s) |
+| c01 | 40.0 s | 287 (325) | 15 (26) | 24% (26%) | 0 (0) | 31 / 30 / 18 | 43.1 s (21.2 s) |
+| c02 | 43.6 s | 20 (97) | 1 (12) | 1% (7%) | 0 (0) | 37 / 39 / 9 | 47.8 s (21.7 s) |
+
+- Crop changes in all: 440 (was 670). A moving episode is a run of crop changes with no pause of
+  more than 0.25 s; they fall from 64 to 23. Each glide now changes the crop on every frame, so a
+  glide counts for many changes. Fastest movement inside a shot: 485 pixels per second, the cap.
+- c01 still moves for 24% of its time, in 15 glides.
+- Analysis: 362 s for the eight clips (was 165 s), about 1.2 s per second of clip.
+- All eight in speaker mode, no fallback.
+
+**Held-out stretch** (c12, 15–35 s, labelled by Igor after the build and never used in tuning: one
+person speaks throughout, so every switch is false)
+- Share of time on the speaker: **87.5%** (17.5 of 20 s). Switches: **2, both false** (away at
+  17.0 s, back at 19.5 s). The old rule made no switch here: 100%.
+
+**Reading:** on the two tuning clips the mix equals never switching; on the held-out stretch it
+is worse. The motion change does what it was built for. Whether the mix stays the default is
+Igor's decision after watching c09 and c04; `speaker.signal: mouth` keeps the old speaker choice
+with the new motion.
+
+**Next:** Igor re-watches c09 and c04, then the rest, and decides on the signal; EVAL.md row 2
+after his re-rating; then Part 4.
 
 ## 2026-10-11 — MVP walking-skeleton finish line met on private validation (6 usable of 8); public samples pending permissioned content (D-012)
 
