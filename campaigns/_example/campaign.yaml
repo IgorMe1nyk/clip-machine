@@ -1,0 +1,23 @@
+name: Example Campaign
+source_note: one authorized source video only   # free text, shown in the report
+clip_length: { min: 20, max: 60 }
+hook:
+  mode: full            # full = on screen the whole clip; intro = the first seconds only
+  # font_size: 80       # optional; left out, hook.font_size from config/default.yaml is used
+  max_chars: 48
+watermark:
+  file: assets/watermark.png
+  position: { x_center: 0.5, y_center: 0.18 }   # fractions of 1080x1920; never a corner
+  scale: 1.0                                    # uniform only; no stretching
+captions: { style: box_karaoke }                # font size comes from config/default.yaml
+spelling:                                       # caption word fixes; whole word, any case
+  - { from: "zorble", to: "Zorb1e" }
+  - { from: "q x v", to: "QXV" }                # three words merge into one caption word
+names_to_check: [Zorb1e, QXV]                   # listed in the report for a visual check
+post:
+  prefix: { tiktok: "@example", instagram: "@example", youtube: "@example" }
+  closers:
+    - "watch the full episode of the example show @example"
+    - "the whole example conversation is on the channel @example"
+    - "more from the example show, link on the channel @example"
+  hashtags: []

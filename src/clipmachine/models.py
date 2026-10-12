@@ -349,6 +349,17 @@ class SafeConfig(StrictModel):
     right: int = Field(default=192, ge=0)
 
 
+class CampaignModeConfig(StrictModel):
+    """Campaign mode (Brief 11): the app-wide settings; the rules live in campaigns/<slug>/."""
+
+    # a moment's start and end may move at most this far to a clean sentence edge
+    max_snap_seconds: float = Field(default=1.5, ge=0, le=10)
+    # fraction of width and height: a watermark may not touch these four corners
+    corner_zone: float = Field(default=0.15, gt=0, lt=0.5)
+    # `end: auto` aims for this clip length in seconds
+    auto_end_target_s: float = Field(default=40, gt=0)
+
+
 class RenderConfig(StrictModel):
     """The render stage's encoder settings. Output size is video.width/video.height."""
 
@@ -408,6 +419,8 @@ class AppConfig(StrictModel):
     speaker: SpeakerConfig = Field(default_factory=SpeakerConfig)
     hook: HookConfig = Field(default_factory=HookConfig)
     safe: SafeConfig = Field(default_factory=SafeConfig)
+    # added in Brief 11; old resolved files load with the defaults
+    campaign: CampaignModeConfig = Field(default_factory=CampaignModeConfig)
 
     @model_validator(mode="after")
     def _check_safe_area(self) -> "AppConfig":

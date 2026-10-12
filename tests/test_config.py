@@ -14,6 +14,7 @@ from clipmachine.config import (
     validate_client_name,
 )
 from clipmachine.models import (
+    CampaignModeConfig,
     CaptionsConfig,
     HookConfig,
     RenderedClip,
@@ -956,3 +957,48 @@ def test_rendered_settings_and_clip_json_from_before_r1_still_load() -> None:
     clip = RenderedClip.model_validate(old_clip)
     assert clip.notes == [] and clip.caption_lines == 0 and clip.caption_max_words == 0
     assert (clip.hook_shown, clip.hook_moved, clip.outside_safe_zone) == (False, False, 0)
+
+
+# --- Brief 11: campaign mode settings -------------------------------------------------------------
+
+
+def test_the_shipped_default_has_the_campaign_section(project: Path) -> None:
+    data = yaml.safe_load((project / "config" / "default.yaml").read_text(encoding="utf-8"))
+    assert set(data["campaign"]) == set(CampaignModeConfig.model_fields)
+    app = load_app_config(project)
+    assert app.campaign == CampaignModeConfig()
+    assert (app.campaign.max_snap_seconds, app.campaign.corner_zone) == (1.5, 0.15)
+    assert app.campaign.auto_end_target_s == 40
+
+
+@pytest.mark.parametrize(
+    ("update", "expected"),
+    [
+        ({"max_snap_seconds": -1}, "campaign.max_snap_seconds"),
+        ({"max_snap_seconds": 11}, "campaign.max_snap_seconds"),
+        ({"corner_zone": 0}, "campaign.corner_zone"),
+        ({"corner_zone": 0.5}, "campaign.corner_zone"),
+        ({"auto_end_target_s": 0}, "campaign.auto_end_target_s"),
+        ({"max_snap": 1.0}, "campaign.max_snap"),  # typo: unknown key
+    ],
+)
+def test_invalid_campaign_settings_are_rejected(
+    project: Path, update: dict[str, Any], expected: str
+) -> None:
+    _default(project, lambda d: d["campaign"].update(update))
+    with pytest.raises(ConfigError, match=expected):
+        load_app_config(project)
+
+
+def test_a_config_without_the_campaign_section_loads_with_the_defaults(project: Path) -> None:
+    _default(project, lambda d: d.pop("campaign"))
+    assert load_app_config(project).campaign == CampaignModeConfig()
+
+
+def test_a_resolved_file_from_before_brief_11_still_loads(project: Path, tmp_path: Path) -> None:
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "example-client"), target)
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    del data["config"]["campaign"]
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert load_resolved_file(target).app.campaign == CampaignModeConfig()

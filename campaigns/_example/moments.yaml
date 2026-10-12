@@ -1,0 +1,20 @@
+- id: A01
+  start: "12:05"        # h:mm:ss or mm:ss, source time; quote it
+  end: "12:48"
+  hook: THE BLUE LANTERN NEVER WENT OUT
+  caption: tells the story of the lantern that stayed lit.
+  platform: tiktok      # tiktok | instagram | youtube
+
+- id: A02
+  start: "1:02:10"
+  end: auto             # the tool picks a clean sentence end near the target length
+  hook: WHY THE MAP WAS DRAWN BACKWARDS
+  caption: explains the map that was drawn backwards.
+  platform: instagram
+
+- id: A03
+  start: "31:10"
+  end: "31:52"
+  hook: THREE TRICKS FOR A QUIET MORNING
+  caption: shares three tricks for a quiet morning.
+  platform: youtube
