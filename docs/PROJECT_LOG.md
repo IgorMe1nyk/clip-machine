@@ -153,10 +153,34 @@ records are in `runs/_scratch/b82/mix/`)
 - Tests: 1250 passed, 2 skipped. ruff, format, mypy and pip-audit clean. The test project
   fixture pins `crop: center` in its copy of the default config, so tests that are not about
   speaker mode need no model files; one test reads the shipped default.
-- Not yet run for real: a fresh one-command run with the new default.
+- Igor watched c01 and c13 of the re-render (the version that became the default): OK.
 
-**Next:** Igor re-rates the re-rendered clips (EVAL.md row 2); a fresh one-command run to confirm
-the default end to end; Brief 8.3.
+**Fresh one-command run with the new defaults** (`runs/2026-10-12_t3`, T3, client `general`, one
+command, no config edit and no manual step)
+- Finished clips in speaker mode from one command: exit 0, **7 min 9 s** wall time (sum of the
+  stage times in run.json 424 s: fetch 3 s, transcribe 166 s, candidates 13 s, score 16 s, render
+  226 s, report under 1 s).
+- **Cost $0.0541** (6 calls: candidates $0.0032, score $0.0509; 39,207 input and 3,707 output
+  tokens).
+- 16 candidates (17 returned, 1 duplicate), **6 kept**, 8 rejected, 1 dropped as an overlap, 1 as
+  `adjust_ignored`. Candidate ids are new in this run.
+
+| Clip | Score | Length | Crop mode | Fallback | Cuts | Switches | Crop changes | Analysis |
+|---|---|---|---|---|---|---|---|---|
+| c05 | 8 | 23.5 s | speaker | none | 1 | 0 | 1 | 14.6 s |
+| c09 | 8 | 56.0 s | speaker | none | 6 | 0 | 2 | 28.1 s |
+| c11 | 8 | 50.0 s | speaker | none | 1 | 0 | 37 | 23.1 s |
+| c14 | 8 | 32.3 s | speaker | none | 0 | 0 | 91 | 17.7 s |
+| c01 | 7 | 40.0 s | speaker | none | 3 | 0 | 305 | 19.9 s |
+| c12 | 7 | 58.5 s | speaker | none | 1 | 0 | 20 | 31.2 s |
+
+- The run folder's frozen config holds `crop: speaker`; every track was made with `signal: mouth`,
+  10 samples per second and the 15% dead zone.
+- Fewer clips than the 8 of `runs/2026-10-11_t3-2`: the candidates stage returned a different set
+  (16 against 17) and two keeps were dropped by the overlap and weak-boundary rules. Nobody has
+  watched these six yet.
+
+**Next:** Igor rates the clips (EVAL.md row 2); Brief 8.3.
 
 ## 2026-10-11 — MVP walking-skeleton finish line met on private validation (6 usable of 8); public samples pending permissioned content (D-012)
 
