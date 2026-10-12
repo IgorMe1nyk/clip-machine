@@ -104,6 +104,7 @@ def run(ctx: RunContext) -> None:
 def _fetch(run_dir: Path, original: Path, limits: FetchConfig, started: float) -> None:
     validate_input(original)
     size = check_input_size(original, limits.max_size_gb)
+    mtime_ns = original.stat().st_mtime_ns  # before the copy, to recognise the same source later
 
     media = ffmpeg.probe(original)
     duration = ffmpeg.check_source(media, limits)
@@ -135,6 +136,7 @@ def _fetch(run_dir: Path, original: Path, limits: FetchConfig, started: float) -
         ffmpeg_version=ffmpeg.ffmpeg_version(),
         fetched_at=datetime.now(UTC).isoformat(),
         fetch_seconds=round(time.perf_counter() - started, 3),
+        source_mtime_ns=mtime_ns,
     )
     write_json_atomic(run_dir / META_FILE, meta.model_dump(mode="json"))
     log.info(f"fetched {original.name}: {duration:.1f} s, {AUDIO_FILE} ready")

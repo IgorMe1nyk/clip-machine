@@ -539,6 +539,9 @@ class FetchMeta(StrictModel):
     ffmpeg_version: str
     fetched_at: str  # UTC, ISO 8601
     fetch_seconds: float
+    # added in Brief 11: the input file's last-modified time (ns) when it was fetched, used to
+    # recognise the same source again; old meta.json files load as None
+    source_mtime_ns: int | None = None
 
 
 class TranscriptWord(StrictModel):

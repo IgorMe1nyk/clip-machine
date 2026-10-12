@@ -10,7 +10,7 @@ import pytest
 
 from clipmachine.config import load_resolved
 from clipmachine.context import RunContext
-from clipmachine.models import AudioStreamInfo, MediaInfo, VideoStreamInfo
+from clipmachine.models import AudioStreamInfo, FetchMeta, MediaInfo, VideoStreamInfo
 from clipmachine.runs import GIB, RunError
 from clipmachine.stages import fetch
 from clipmachine.utils import ffmpeg
@@ -151,12 +151,14 @@ def test_success_writes_all_outputs(
         "ffmpeg_version",
         "fetched_at",
         "fetch_seconds",
+        "source_mtime_ns",
     ]
     assert meta["schema_version"] == 1
     assert meta["original_filename"] == "My Talk.MP4"  # name only, no folder
     assert meta["source_file"] == "source.mp4"  # extension lower-cased
     assert meta["sha256"] == hashlib.sha256(before[0]).hexdigest()
     assert meta["size_bytes"] == before[1]
+    assert meta["source_mtime_ns"] == before[2]  # the input's own modified time
     assert meta["audio_file"] == "audio.wav"
     assert meta["ffmpeg_version"] == "ffmpeg version 0.0-test"
     assert meta["fetched_at"].endswith("+00:00")
@@ -165,6 +167,32 @@ def test_success_writes_all_outputs(
     assert meta["media"]["audio"]["sample_rate"] == 48000
     assert meta["media"]["duration_seconds"] == 120.0
     assert str(original.parent) not in json.dumps(meta)
+
+
+def test_the_modified_time_of_the_input_is_recorded(
+    project: Path, run_dir: Path, original: Path, tools: FakeTools
+) -> None:
+    known = 1_700_000_000_123_456_789
+    os.utime(original, ns=(known, known))
+    wanted = original.stat().st_mtime_ns  # what the file system kept of it
+
+    fetch.run(make_ctx(project, run_dir, original))
+
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["source_mtime_ns"] == wanted
+    assert abs(wanted - known) < 10_000_000  # within the file system's time resolution
+    assert original.stat().st_mtime_ns == wanted  # reading it did not touch the original
+
+
+def test_a_meta_json_from_before_brief_11_still_loads(
+    project: Path, run_dir: Path, original: Path, tools: FakeTools
+) -> None:
+    fetch.run(make_ctx(project, run_dir, original))
+    path = run_dir / "meta.json"
+    old = json.loads(path.read_text(encoding="utf-8"))
+    del old["source_mtime_ns"]
+
+    assert FetchMeta.model_validate(old).source_mtime_ns is None
 
 
 @pytest.mark.parametrize("name", ["Talk.MOV", "talk.mkv", "TALK.WebM"])
