@@ -90,6 +90,39 @@ def test_real_render_makes_a_vertical_h264_aac_clip(project: Path) -> None:
     assert data["output"]["size_bytes"] == (clips / "c01.mp4").stat().st_size
 
 
+def test_real_render_of_box_karaoke_captions_and_the_hook(project: Path) -> None:
+    ctx = make_ctx(project, style="box_karaoke")
+    write_inputs(ctx.run_dir, [("c01", 1, 0.5, 3.5)], width=320, height=180)
+    make_source(ctx.run_dir / "source.mp4")
+    transcript = Transcript.model_validate_json(
+        (ctx.run_dir / "transcript.json").read_text(encoding="utf-8")
+    )
+    transcript.segments = [
+        TranscriptSegment(
+            id=0,
+            start=1.0,
+            end=2.5,
+            text="",
+            avg_logprob=0.0,
+            no_speech_prob=0.0,
+            words=[
+                TranscriptWord(start=1.0, end=1.4, word=" Hello", probability=0.9),
+                TranscriptWord(start=1.5, end=1.9, word=" there", probability=0.9),
+            ],
+        )
+    ]
+    write_json_atomic(ctx.run_dir / "transcript.json", transcript.model_dump(mode="json"))
+
+    render.run(ctx)
+
+    clips = ctx.run_dir / "clips"
+    info = ffmpeg.probe(clips / "c01.mp4")  # libass parsed the file and ffmpeg finished
+    assert info.video is not None and (info.video.width, info.video.height) == (1080, 1920)
+    data = json.loads((clips / "c01.json").read_text(encoding="utf-8"))
+    assert data["caption_lines"] == 1 and data["caption_max_words"] == 2
+    assert data["hook_shown"] is True and data["outside_safe_zone"] == 0
+
+
 def make_halves_source(path: Path) -> None:
     """5 s at 30 fps, 320x180: the left half red, the right half blue, with a sine tone."""
     args = [

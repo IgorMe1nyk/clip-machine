@@ -95,10 +95,29 @@ fetch:
   max_duration_minutes: 240
   min_duration_seconds: 60
 captions:
-  words_per_line: 3
+  style: box_karaoke         # box_karaoke: karaoke words on a dark rounded box, D-022 | legacy: the older white outlined captions
   font: Montserrat
-  highlight_color: "#FFD400"
   font_file: Montserrat-Bold.ttf   # inside assets/fonts/; a missing file fails the render stage
-  font_size: 80              # pixels on the 1080x1920 canvas
-  margin_v: 350              # pixels from the bottom edge, clear of phone UI
+  font_size: 64              # ASS font size = line height in pixels on the 1080x1920 canvas; capital letters are about 0.45 of it
   offset_seconds: 0.15       # -1.0 to 1.0; positive = captions appear later (sync tuning)
+  max_words: 4               # words on one line (1-12)
+  max_width_px: 760          # the box, padding included; must fit between safe.left and safe.right
+  word_gap_em: 0.45          # gap between words as a fraction of font_size
+  letter_spacing_px: 1       # extra pixels after every letter (0-10)
+  line_gap_em: 0.35          # gap between the hook's two lines as a fraction of its font size
+  spoken_color: "#FFD400"    # words already spoken
+  upcoming_color: "#FFFFFF"  # words not yet spoken
+  box_opacity: 0.75          # 0-1
+  box_padding_px: 18         # between the text and the box edge
+  words_per_line: 3          # legacy style only
+  highlight_color: "#FFD400" # legacy style only
+  margin_v: 350              # legacy style only: pixels from the bottom edge, clear of phone UI
+hook:                        # the clip's hook line as big text at the start (needs captions.style box_karaoke)
+  enabled: true
+  seconds: 2.0               # shown from 0 to this
+  fade_ms: 150               # fade-out at the end
+safe:                        # pixels the TikTok / Reels / Shorts apps cover (strictest published numbers, D-023)
+  top: 290
+  bottom: 672
+  left: 120
+  right: 192

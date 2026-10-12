@@ -7,6 +7,13 @@ tracking.py), the crop path is written to clips/<id>.crop.cmd and ffmpeg's `send
 the crop in the same pass. A track that fell back to the centre crop renders exactly as centre
 mode does. Speaker mode needs both face model files and never downloads them.
 
+Captions have two styles (captions.style). "legacy" writes the older white outlined word groups
+exactly as before Brief R1. "box_karaoke" writes one line of words at a time on a drawn rounded
+box, each word turning yellow at its own start, placed inside the safe margins (config `safe`),
+and, when hook.enabled, the clip's hook line for the first seconds, moved below any face the clip's
+track found there (centre-crop mode has no track and says so with a note). Both go in the clip's
+.ass file; the clip json holds counts and reason codes only.
+
 Everything is written inside <run folder>/clips/. An output is built as
 <id>.tmp.mp4, checked with ffprobe, then renamed; <id>.json is written last, so a clip with a
 JSON file next to its MP4 finished.
@@ -20,7 +27,8 @@ clip's track file must still be valid and be the very file the output was render
 ffmpeg runs with the run folder as its working directory, so the subtitle file and the font folder
 are short relative paths and no drive letter reaches the -vf string.
 
-No transcript text, hook or title is logged or written to clips/<id>.json.
+No transcript text, hook or title is logged or written to clips/<id>.json (only counts and
+reason codes).
 """
 
 import hashlib
@@ -44,6 +52,7 @@ from clipmachine.models import (
     RenderedSource,
     ScoredClip,
     ScoredFile,
+    TrackFile,
     TranscriptSegment,
     VideoStreamInfo,
 )
@@ -53,8 +62,21 @@ from clipmachine.stages.fetch import META_FILE
 from clipmachine.stages.score import SCORED_JSON
 from clipmachine.stages.transcribe import REPO_ROOT
 from clipmachine.utils import ffmpeg
-from clipmachine.utils.captions import build_ass, build_events, clip_words, group_words
-from clipmachine.utils.crop import CropBox, center_crop, frame_path
+from clipmachine.utils.captions import (
+    AssEvent,
+    CaptionWord,
+    KaraokeSettings,
+    build_ass,
+    build_ass_v2,
+    build_events,
+    build_hook,
+    build_karaoke,
+    clip_words,
+    group_words,
+)
+from clipmachine.utils.crop import CropBox, center_crop, display_size, frame_path
+from clipmachine.utils.fontmetrics import FontError, FontMetrics, load_font
+from clipmachine.utils.safezone import Rect, face_rects, outside_count, safe_rect
 
 if TYPE_CHECKING:  # tracking imports this module, so it is imported inside the speaker branch
     from clipmachine.tracking import TrackPlan
@@ -94,6 +116,10 @@ class Plan:
     segments: list[TranscriptSegment]
     speaker: "TrackPlan | None" = None  # set in speaker mode
     preview: bool = False  # speaker mode: write the debug preview when a clip is analysed
+    # style box_karaoke only: the caption font's metrics, the line settings and the safe area
+    metrics: FontMetrics | None = None
+    karaoke: KaraokeSettings | None = None
+    safe: Rect | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +134,7 @@ class SpeakerCrop:
     reused: bool
     cuts: int
     switches: int
+    track: TrackFile  # the track this crop came from; its faces place the hook
 
 
 def _load_scored(run_dir: Path) -> ScoredFile:
@@ -187,6 +214,23 @@ def _settings(ctx: RunContext) -> RenderedSettings:
         highlight_color=app.captions.highlight_color,
         caption_offset_seconds=app.captions.offset_seconds,
         audio_fade_seconds=app.render.audio_fade_seconds,
+        caption_style=app.captions.style,
+        max_words=app.captions.max_words,
+        max_width_px=app.captions.max_width_px,
+        word_gap_em=app.captions.word_gap_em,
+        letter_spacing_px=app.captions.letter_spacing_px,
+        line_gap_em=app.captions.line_gap_em,
+        spoken_color=app.captions.spoken_color,
+        upcoming_color=app.captions.upcoming_color,
+        box_opacity=app.captions.box_opacity,
+        box_padding_px=app.captions.box_padding_px,
+        hook_enabled=app.hook.enabled,
+        hook_seconds=app.hook.seconds,
+        hook_fade_ms=app.hook.fade_ms,
+        safe_top=app.safe.top,
+        safe_bottom=app.safe.bottom,
+        safe_left=app.safe.left,
+        safe_right=app.safe.right,
     )
 
 
@@ -275,7 +319,7 @@ def _speaker_crop(plan: Plan, clip: ScoredClip) -> SpeakerCrop:
     sha = _file_sha256(tracking.track_path(plan.clips_dir, clip.id))
     cuts = track.summary.cuts
     if track.fallback_reason is not None:  # exactly the centre crop
-        return SpeakerCrop(plan.crop, None, sha, track.fallback_reason, 0, reused, cuts, 0)
+        return SpeakerCrop(plan.crop, None, sha, track.fallback_reason, 0, reused, cuts, 0, track)
     path = frame_path(
         [(s.t, s.crop_x) for s in track.samples],
         [(s.start, s.end) for s in track.shots],
@@ -291,7 +335,127 @@ def _speaker_crop(plan: Plan, clip: ScoredClip) -> SpeakerCrop:
         write_text_atomic(cmd, ffmpeg.crop_commands(path))
         sendcmd_rel = f"{CLIPS_DIR}/{cmd.name}"
     switches = track.summary.switches
-    return SpeakerCrop(box, sendcmd_rel, sha, None, len(path) - 1, reused, cuts, switches)
+    return SpeakerCrop(box, sendcmd_rel, sha, None, len(path) - 1, reused, cuts, switches, track)
+
+
+@dataclass(frozen=True)
+class Captions:
+    """The .ass text of one clip and the counts that go in its json (no text)."""
+
+    text: str
+    events: int  # caption Dialogue lines written (box and text lines in box_karaoke; no hook)
+    lines: int
+    max_words: int
+    hook_shown: bool = False
+    hook_moved: bool = False
+    outside_safe_zone: int = 0
+    notes: tuple[str, ...] = ()
+
+
+def _legacy_captions(plan: Plan, words: list[CaptionWord], duration: float) -> Captions:
+    settings = plan.settings
+    groups = group_words(words, settings.words_per_line)
+    events = build_events(
+        groups, settings.highlight_color, duration, settings.caption_offset_seconds
+    )
+    text = build_ass(
+        events,
+        font=settings.font,
+        font_size=settings.font_size,
+        margin_v=settings.margin_v,
+        width=settings.width,
+        height=settings.height,
+    )
+    return Captions(text, len(events), len(groups), max((len(g) for g in groups), default=0))
+
+
+def _karaoke_captions(
+    plan: Plan,
+    clip: ScoredClip,
+    words: list[CaptionWord],
+    chosen: SpeakerCrop | None,
+    duration: float,
+) -> Captions:
+    settings = plan.settings
+    karaoke, metrics, safe = plan.karaoke, plan.metrics, plan.safe
+    assert karaoke is not None and metrics is not None and safe is not None
+    built = build_karaoke(
+        words,
+        karaoke,
+        metrics,
+        safe,
+        clip_seconds=duration,
+        offset_seconds=settings.caption_offset_seconds,
+    )
+    boxes = list(built.boxes)
+    notes = list(built.notes)
+    hook_events: list[AssEvent] = []
+    shown = moved = False
+    if settings.hook_enabled:
+        face_boxes: list[Rect] | None = None  # centre-crop mode has no track: faces unknown
+        if chosen is not None:
+            source_w, source_h = display_size(
+                plan.video.width, plan.video.height, plan.video.rotation
+            )
+            face_boxes = face_rects(
+                chosen.track.faces,
+                chosen.track.samples,
+                source_w=source_w,
+                source_h=source_h,
+                crop_w=plan.crop.w,
+                crop_h=plan.crop.h,
+                crop_y=plan.crop.y,
+                out_w=settings.width,
+                out_h=settings.height,
+                until=min(settings.hook_seconds, duration),
+            )
+        hook = build_hook(
+            clip.hook_line,
+            karaoke,
+            metrics,
+            safe,
+            face_boxes,
+            seconds=settings.hook_seconds,
+            fade_ms=settings.hook_fade_ms,
+            line_gap_em=settings.line_gap_em,
+            clip_seconds=duration,
+        )
+        hook_events = hook.events
+        shown, moved = hook.shown, hook.moved
+        notes.extend(hook.notes)
+        if hook.band is not None:
+            boxes.append(hook.band)
+    text = build_ass_v2(
+        built.events,
+        hook_events,
+        font=settings.font,
+        settings=karaoke,
+        width=settings.width,
+        height=settings.height,
+    )
+    return Captions(
+        text,
+        len(built.events),
+        built.lines,
+        built.max_words,
+        shown,
+        moved,
+        outside_count(boxes, safe),
+        tuple(notes),
+    )
+
+
+def _captions_log(settings: RenderedSettings, captions: Captions) -> str:
+    """Counts and codes only; empty for the legacy style, whose log line is unchanged."""
+    if settings.caption_style == "legacy":
+        return ""
+    if not settings.hook_enabled:
+        hook = "hook off"
+    elif "hook_missing" in captions.notes:
+        hook = "hook missing"
+    else:
+        hook = "hook moved" if captions.hook_moved else "hook shown"
+    return f", captions {captions.lines} lines, {hook}"
 
 
 def _render_clip(plan: Plan, clip: ScoredClip) -> None:
@@ -307,23 +471,11 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
     (plan.clips_dir / f"{clip.id}{CROP_CMD_SUFFIX}").unlink(missing_ok=True)
     chosen = _speaker_crop(plan, clip) if plan.speaker is not None else None
     words = clip_words(plan.segments, clip.start, clip.end)
-    events = build_events(
-        group_words(words, settings.words_per_line),
-        settings.highlight_color,
-        duration,
-        settings.caption_offset_seconds,
-    )
-    write_text_atomic(
-        ass,
-        build_ass(
-            events,
-            font=settings.font,
-            font_size=settings.font_size,
-            margin_v=settings.margin_v,
-            width=settings.width,
-            height=settings.height,
-        ),
-    )
+    if settings.caption_style == "legacy":
+        captions = _legacy_captions(plan, words, duration)
+    else:
+        captions = _karaoke_captions(plan, clip, words, chosen, duration)
+    write_text_atomic(ass, captions.text)
     crop = plan.crop if chosen is None else chosen.crop
 
     vf = ffmpeg.video_filter(
@@ -378,7 +530,7 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
             ),
             crop=_crop_json(crop),
             settings=settings,
-            caption_events=len(events),
+            caption_events=captions.events,
             output=RenderedOutput(
                 width=video.width,
                 height=video.height,
@@ -392,12 +544,19 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
             track_sha256=None if chosen is None else chosen.track_sha256,
             track_fallback=None if chosen is None else chosen.fallback,
             crop_changes=0 if chosen is None else chosen.changes,
+            notes=list(captions.notes),
+            caption_lines=captions.lines,
+            caption_max_words=captions.max_words,
+            hook_shown=captions.hook_shown,
+            hook_moved=captions.hook_moved,
+            outside_safe_zone=captions.outside_safe_zone,
         ).model_dump(mode="json"),
     )
     mode = "center" if chosen is None else _speaker_log(chosen)
     log.info(
         f"render: {clip.id} {clip.start:.2f}-{clip.end:.2f} s, crop {crop.w}x{crop.h}"
-        f"+{crop.x}+{crop.y} ({mode}), {mp4.stat().st_size / 1_000_000:.1f} MB, {seconds:.1f} s"
+        f"+{crop.x}+{crop.y} ({mode}){_captions_log(settings, captions)}, "
+        f"{mp4.stat().st_size / 1_000_000:.1f} MB, {seconds:.1f} s"
     )
 
 
@@ -425,6 +584,15 @@ def run(ctx: RunContext) -> None:
             f"caption font not found: {FONTS_DIR.as_posix()}/{app.captions.font_file} "
             "(captions.font_file); the render stage does not fall back to another font"
         )
+
+    metrics: FontMetrics | None = None
+    if app.captions.style == "box_karaoke":  # the box is sized from the font file, so read it now
+        try:
+            metrics = load_font(fonts_dir / app.captions.font_file)
+        except FontError as exc:
+            raise RunError(
+                f"caption font {app.captions.font_file} (captions.font_file) cannot be used: {exc}"
+            ) from exc
 
     scored = _load_scored(run_dir)
     meta = _load_meta(run_dir)
@@ -485,6 +653,18 @@ def run(ctx: RunContext) -> None:
         segments=segments if segments is not None else _load_transcript(run_dir).segments,
         speaker=track_plan,
         preview=app.speaker.debug_preview,
+        metrics=metrics,
+        karaoke=None if metrics is None else KaraokeSettings.from_config(app.captions),
+        safe=None
+        if metrics is None
+        else safe_rect(
+            settings.width,
+            settings.height,
+            settings.safe_top,
+            settings.safe_bottom,
+            settings.safe_left,
+            settings.safe_right,
+        ),
     )
 
     rendered = skipped = 0

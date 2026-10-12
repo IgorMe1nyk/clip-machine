@@ -2,11 +2,14 @@
 
 import hashlib
 import json
+import logging
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -215,13 +218,23 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeFfmpeg:
     return fake
 
 
-def make_ctx(project: Path, *, resuming: bool = False, run_name: str = "run") -> RunContext:
+def make_ctx(
+    project: Path, *, resuming: bool = False, run_name: str = "run", style: str = "legacy"
+) -> RunContext:
     run_dir = project / "runs" / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     resolved = load_resolved(project, "example-client")
-    # the shipped default offset is 0.15; these tests assume captions at their spoken time
-    captions = resolved.app.captions.model_copy(update={"offset_seconds": 0.0})
-    app = resolved.app.model_copy(update={"captions": captions})
+    # The shipped default is the box_karaoke style with the hook on (Brief R1). The tests that
+    # assert the older caption text and settings are pinned to `legacy` here; those of the new
+    # style pass style="box_karaoke" and get the shipped values.
+    # The shipped default offset is 0.15; these tests assume captions at their spoken time.
+    updates: dict[str, Any] = {"offset_seconds": 0.0}
+    update: dict[str, Any] = {}
+    if style == "legacy":
+        updates.update(style="legacy", font_size=80)
+        update["hook"] = resolved.app.hook.model_copy(update={"enabled": False})
+    captions = resolved.app.captions.model_copy(update=updates)
+    app = resolved.app.model_copy(update={"captions": captions, **update})
     return RunContext(
         run_dir=run_dir,
         config=ResolvedConfig(app=app, client_name=resolved.client_name, rules=resolved.rules),
@@ -301,6 +314,80 @@ def test_ass_file_holds_the_clip_words_shifted_to_zero(ctx: RunContext, fake: Fa
     assert "Dialogue: 0,0:00:00.00," in text  # w40 starts the clip
     assert "w40" in text and "w62" in text  # words of 40-62.5 s
     assert "w64" not in text and "w38" not in text
+
+
+GOLDEN_LEGACY_ASS = (
+    "[Script Info]\n"
+    "ScriptType: v4.00+\n"
+    "PlayResX: 1080\n"
+    "PlayResY: 1920\n"
+    "WrapStyle: 0\n"
+    "ScaledBorderAndShadow: yes\n"
+    "\n"
+    "[V4+ Styles]\n"
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+    "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+    "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+    "Style: Clip,Montserrat,80,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,"
+    "-1,0,0,0,100,100,0,0,1,4,0,2,60,60,350,1\n"
+    "\n"
+    "[Events]\n"
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    "Dialogue: 0,0:00:00.00,0:00:00.40,Clip,,0,0,0,,{\\c&H00D4FF&}w10{\\r} w12 w14\n"
+    "Dialogue: 0,0:00:02.00,0:00:02.40,Clip,,0,0,0,,w10 {\\c&H00D4FF&}w12{\\r} w14\n"
+    "Dialogue: 0,0:00:04.00,0:00:04.40,Clip,,0,0,0,,w10 w12 {\\c&H00D4FF&}w14{\\r}\n"
+    "Dialogue: 0,0:00:06.00,0:00:06.40,Clip,,0,0,0,,{\\c&H00D4FF&}w16{\\r} w18 w20\n"
+    "Dialogue: 0,0:00:08.00,0:00:08.40,Clip,,0,0,0,,w16 {\\c&H00D4FF&}w18{\\r} w20\n"
+    "Dialogue: 0,0:00:10.00,0:00:10.40,Clip,,0,0,0,,w16 w18 {\\c&H00D4FF&}w20{\\r}\n"
+    "Dialogue: 0,0:00:12.00,0:00:12.40,Clip,,0,0,0,,{\\c&H00D4FF&}w22{\\r} w24 w26\n"
+    "Dialogue: 0,0:00:14.00,0:00:14.40,Clip,,0,0,0,,w22 {\\c&H00D4FF&}w24{\\r} w26\n"
+    "Dialogue: 0,0:00:16.00,0:00:16.40,Clip,,0,0,0,,w22 w24 {\\c&H00D4FF&}w26{\\r}\n"
+    "Dialogue: 0,0:00:18.00,0:00:18.40,Clip,,0,0,0,,{\\c&H00D4FF&}w28{\\r}\n"
+)  # the .ass the stage wrote for c01 before Brief R1; it must never change
+
+
+def _legacy_yaml(explicit: bool) -> Callable[[dict[str, Any]], None]:
+    """Edit default.yaml to the pre-R1 shape: none of the new keys, or the legacy values spelled
+    out. Works whatever the shipped default is."""
+
+    def mutate(data: dict[str, Any]) -> None:
+        captions = data["captions"]
+        for key in (
+            "style",
+            "max_words",
+            "max_width_px",
+            "word_gap_em",
+            "letter_spacing_px",
+            "line_gap_em",
+            "spoken_color",
+            "upcoming_color",
+            "box_opacity",
+            "box_padding_px",
+        ):
+            captions.pop(key, None)
+        captions.update(font_size=80, margin_v=350, words_per_line=3, highlight_color="#FFD400")
+        data.pop("hook", None)
+        data.pop("safe", None)
+        if explicit:
+            captions["style"] = "legacy"
+            data["hook"] = {"enabled": False}
+
+    return mutate
+
+
+@pytest.mark.parametrize("explicit", [False, True], ids=["no_new_keys", "explicit_legacy"])
+def test_legacy_ass_is_byte_for_byte_what_it_was_before_brief_r1(
+    project: Path, fake: FakeFfmpeg, explicit: bool
+) -> None:
+    edit_yaml(project / "config" / "default.yaml", _legacy_yaml(explicit))
+    ctx = make_ctx(project)
+    write_inputs(ctx.run_dir)
+
+    render.run(ctx)
+
+    raw = (ctx.run_dir / "clips" / "c01.ass").read_bytes()
+    assert raw.decode("utf-8") == GOLDEN_LEGACY_ASS
+    assert b"\r" not in raw
 
 
 def test_ffmpeg_gets_the_run_folder_and_relative_paths(ctx: RunContext, fake: FakeFfmpeg) -> None:
@@ -664,9 +751,10 @@ def speaker_ctx(
     look: track_fakes.Look = track_fakes.steady,
     *,
     models: bool = True,
+    style: str = "legacy",
 ) -> tuple[RunContext, track_fakes.TrackFakes]:
     """A run folder with the render stage set to speaker mode and the analysis faked."""
-    ctx = make_ctx(project)
+    ctx = make_ctx(project, style=style)
     write_inputs(ctx.run_dir)
     ctx.config.app.video.crop = "speaker"
     # these tests pin the mouth-variance rule; the mix signal has its own tests
@@ -1038,3 +1126,178 @@ def test_a_run_folder_frozen_on_center_still_renders_centre_after_the_default_ch
     data = read_json(ctx.run_dir / "clips" / "c01.json")
     assert (data["crop_mode"], data["crop_changes"], data["track_fallback"]) == ("center", 0, None)
     assert data["crop"] == {"w": 202, "h": 360, "x": 218, "y": 0}
+
+
+# --- box_karaoke captions and the hook (Brief R1) -----------------------------------------------
+
+HOOK_TEXT = "synthetic hook"
+HOOK_LAYERS = ("Dialogue: 2,", "Dialogue: 3,")
+
+
+def v2_ctx(project: Path) -> RunContext:
+    ctx = make_ctx(project, style="box_karaoke")
+    write_inputs(ctx.run_dir)
+    return ctx
+
+
+def dialogues(run_dir: Path, clip_id: str = "c01") -> list[str]:
+    text = (run_dir / "clips" / f"{clip_id}.ass").read_text(encoding="utf-8")
+    return [line for line in text.split("\n") if line.startswith("Dialogue:")]
+
+
+def hook_lines(run_dir: Path) -> list[str]:
+    return [d for d in dialogues(run_dir) if d.startswith(HOOK_LAYERS)]
+
+
+def test_the_box_karaoke_file_has_the_three_styles_and_karaoke_text(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    ctx = v2_ctx(project)
+
+    render.run(ctx)
+
+    path = ctx.run_dir / "clips" / "c01.ass"
+    text = path.read_text(encoding="utf-8")
+    assert "WrapStyle: 2" in text and "PlayResX: 1080" in text
+    styles = [line.split(",")[0] for line in text.split("\n") if line.startswith("Style:")]
+    assert styles == ["Style: Cap", "Style: Hook", "Style: Box"]
+    caps = [d for d in dialogues(ctx.run_dir) if ",Cap,," in d]
+    assert caps and all("\\k" in d and "\\pos(504," in d for d in caps)
+    assert any(",Box,," in d and "\\p1}" in d for d in dialogues(ctx.run_dir))
+    assert "w10" in text and "w28" in text  # the clip's words
+    assert b"\r" not in path.read_bytes()
+
+
+def test_the_hook_events_are_written_when_enabled(project: Path, fake: FakeFfmpeg) -> None:
+    ctx = v2_ctx(project)
+
+    render.run(ctx)
+
+    hooks = hook_lines(ctx.run_dir)
+    assert len(hooks) == 2  # the band and one line of text
+    assert all(",0:00:00.00,0:00:02.00," in d for d in hooks)
+    assert "\\fad(0,150)" in hooks[0] and HOOK_TEXT.split()[0] in hooks[1]
+
+
+def test_no_hook_events_when_the_hook_is_disabled(project: Path, fake: FakeFfmpeg) -> None:
+    ctx = v2_ctx(project)
+    ctx.config.app.hook = ctx.config.app.hook.model_copy(update={"enabled": False})
+
+    render.run(ctx)
+
+    assert hook_lines(ctx.run_dir) == []
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    assert data["hook_shown"] is False and data["notes"] == []
+
+
+def test_a_blank_hook_line_shows_no_hook_and_says_so(project: Path, fake: FakeFfmpeg) -> None:
+    ctx = v2_ctx(project)
+    scored = ScoredFile.model_validate_json((ctx.run_dir / "scored.json").read_text("utf-8"))
+    for clip in scored.clips:
+        clip.hook_line = " {} "
+    write_json_atomic(ctx.run_dir / "scored.json", scored.model_dump(mode="json"))
+
+    render.run(ctx)
+
+    assert hook_lines(ctx.run_dir) == []
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    assert data["hook_shown"] is False and data["notes"] == ["hook_missing"]
+
+
+def test_the_clip_json_and_log_hold_counts_and_codes_but_never_the_hook(
+    project: Path, fake: FakeFfmpeg, caplog: pytest.LogCaptureFixture
+) -> None:
+    ctx = v2_ctx(project)
+
+    with caplog.at_level(logging.INFO, logger="clipmachine"):
+        render.run(ctx)
+
+    raw = (ctx.run_dir / "clips" / "c01.json").read_text(encoding="utf-8")
+    data = json.loads(raw)
+    assert "synthetic" not in raw and "w10" not in raw
+    assert "synthetic" not in caplog.text and "w10" not in caplog.text
+    # a word every 2 s is a pause of more than half a second each time: one word per line
+    assert data["caption_lines"] == 10 and data["caption_max_words"] == 1
+    assert data["caption_events"] == 2 * data["caption_lines"]  # a box and a text line each
+    assert (data["hook_shown"], data["hook_moved"], data["outside_safe_zone"]) == (True, False, 0)
+    assert data["notes"] == ["hook_faces_unknown"]
+    settings = data["settings"]
+    assert settings["caption_style"] == "box_karaoke" and settings["hook_enabled"] is True
+    assert (settings["safe_top"], settings["safe_bottom"]) == (290, 672)
+    assert (settings["spoken_color"], settings["box_opacity"]) == ("#FFD400", 0.75)
+    assert "captions 10 lines, hook shown" in caplog.text
+
+
+def test_speaker_mode_moves_the_hook_below_a_face_in_its_way(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def high_face(t: float) -> list[track_fakes.RawFace]:
+        return [track_fakes.RawFace(0.5, 0.1, 0.1, 0.15, track_fakes.talking(t))]
+
+    ctx, _ = speaker_ctx(project, monkeypatch, high_face, style="box_karaoke")
+
+    render.run(ctx)
+
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    assert data["hook_shown"] is True and data["hook_moved"] is True
+    assert data["notes"] == ["hook_moved_for_faces"]
+    assert data["outside_safe_zone"] == 0
+    band = next(d for d in dialogues(ctx.run_dir) if d.startswith("Dialogue: 2,"))
+    match = re.search(r"\\p1\}m \d+ (\d+)", band)  # the drawing starts at the top edge
+    assert match is not None and int(match.group(1)) > 290
+
+
+def test_speaker_mode_without_a_face_in_the_way_keeps_the_hook_at_the_top(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = speaker_ctx(project, monkeypatch, style="box_karaoke")  # faces are mid-frame
+
+    render.run(ctx)
+
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    assert data["hook_shown"] is True and data["hook_moved"] is False
+    assert data["notes"] == [] and data["outside_safe_zone"] == 0
+
+
+def test_a_changed_caption_setting_makes_the_old_output_stale(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    ctx = v2_ctx(project)
+    render.run(ctx)
+    fake.calls.clear()
+
+    render.run(resume(ctx))
+    assert fake.ids == []  # nothing changed: both clips kept
+
+    ctx.config.app.captions = ctx.config.app.captions.model_copy(update={"word_gap_em": 0.6})
+    render.run(resume(ctx))
+    assert fake.ids == ["c01", "c02"]
+    assert read_json(ctx.run_dir / "clips" / "c01.json")["settings"]["word_gap_em"] == 0.6
+
+
+def test_an_unreadable_font_file_fails_before_anything_is_deleted(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    ctx = v2_ctx(project)
+    clips = ctx.run_dir / "clips"
+    clips.mkdir()
+    (clips / "c01.mp4").write_bytes(b"earlier output")
+    (project / "assets" / "fonts" / "Montserrat-Bold.ttf").write_bytes(b"not a font" * 50)
+
+    with pytest.raises(RunError, match=r"captions\.font_file"):
+        render.run(ctx)
+
+    assert fake.calls == []
+    assert (clips / "c01.mp4").read_bytes() == b"earlier output"
+
+
+def test_the_legacy_style_does_not_read_the_font_file(project: Path, fake: FakeFfmpeg) -> None:
+    ctx = make_ctx(project)  # legacy
+    write_inputs(ctx.run_dir)
+    (project / "assets" / "fonts" / "Montserrat-Bold.ttf").write_bytes(b"not a font" * 50)
+
+    render.run(ctx)
+
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    assert data["settings"]["caption_style"] == "legacy" and data["notes"] == []
+    assert data["caption_lines"] == 4 and data["caption_max_words"] == 3

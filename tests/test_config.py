@@ -414,7 +414,7 @@ def test_render_and_caption_defaults(project: Path) -> None:
     captions = app.captions
     assert (captions.font_file, captions.font_size, captions.margin_v) == (
         "Montserrat-Bold.ttf",
-        80,
+        64,
         350,
     )
 
@@ -744,8 +744,43 @@ def test_a_speaker_section_from_before_the_glide_keys_still_loads(
 # --- Brief R1: captions v2, hook and safe zones ---------------------------------------------------
 
 
+R1_CAPTION_KEYS = (
+    "style",
+    "max_words",
+    "max_width_px",
+    "word_gap_em",
+    "letter_spacing_px",
+    "line_gap_em",
+    "spoken_color",
+    "upcoming_color",
+    "box_opacity",
+    "box_padding_px",
+)
+
+
+def _without_r1_keys(d: dict[str, Any]) -> None:
+    for key in R1_CAPTION_KEYS:
+        d["captions"].pop(key)
+    del d["hook"], d["safe"]
+
+
+def test_the_shipped_default_is_box_karaoke_with_the_hook_on(project: Path) -> None:
+    data = yaml.safe_load((project / "config" / "default.yaml").read_text(encoding="utf-8"))
+    assert set(R1_CAPTION_KEYS) <= set(data["captions"])
+    assert set(data["hook"]) == set(HookConfig.model_fields)
+    assert set(data["safe"]) == set(SafeConfig.model_fields)
+    app = load_app_config(project)
+    assert (app.captions.style, app.captions.font_size) == ("box_karaoke", 64)
+    assert app.hook == HookConfig(enabled=True)
+    assert app.safe == SafeConfig()
+    assert app.captions.model_dump(include=set(R1_CAPTION_KEYS)) == CaptionsConfig(
+        words_per_line=1, font="x", highlight_color="#FFD400", style="box_karaoke"
+    ).model_dump(include=set(R1_CAPTION_KEYS))  # the shipped values are the model's defaults
+
+
 def test_config_without_the_r1_keys_loads_as_legacy(project: Path) -> None:
-    app = load_app_config(project)  # default.yaml has none of the new keys
+    _default(project, _without_r1_keys)
+    app = load_app_config(project)
     assert app.captions.style == "legacy"
     assert (app.captions.max_words, app.captions.max_width_px) == (4, 760)
     assert (app.captions.word_gap_em, app.captions.letter_spacing_px) == (0.45, 1.0)
@@ -788,7 +823,7 @@ def test_box_karaoke_with_the_default_margins_is_valid(project: Path) -> None:
         (lambda d: d.update(safe={"left": 600, "right": 480}), "safe.left"),
         (lambda d: d.update(safe={"top": 1000, "bottom": 920}), "safe.top"),
         # hook needs the new caption style
-        (lambda d: d.update(hook={"enabled": True}), "hook.enabled"),
+        (lambda d: d["captions"].update(style="legacy"), "hook.enabled"),  # the hook is on
     ],
 )
 def test_invalid_r1_settings_are_rejected(
@@ -816,7 +851,8 @@ def test_box_karaoke_width_must_fit_the_safe_area(
 
 
 def test_legacy_style_ignores_the_box_width(project: Path) -> None:
-    _default(project, lambda d: d["captions"].update(max_width_px=5000))
+    _default(project, lambda d: d["captions"].update(max_width_px=5000, style="legacy"))
+    _default(project, lambda d: d["hook"].update(enabled=False))
     assert load_app_config(project).captions.max_width_px == 5000
 
 
