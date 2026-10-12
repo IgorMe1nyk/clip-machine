@@ -104,8 +104,43 @@ is worse. The motion change does what it was built for. Whether the mix stays th
 Igor's decision after watching c09 and c04; `speaker.signal: mouth` keeps the old speaker choice
 with the new motion.
 
-**Next:** Igor re-watches c09 and c04, then the rest, and decides on the signal; EVAL.md row 2
-after his re-rating; then Part 4.
+**Igor watched the mix render** (2026-10-12)
+- c04 good (cuts sometimes slightly early). c13 good: he liked the brief cut to the other
+  person's reaction on a chuckle. c09 missed every turn of the second person. c12 a false cut
+  while only one person talked.
+- **Decision (D-019):** `speaker.signal: mouth` as the interim default, keeping the new motion.
+  Every switching problem is in wide two-person shots; those get their own layout in Brief 8.3
+  (stacked layout) instead of a better guess at who is speaking. The mix stays in the code as
+  `speaker.signal: mix`.
+
+**Re-render with the interim default** (`signal: mouth`, 10 samples per second as before,
+`dead_zone` 0.15; `--from-stage render`, 262 s with every track analysed again; the mix run's
+records are in `runs/_scratch/b82/mix/`)
+
+| Clip | Crop changes (original run) | Moving episodes (original) | Time moving (original) | Switches (original) |
+|---|---|---|---|---|
+| c05 | 1 (4) | 0 (1) | 0% (0%) | 0 (0) |
+| c06 | 38 (69) | 2 (7) | 3% (6%) | 0 (0) |
+| c09 | 3 (20) | 0 (5) | 0% (1%) | 1 (1) |
+| c04 | 1 (8) | 0 (2) | 0% (1%) | 0 (0) |
+| c12 | 20 (47) | 1 (5) | 1% (2%) | 0 (0) |
+| c13 | 73 (100) | 4 (6) | 8% (11%) | 0 (0) |
+| c01 | 305 (325) | 16 (26) | 25% (26%) | 0 (0) |
+| c02 | 21 (97) | 1 (12) | 1% (7%) | 0 (0) |
+
+- The shots are the same as in the run Igor rated for EVAL.md row 1 (same speaker choice, same
+  times); only the movement inside a shot differs. Crop changes in all: 462 (was 670); moving
+  episodes 24 (was 64). Analysis: 156 s for the eight clips (was 165 s).
+- The preview files in the run folder are from the mix run and no longer match the tracks.
+
+**Parked (added)**
+- **Reaction shots on punchlines are wanted.** A short cut to the listener's laugh read as good
+  editing in c13, so "a laugh never takes the camera" is not the goal; a later brief should make
+  it a choice (short reaction cuts, then back).
+- Brief 8.3: a stacked layout for wide two-person shots.
+
+**Next:** Part 4 (`video.crop` default `speaker`, D-020) is prepared and waits for Igor's OK
+before it is committed; EVAL.md row 2 after his re-rating.
 
 ## 2026-10-11 — MVP walking-skeleton finish line met on private validation (6 usable of 8); public samples pending permissioned content (D-012)
 
