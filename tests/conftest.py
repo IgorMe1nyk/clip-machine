@@ -87,6 +87,14 @@ def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 def project(tmp_path: Path) -> Path:
     """A throwaway project root holding copies of the real config, clients and prompts."""
     shutil.copytree(REPO_ROOT / "config", tmp_path / "config")
+    # The shipped default is crop: speaker, which needs model files. Tests that are not about
+    # speaker mode run the centre crop; speaker tests switch it on in their own copy.
+    default_yaml = tmp_path / "config" / "default.yaml"
+    text = default_yaml.read_text(encoding="utf-8")
+    assert "  crop: speaker " in text
+    default_yaml.write_text(
+        text.replace("  crop: speaker ", "  crop: center ", 1), encoding="utf-8"
+    )
     shutil.copytree(REPO_ROOT / "clients", tmp_path / "clients")
     shutil.copytree(REPO_ROOT / "prompts", tmp_path / "prompts")
     shutil.copytree(REPO_ROOT / "assets", tmp_path / "assets")

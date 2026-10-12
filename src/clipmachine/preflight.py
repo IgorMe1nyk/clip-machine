@@ -1,6 +1,9 @@
 """Startup checks for external tools."""
 
 import shutil
+from pathlib import Path
+
+from clipmachine.utils import faces
 
 REQUIRED_TOOLS = ("ffmpeg", "ffprobe")
 
@@ -17,3 +20,13 @@ def check_ffmpeg() -> None:
             "'winget install Gyan.FFmpeg.Essentials', open a new terminal, then check "
             "'ffmpeg -version'."
         )
+
+
+def check_face_models(root: Path) -> None:
+    """Speaker crop needs both face model files. Raises faces.FacesError (the text names the file
+    and the fetch command) before any stage runs; nothing is downloaded here."""
+    try:
+        faces.ensure_model(faces.model_dir(root))
+        faces.ensure_model(faces.model_dir(root, faces.DETECTOR), spec=faces.DETECTOR)
+    except faces.FacesError as exc:
+        raise faces.FacesError(f"{exc}. Or set video.crop: center in the config") from exc

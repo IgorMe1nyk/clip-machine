@@ -139,8 +139,24 @@ records are in `runs/_scratch/b82/mix/`)
   it a choice (short reaction cuts, then back).
 - Brief 8.3: a stacked layout for wide two-person shots.
 
-**Next:** Part 4 (`video.crop` default `speaker`, D-020) is prepared and waits for Igor's OK
-before it is committed; EVAL.md row 2 after his re-rating.
+**Part 4: `video.crop` defaults to `speaker`** (D-020)
+- `config/default.yaml`: `crop: speaker`. The other speaker defaults are the rated ones
+  (`signal: mouth`, 10 samples per second, boxes on every sample) plus the new motion.
+- A run that will render in speaker mode checks both face model files before any stage runs
+  (`preflight.check_face_models`, called for a new run and for a resume whose render stage is not
+  done). A missing or wrong file stops the run with the fetch command and the `center`
+  alternative: no run folder is created for a new run, and a resumed folder is left untouched.
+  Nothing is downloaded by `run`. The render stage's own check stays.
+- A run folder keeps its own crop mode: one whose config says `center` renders the centre crop
+  and needs no model files (tested).
+- README: the one-time `fetch-face-model` step.
+- Tests: 1250 passed, 2 skipped. ruff, format, mypy and pip-audit clean. The test project
+  fixture pins `crop: center` in its copy of the default config, so tests that are not about
+  speaker mode need no model files; one test reads the shipped default.
+- Not yet run for real: a fresh one-command run with the new default.
+
+**Next:** Igor re-rates the re-rendered clips (EVAL.md row 2); a fresh one-command run to confirm
+the default end to end; Brief 8.3.
 
 ## 2026-10-11 — MVP walking-skeleton finish line met on private validation (6 usable of 8); public samples pending permissioned content (D-012)
 

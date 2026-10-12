@@ -45,6 +45,17 @@ uv sync --locked
 `uv sync --locked` creates `.venv`, installs Python 3.11 if needed, and installs exactly
 the versions pinned in `uv.lock`.
 
+Clips follow the speaker by default (`video.crop: speaker`). That needs two face model
+files, which you fetch once (nothing else ever downloads them):
+
+```powershell
+uv run python -m clipmachine fetch-face-model
+```
+
+Without them `run` stops before the first stage with a one-line error. Set `video.crop: center`
+in `config/default.yaml` for a fixed centre crop, which needs no model files. A run folder keeps
+the crop mode it was started with (`config.resolved.yaml`).
+
 ## Run
 
 Run commands from the repository root (that is where `config/`, `clients/` and `runs/` are found).

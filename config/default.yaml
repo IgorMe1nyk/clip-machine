@@ -59,7 +59,7 @@ transcribe:                  # model and device from D-011; prompt in every wind
 video:                       # the render stage's output size
   width: 1080
   height: 1920
-  crop: center               # center | speaker (speaker: follow the active speaker; needs both face model files, see clipmachine fetch-face-model)
+  crop: speaker              # speaker (default): follow the active speaker; needs both face model files, fetched once with clipmachine fetch-face-model | center: a fixed centre crop
 speaker:                     # speaker-following crop analysis: clipmachine track <run-folder>
   sample_fps: 10             # frames analysed per second of clip (0-30)
   detect_width: 960          # pixels; frames are scaled to this width for the YuNet face detector

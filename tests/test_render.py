@@ -12,7 +12,13 @@ import pytest
 
 import track_fakes
 from clipmachine import pipeline, tracking
-from clipmachine.config import ResolvedConfig, load_resolved
+from clipmachine.config import (
+    ResolvedConfig,
+    dump_resolved,
+    load_app_config,
+    load_resolved,
+    load_resolved_file,
+)
 from clipmachine.context import RunContext
 from clipmachine.models import (
     AudioStreamInfo,
@@ -36,6 +42,7 @@ from clipmachine.stages import render
 from clipmachine.utils import ffmpeg
 from clipmachine.utils.crop import frame_path
 from clipmachine.utils.ffmpeg import MediaError
+from helpers import edit_yaml
 
 DRIVE_OR_BACKSLASH = re.compile(r"(?<![A-Za-z0-9_.])[A-Za-z]:|\\")
 SOURCE_SECONDS = 120.0
@@ -997,3 +1004,32 @@ def test_centre_mode_needs_no_model_files_and_never_imports_tracking(
     assert vf_of(fake.calls[0][1]) == CENTRE_VF
     data = read_json(ctx.run_dir / "clips" / "c01.json")
     assert (data["crop_mode"], data["track_sha256"], data["crop_changes"]) == ("center", None, 0)
+
+
+# --- old run folders keep their frozen config (D-019 default: speaker) ----------------------
+
+
+def test_a_run_folder_frozen_on_center_still_renders_centre_after_the_default_changed(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    ctx = make_ctx(project)  # the fixture's config pins crop: center
+    write_inputs(ctx.run_dir)
+    dump_resolved(ctx.config, ctx.run_dir / "config.resolved.yaml")
+    # The project's default now says speaker, and no model file exists anywhere.
+    edit_yaml(project / "config" / "default.yaml", lambda d: d["video"].update(crop="speaker"))
+    assert load_app_config(project).video.crop == "speaker"
+    assert not (project / "models").exists()
+
+    frozen = load_resolved_file(ctx.run_dir / "config.resolved.yaml")
+    render.run(
+        RunContext(
+            run_dir=ctx.run_dir,
+            config=frozen,
+            input_path=ctx.input_path,
+            project_root=project,
+        )
+    )
+
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    assert (data["crop_mode"], data["crop_changes"], data["track_fallback"]) == ("center", 0, None)
+    assert data["crop"] == {"w": 202, "h": 360, "x": 218, "y": 0}

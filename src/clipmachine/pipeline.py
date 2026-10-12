@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from clipmachine.config import dump_resolved, load_resolved, load_resolved_file
 from clipmachine.context import RunContext
 from clipmachine.models import RunState, StageState
-from clipmachine.preflight import check_ffmpeg
+from clipmachine.preflight import check_face_models, check_ffmpeg
 from clipmachine.runs import (
     RunError,
     check_input_size,
@@ -21,6 +21,7 @@ from clipmachine.runs import (
     write_json_atomic,
 )
 from clipmachine.stages import candidates, fetch, render, report, score, transcribe
+from clipmachine.stages.transcribe import REPO_ROOT
 
 log = logging.getLogger("clipmachine")
 
@@ -99,6 +100,8 @@ def start_new_run(root: Path, input_path: Path, client: str, today: date | None 
     validate_input(input_path)
     check_input_size(input_path, resolved.app.fetch.max_size_gb)
     check_ffmpeg()
+    if resolved.app.video.crop == "speaker":
+        check_face_models(root)
     run_dir = create_run_dir(root / "runs", input_path, today or date.today())
     try:
         dump_resolved(resolved, run_dir / RESOLVED_CONFIG)
@@ -124,6 +127,9 @@ def run_pipeline(
     if from_stage is not None:
         reset_from(state, from_stage)
     recover_interrupted(state)
+    # Before save_state and any stage: a missing model must not cost API money or touch the folder.
+    if resolved.app.video.crop == "speaker" and state.stages["render"].status != "done":
+        check_face_models(project_root if project_root is not None else REPO_ROOT)
     save_state(run_dir, state)
 
     ctx = RunContext(

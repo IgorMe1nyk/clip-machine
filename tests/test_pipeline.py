@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from clipmachine import pipeline
+import track_fakes
+from clipmachine import cli, pipeline
 from clipmachine.config import ConfigError
 from clipmachine.context import RunContext
 from clipmachine.models import RunState, StageState
@@ -20,6 +21,8 @@ from clipmachine.pipeline import (
 )
 from clipmachine.preflight import MissingToolError, check_ffmpeg
 from clipmachine.runs import RunError
+from clipmachine.utils import faces
+from clipmachine.utils.faces import FacesError
 from helpers import edit_yaml
 
 TODAY = date(2026, 10, 12)
@@ -273,3 +276,111 @@ def test_corrupt_run_json_is_reported(project: Path) -> None:
     (run_dir / "run.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(RunError, match="cannot read"):
         run_pipeline(run_dir)
+
+
+# --- the face-model check before a speaker-crop run (D-019 default) -------------------------
+
+
+def speaker_project(project: Path) -> Path:
+    edit_yaml(project / "config" / "default.yaml", lambda d: d["video"].update(crop="speaker"))
+    return project
+
+
+def record_stages(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    ran: list[str] = []
+    for name in STAGE_NAMES:
+        monkeypatch.setitem(pipeline.STAGES, name, lambda c, n=name: ran.append(n))  # type: ignore[misc]
+    return ran
+
+
+def freeze_crop(run_dir: Path, crop: str) -> None:
+    edit_yaml(run_dir / "config.resolved.yaml", lambda d: d["config"]["video"].update(crop=crop))
+
+
+def test_speaker_with_a_missing_model_stops_a_new_run_before_anything_is_created(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    speaker_project(project)
+    ran = record_stages(monkeypatch)
+    track_fakes.write_model(project)
+    (faces.model_dir(project, faces.DETECTOR) / faces.DETECTOR.name).unlink()
+    media = project / "sample.mp4"
+    media.write_bytes(b"")
+
+    with pytest.raises(FacesError, match=r"clipmachine fetch-face-model.*video\.crop: center"):
+        start_new_run(project, media, "example-client", TODAY)
+
+    assert ran == []
+    assert list((project / "runs").iterdir()) == []
+
+
+def test_speaker_with_a_missing_model_stops_a_resume_before_any_stage(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = new_run(project)  # made on the pinned centre config
+    freeze_crop(run_dir, "speaker")
+    ran = record_stages(monkeypatch)
+    before = {p.name: p.read_bytes() for p in run_dir.iterdir()}
+
+    with pytest.raises(FacesError, match=r"face model not found.*clipmachine fetch-face-model"):
+        run_pipeline(run_dir, project_root=project)
+
+    assert ran == []
+    assert {p.name: p.read_bytes() for p in run_dir.iterdir()} == before  # run.json untouched
+
+
+def test_speaker_with_a_missing_model_exits_two_with_one_line(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    speaker_project(project)
+    ran = record_stages(monkeypatch)
+    media = project / "sample.mp4"
+    media.write_bytes(b"")
+
+    code = cli.main(["run", str(media), "--client", "example-client"], root=project)
+
+    err = capsys.readouterr().err
+    assert code == 2 and ran == []
+    assert err.startswith("error: ") and err.count("\n") == 1
+    assert "clipmachine fetch-face-model" in err and "center" in err
+
+
+def test_speaker_with_both_models_present_passes_the_check(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    speaker_project(project)
+    track_fakes.write_model(project)
+    ran = record_stages(monkeypatch)
+
+    run_dir = new_run(project)
+    outcome = run_pipeline(run_dir, project_root=project)
+
+    assert outcome.ok and ran == list(STAGE_NAMES)
+
+
+def test_center_needs_no_model_files(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ran = record_stages(monkeypatch)
+    run_dir = new_run(project)
+    assert run_pipeline(run_dir, project_root=project).ok
+    assert ran == list(STAGE_NAMES)
+    assert not (project / "models").exists()
+
+
+def test_a_resume_that_does_not_reach_render_does_not_check_the_models(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = new_run(project)
+    ran = record_stages(monkeypatch)
+    assert run_pipeline(run_dir, project_root=project).ok  # every stage done, centre crop
+    freeze_crop(run_dir, "speaker")
+    ran.clear()
+
+    outcome = run_pipeline(run_dir, from_stage="report", project_root=project)
+    assert outcome.ok and ran == ["report"]
+
+    nothing = run_pipeline(run_dir, project_root=project)  # nothing left to run
+    assert nothing.ok and nothing.ran == []
+
+    with pytest.raises(FacesError):  # but a redo that includes render is checked
+        run_pipeline(run_dir, from_stage="render", project_root=project)
+    assert ran == ["report"]

@@ -522,10 +522,17 @@ def test_a_speaker_section_from_before_brief_8_1_still_loads(project: Path, tmp_
     assert speaker.landmark_width == 1920 and speaker.cut_threshold == 0.12
 
 
-def test_crop_center_is_the_default_and_speaker_is_accepted(project: Path) -> None:
-    assert load_app_config(project).video.crop == "center"
+def test_shipped_default_config_crops_to_the_speaker() -> None:
+    repo_root = Path(__file__).resolve().parents[1]  # the real file, not the fixture's pinned copy
+    assert load_app_config(repo_root).video.crop == "speaker"
+
+
+def test_crop_speaker_is_the_default_and_center_is_accepted(project: Path) -> None:
+    # the `project` fixture pins center; take it back to the shipped default first
     _default(project, lambda d: d["video"].update(crop="speaker"))
     assert load_app_config(project).video.crop == "speaker"
+    _default(project, lambda d: d["video"].update(crop="center"))
+    assert load_app_config(project).video.crop == "center"
 
 
 def test_crop_face_is_rejected_with_a_clear_message(project: Path) -> None:
