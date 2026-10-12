@@ -180,3 +180,25 @@ class Moment(StrictModel):
     @property
     def clip_name(self) -> str:
         return f"{self.id}_{self.platform}"
+
+
+class UsedEntry(StrictModel):
+    """One rendered moment in used.json. Holds times and a path, never transcript text."""
+
+    id: str
+    platform: Platform
+    start: float  # final source times
+    end: float
+    hook: str
+    closer: str
+    rendered_at: str  # UTC, ISO 8601
+    output: str  # the mp4, relative to the repo root, forward slashes
+    source_sha256: str
+    posted_at: str | None = None  # set by campaign-posted; a render is not a post
+
+
+class UsedLog(StrictModel):
+    schema_version: int = 1
+    next_closer: int = Field(default=0, ge=0)  # where the closer rotation goes next
+    last_closer: str | None = None
+    entries: list[UsedEntry] = Field(default_factory=list)

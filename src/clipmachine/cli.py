@@ -4,9 +4,12 @@ import argparse
 import logging
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from clipmachine import tracking
+from clipmachine.campaign.loader import campaign_dir
+from clipmachine.campaign.used import load_used, mark_posted, save_used
 from clipmachine.config import ConfigError, load_resolved_file
 from clipmachine.pipeline import (
     RESOLVED_CONFIG,
@@ -34,7 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Turn a long video into short vertical clips.",
     )
     sub = parser.add_subparsers(
-        dest="command", required=True, metavar="{run,report,track,safe-zones,fetch-face-model}"
+        dest="command",
+        required=True,
+        metavar="{run,report,track,safe-zones,campaign-posted,fetch-face-model}",
     )
 
     run = sub.add_parser(
@@ -75,6 +80,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     safe.add_argument("run_folder", type=Path)
     safe.add_argument("--clip", required=True, help="the id of a kept clip, e.g. c01")
+
+    posted = sub.add_parser(
+        "campaign-posted",
+        help="mark a campaign moment as posted, so it is not reused by accident",
+    )
+    posted.add_argument("--campaign", required=True, help="the folder name under campaigns/")
+    posted.add_argument("--id", required=True, help="the moment id, e.g. A03")
+    posted.add_argument("--platform", required=True, choices=("tiktok", "instagram", "youtube"))
 
     sub.add_parser(
         "fetch-face-model",
@@ -177,6 +190,20 @@ def _cmd_safe_zones(args: argparse.Namespace, root: Path) -> int:
     return EXIT_OK
 
 
+def _cmd_campaign_posted(args: argparse.Namespace, root: Path) -> int:
+    """Mark the latest rendered, unposted entry of a moment as posted in used.json. Needs only
+    the campaign folder: campaign.yaml and the watermark are not read."""
+    folder = campaign_dir(root, args.campaign)
+    log, _, changed = mark_posted(
+        load_used(folder), args.id, args.platform, datetime.now(UTC).isoformat()
+    )
+    if changed:
+        save_used(folder, log)
+    state = "marked as posted" if changed else "already marked as posted"
+    print(f"{args.id} {args.platform}: {state}")
+    return EXIT_OK
+
+
 def _cmd_fetch_face_model(root: Path) -> int:
     """The only place the face models are downloaded; the track command never does it.
 
@@ -206,6 +233,8 @@ def main(argv: Sequence[str] | None = None, root: Path | None = None) -> int:
             return _cmd_track(args, project_root)
         if args.command == "safe-zones":
             return _cmd_safe_zones(args, project_root)
+        if args.command == "campaign-posted":
+            return _cmd_campaign_posted(args, project_root)
         if args.command == "fetch-face-model":
             return _cmd_fetch_face_model(project_root)
         return _cmd_report(args)
