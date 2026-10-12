@@ -432,6 +432,59 @@ def test_offset_moves_words_clamps_and_drops_the_ones_left_empty(metrics: FontMe
     assert [w.text for line in pushed for w in line.words] == ["a"]  # b would start past the end
 
 
+def test_a_zero_length_word_is_kept_and_coloured_at_its_start(metrics: FontMetrics) -> None:
+    words = [cw("alpha", 1.0, 1.3), cw("beta", 1.5, 1.5), cw("gamma", 1.8, 2.1)]
+    (line,) = lines_of(metrics, words).lines
+    assert [w.text for w in line.words] == ["alpha", "beta", "gamma"]
+    (cap,) = cap_events(karaoke(metrics, words))
+    values = k_values(cap.text)
+    assert len(values) == 3
+    for index, spoken in enumerate(line.words):
+        assert round(cap.start * 100) + sum(values[:index]) == round(spoken.start * 100)
+
+
+def test_a_zero_length_word_alone_takes_its_end_from_the_rules(metrics: FontMetrics) -> None:
+    # last line: the minimum length; earlier line: the next line's start
+    (last,) = lines_of(metrics, [cw("a", 2.0, 2.0)], clip=5.0).lines
+    assert (last.start, last.end) == (2.0, 2.1)
+    first, second = lines_of(
+        metrics, [cw("a", 1.0, 1.0), cw("b", 1.3, 1.6)], settings=replace(SETTINGS, max_words=1)
+    ).lines
+    assert (first.end, second.start) == (1.3, 1.3)
+    # a line that would start and end at the same time is still dropped
+    lines = lines_of(
+        metrics, [cw("a", 1.0, 1.0), cw("b", 1.0, 1.4)], settings=replace(SETTINGS, max_words=1)
+    ).lines
+    assert [w.text for line in lines for w in line.words] == ["b"]
+
+
+def test_a_word_pushed_wholly_before_zero_is_dropped_but_a_zero_length_one_at_zero_is_not(
+    metrics: FontMetrics,
+) -> None:
+    words = [cw("a", 0.1, 0.1), cw("b", 0.2, 0.4), cw("c", 0.6, 0.9)]
+    kept = [w.text for line in lines_of(metrics, words, offset=-0.3).lines for w in line.words]
+    assert kept == ["b", "c"]  # a: -0.2..-0.2 is before the clip
+    kept = [w.text for line in lines_of(metrics, [cw("a", 0.0, 0.0)]).lines for w in line.words]
+    assert kept == ["a"]
+
+
+def test_a_word_pushed_to_or_past_the_clip_end_is_dropped(metrics: FontMetrics) -> None:
+    for start in (4.9, 4.95):  # offset 0.1 / 0.05: lands exactly on 5.0
+        words = [cw("a", 1.0, 1.4), cw("b", start, start)]
+        offset = round(5.0 - start, 2)
+        kept = [
+            w.text
+            for line in lines_of(metrics, words, clip=5.0, offset=offset).lines
+            for w in line.words
+        ]
+        assert kept == ["a"]
+    words = [cw("a", 1.0, 1.4), cw("b", 4.8, 4.8)]
+    kept = [
+        w.text for line in lines_of(metrics, words, clip=5.0, offset=0.1).lines for w in line.words
+    ]
+    assert kept == ["a", "b"]  # 4.9: still inside
+
+
 # --- grouping -----------------------------------------------------------------------------------
 
 

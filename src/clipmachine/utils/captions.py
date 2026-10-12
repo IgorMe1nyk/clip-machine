@@ -357,14 +357,19 @@ def spaced_text(
 def shift_words(
     words: Sequence[CaptionWord], offset_seconds: float, clip_seconds: float
 ) -> list[CaptionWord]:
-    """Every word moved by `offset_seconds` (positive = later), clamped to [0, clip_seconds],
-    rounded to milliseconds; words left with no length are dropped."""
+    """Every word moved by `offset_seconds` (positive = later), clamped to [0, clip_seconds] and
+    rounded to milliseconds. A word with no length is kept (Whisper emits them); only a word the
+    shift pushed outside the clip is dropped: one that starts at or after the clip's end, or lies
+    entirely before its start."""
     shifted: list[CaptionWord] = []
     for word in words:
-        start = round(min(max(word.start + offset_seconds, 0.0), clip_seconds), 3)
-        end = round(min(max(word.end + offset_seconds, 0.0), clip_seconds), 3)
-        if end > start:
-            shifted.append(CaptionWord(word.text, start, end))
+        raw_start = word.start + offset_seconds
+        raw_end = word.end + offset_seconds
+        if raw_start >= clip_seconds or (raw_end <= 0 and raw_start < 0):
+            continue
+        start = round(min(max(raw_start, 0.0), clip_seconds), 3)
+        end = round(min(max(raw_end, start), clip_seconds), 3)
+        shifted.append(CaptionWord(word.text, start, end))
     return shifted
 
 
