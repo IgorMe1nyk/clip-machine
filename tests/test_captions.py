@@ -1,16 +1,33 @@
+import re
+from dataclasses import replace
+from pathlib import Path
+
 import pytest
 
-from clipmachine.models import TranscriptSegment, TranscriptWord
+from clipmachine.models import CaptionsConfig, TranscriptSegment, TranscriptWord
 from clipmachine.utils.captions import (
+    AssEvent,
     CaptionWord,
+    KaraokeLines,
+    KaraokeResult,
+    KaraokeSettings,
     ass_color,
     ass_time,
     build_ass,
+    build_ass_v2,
     build_events,
+    build_karaoke,
     clean_word,
     clip_words,
+    fmt_num,
     group_words,
+    karaoke_lines,
+    rounded_box,
+    space_spacing_px,
+    spaced_width,
 )
+from clipmachine.utils.fontmetrics import FontMetrics, load_font
+from clipmachine.utils.safezone import Rect, outside_count, safe_rect
 
 
 def word(text: str, start: float, end: float) -> TranscriptWord:
@@ -279,3 +296,390 @@ def test_offset_keeps_millisecond_rounding() -> None:
     words = [cw("a", 0.1, 0.2)]
     (event,) = build_events(group_words(words, 3), "#FFD400", 4.0, 0.1)
     assert (event.start, event.end) == (0.2, 0.3)  # not 0.30000000000000004
+
+
+# --- box_karaoke (Brief R1); synthetic words, real Montserrat metrics ---------------------------
+
+FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "Montserrat-Bold.ttf"
+SAFE = safe_rect(1080, 1920, 290, 672, 120, 192)
+SETTINGS = KaraokeSettings(
+    font_size=64,
+    max_words=4,
+    max_width_px=760,
+    word_gap_em=0.45,
+    letter_spacing_px=1.0,
+    spoken_color="#FFD400",
+    upcoming_color="#FFFFFF",
+    box_opacity=0.75,
+    box_padding_px=18,
+)
+
+
+@pytest.fixture(scope="module")
+def metrics() -> FontMetrics:
+    return load_font(FONT_PATH)
+
+
+def karaoke(
+    metrics: FontMetrics,
+    words: list[CaptionWord],
+    *,
+    clip: float = 30.0,
+    offset: float = 0.0,
+    settings: KaraokeSettings = SETTINGS,
+) -> KaraokeResult:
+    return build_karaoke(words, settings, metrics, SAFE, clip_seconds=clip, offset_seconds=offset)
+
+
+def lines_of(
+    metrics: FontMetrics,
+    words: list[CaptionWord],
+    *,
+    clip: float = 30.0,
+    offset: float = 0.0,
+    settings: KaraokeSettings = SETTINGS,
+) -> KaraokeLines:
+    return karaoke_lines(words, settings, metrics, clip_seconds=clip, offset_seconds=offset)
+
+
+def cap_events(result: KaraokeResult) -> list[AssEvent]:
+    return [e for e in result.events if e.style == "Cap"]
+
+
+def k_values(text: str) -> list[int]:
+    return [int(v) for v in re.findall(r"\\k(\d+)", text)]
+
+
+def dialogue_texts(ass: str) -> list[str]:
+    return [line.split(",", 9)[9] for line in ass.split("\n") if line.startswith("Dialogue:")]
+
+
+@pytest.mark.parametrize("offset", [0.0, 0.15, -0.002, -0.1])
+def test_karaoke_each_word_switches_at_its_own_start(metrics: FontMetrics, offset: float) -> None:
+    starts = [0.004, 0.337, 0.999, 1.5049]
+    words = [cw(f"w{i}", s, s + 0.2) for i, s in enumerate(starts)]
+    shifted = lines_of(metrics, words, offset=offset).lines[0].words
+    (cap,) = cap_events(karaoke(metrics, words, offset=offset))
+    values = k_values(cap.text)
+    assert len(values) == len(shifted) == 4
+    first_cs = round(cap.start * 100)
+    for index, spoken in enumerate(shifted):
+        assert first_cs + sum(values[:index]) == max(round(spoken.start * 100), 0)
+
+
+def test_karaoke_timing_holds_across_many_lines(metrics: FontMetrics) -> None:
+    words = [cw(f"w{i}", 0.1237 * i, 0.1237 * i + 0.09) for i in range(30)]
+    result = karaoke(metrics, words)
+    built = lines_of(metrics, words)
+    assert len(built.lines) == len(cap_events(result)) > 5
+    for line, cap in zip(built.lines, cap_events(result), strict=True):
+        values = k_values(cap.text)
+        for index, spoken in enumerate(line.words):
+            assert round(cap.start * 100) + sum(values[:index]) == round(spoken.start * 100)
+        # the last value reaches the end of the line, never past it
+        assert round(cap.start * 100) + sum(values) == round(cap.end * 100)
+
+
+def test_the_text_event_and_box_event_share_their_times(metrics: FontMetrics) -> None:
+    result = karaoke(metrics, seq(["alpha", "beta"]))
+    box, text = result.events
+    assert (box.layer, box.style, text.layer, text.style) == (0, "Box", 1, "Cap")
+    assert (box.start, box.end) == (text.start, text.end)
+
+
+# --- line ends ----------------------------------------------------------------------------------
+
+TWO_WORDS = replace(SETTINGS, max_words=2)
+
+
+def test_a_gap_under_half_a_second_holds_the_line_to_the_next_one(metrics: FontMetrics) -> None:
+    words = [cw("a", 0.0, 0.2), cw("b", 0.3, 0.5), cw("c", 0.99, 1.2), cw("d", 1.3, 1.5)]
+    first, second = lines_of(metrics, words, settings=TWO_WORDS).lines
+    assert (first.start, first.end) == (0.0, 0.99)  # gap 0.49
+    assert (second.start, second.end) == (0.99, 1.5)
+
+
+def test_a_gap_of_half_a_second_ends_the_line_at_its_last_word(metrics: FontMetrics) -> None:
+    words = [cw("a", 0.0, 0.2), cw("b", 0.3, 0.5), cw("c", 1.0, 1.2), cw("d", 1.3, 1.5)]
+    first, _ = lines_of(metrics, words, settings=TWO_WORDS).lines
+    assert first.end == 0.5  # gap is exactly 0.5
+
+
+def test_the_last_line_lasts_a_minimum_time_and_stays_in_the_clip(metrics: FontMetrics) -> None:
+    words = [cw("a", 1.0, 1.02)]
+    (line,) = lines_of(metrics, words, clip=5.0).lines
+    assert (line.start, line.end) == (1.0, 1.1)
+    words = [cw("a", 4.98, 4.99)]
+    (line,) = lines_of(metrics, words, clip=5.0).lines
+    assert line.end == 5.0
+
+
+def test_no_words_no_lines(metrics: FontMetrics) -> None:
+    result = karaoke(metrics, [])
+    assert (result.events, result.lines, result.max_words, result.boxes) == ([], 0, 0, [])
+    assert lines_of(metrics, []).lines == []
+
+
+def test_offset_moves_words_clamps_and_drops_the_ones_left_empty(metrics: FontMetrics) -> None:
+    words = [cw("a", 0.1, 0.3), cw("b", 0.3, 0.6), cw("c", 4.9, 5.0)]
+    lines = lines_of(metrics, words, clip=5.0, offset=-0.5).lines
+    assert [w.text for line in lines for w in line.words] == ["b", "c"]  # a is left empty
+    assert (lines[0].start, lines[0].end) == (0.0, 0.1)
+    late = lines_of(metrics, [cw("a", 1.0, 1.4), cw("b", 4.5, 4.9)], clip=5.0, offset=0.3).lines
+    assert [w.text for line in late for w in line.words] == ["a", "b"]
+    assert (late[-1].start, late[-1].end) == (4.8, 5.0)  # b's end is clamped to the clip
+    pushed = lines_of(metrics, [cw("a", 1.0, 1.4), cw("b", 4.8, 4.9)], clip=5.0, offset=0.3).lines
+    assert [w.text for line in pushed for w in line.words] == ["a"]  # b would start past the end
+
+
+# --- grouping -----------------------------------------------------------------------------------
+
+
+def test_a_line_never_has_more_than_max_words(metrics: FontMetrics) -> None:
+    for per_line in (1, 2, 3, 4):
+        settings = replace(SETTINGS, max_words=per_line)
+        built = lines_of(metrics, seq(["ab"] * 11, 0.3), settings=settings)
+        assert max(len(line.words) for line in built.lines) <= per_line
+        assert sum(len(line.words) for line in built.lines) == 11
+
+
+def test_a_sentence_end_breaks_the_line(metrics: FontMetrics) -> None:
+    built = lines_of(metrics, seq(["Hi.", "there", "you", "all"], 0.3))
+    assert [[w.text for w in line.words] for line in built.lines] == [
+        ["Hi."],
+        ["there", "you", "all"],
+    ]
+
+
+def test_a_width_limit_forces_a_split(metrics: FontMetrics) -> None:
+    settings = replace(SETTINGS, max_width_px=520)  # 484 px of text
+    built = lines_of(metrics, seq(["alphabet"] * 4, 0.3), settings=settings)
+    assert max(len(line.words) for line in built.lines) < 4  # max_words alone would allow 4
+    assert all(line.width <= settings.text_limit_px for line in built.lines)
+    assert sum(len(line.words) for line in built.lines) == 4
+
+
+def test_a_pause_inside_a_group_splits_it(metrics: FontMetrics) -> None:
+    words = [cw("alpha", 0.0, 0.3), cw("beta", 0.8, 1.1)]  # 0.5 s of silence
+    assert len(lines_of(metrics, words).lines) == 2
+    words = [cw("alpha", 0.0, 0.3), cw("beta", 0.79, 1.1)]  # 0.49 s
+    assert len(lines_of(metrics, words).lines) == 1
+
+
+def test_an_overlong_word_is_shrunk_and_its_box_still_fits(metrics: FontMetrics) -> None:
+    result = karaoke(metrics, [cw("m" * 25, 0.0, 1.0)])
+    built = lines_of(metrics, [cw("m" * 25, 0.0, 1.0)])
+    (line,) = built.lines
+    assert 32 <= line.font_size < 64
+    assert (built.words_shrunk, built.words_truncated) == (1, 0)
+    assert result.notes == ["caption_word_shrunk"]
+    assert line.width <= SETTINGS.text_limit_px
+    assert outside_count(result.boxes, SAFE) == 0
+    assert result.boxes[0].x2 - result.boxes[0].x1 <= SETTINGS.max_width_px + 1
+    assert f"\\fs{line.font_size}\\k" in cap_events(result)[0].text
+
+
+def test_a_normal_line_has_no_font_size_override(metrics: FontMetrics) -> None:
+    (cap,) = cap_events(karaoke(metrics, seq(["alpha", "beta"])))
+    assert r"\fs" not in cap.text.replace(r"\fsp", "")
+
+
+def test_a_400_character_word_is_truncated_and_fits(metrics: FontMetrics) -> None:
+    result = karaoke(metrics, [cw("w" * 400, 0.0, 1.0)])
+    built = lines_of(metrics, [cw("w" * 400, 0.0, 1.0)])
+    (line,) = built.lines
+    (shown,) = line.words
+    assert shown.text.endswith("\u2026") and len(shown.text) < 400
+    assert line.font_size == 32
+    assert metrics.text_width(shown.text, line.font_size, 1.0) <= SETTINGS.text_limit_px
+    assert (built.words_shrunk, built.words_truncated) == (0, 1)
+    assert result.notes == ["caption_word_truncated"]
+    assert outside_count(result.boxes, SAFE) == 0
+
+
+# --- spacing ------------------------------------------------------------------------------------
+
+FSP_BLOCK = re.compile(r"\{\\fsp([0-9.]+)\}")
+
+
+def test_the_space_gets_the_extra_spacing_that_makes_the_configured_gap(
+    metrics: FontMetrics,
+) -> None:
+    (cap,) = cap_events(karaoke(metrics, seq(["alpha", "beta", "gamma"], 0.3)))
+    values = [float(v) for v in FSP_BLOCK.findall(cap.text)]
+    expected = round(0.45 * 64 - metrics.space_px(64) - 1.0, 2)
+    assert values == [expected, expected]
+    assert expected == pytest.approx(0.45 * 64 - metrics.space_px(64) - 1.0, abs=0.005)
+    assert space_spacing_px(metrics, 64, 0.45, 1.0) == pytest.approx(expected, abs=0.005)
+    assert r"{\fsp1\k" in cap.text  # the letter spacing comes back after the space
+
+
+def test_a_wider_word_gap_changes_the_tag_and_the_width(metrics: FontMetrics) -> None:
+    words = seq(["alpha", "beta"], 0.3)
+    narrow = cap_events(karaoke(metrics, words))[0].text
+    wide_settings = replace(SETTINGS, word_gap_em=0.9)
+    wide = cap_events(karaoke(metrics, words, settings=wide_settings))[0].text
+    assert FSP_BLOCK.findall(narrow) != FSP_BLOCK.findall(wide)
+    assert lines_of(metrics, words, settings=wide_settings).lines[0].width > (
+        lines_of(metrics, words).lines[0].width
+    )
+
+
+def test_a_gap_smaller_than_the_space_adds_nothing(metrics: FontMetrics) -> None:
+    assert space_spacing_px(metrics, 64, 0.1, 1.0) == 0.0
+
+
+def test_width_of_spaced_words_is_the_glyph_sum_plus_the_gaps(metrics: FontMetrics) -> None:
+    texts = ["alpha", "beta", "gamma"]
+    width = spaced_width(metrics, texts, 64, 0.45, 1.0)
+    glyphs = sum(metrics.text_width(t, 64, 1.0) for t in texts)
+    assert width == pytest.approx(glyphs + 2 * (0.45 * 64 - 1.0))
+    assert spaced_width(metrics, [], 64, 0.45, 1.0) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("value", "text"), [(1.0, "1"), (16.2, "16.2"), (0.0, "0"), (12.345, "12.35"), (-0.001, "0")]
+)
+def test_numbers_have_at_most_two_decimals(value: float, text: str) -> None:
+    assert fmt_num(value) == text
+
+
+# --- escaping -----------------------------------------------------------------------------------
+
+OUR_TAGS = [
+    re.compile(r"\{\\pos\(0,0\)\\p1\}[mlb0-9 ]+\{\\p0\}"),
+    re.compile(r"\{\\pos\(\d+,\d+\)(?:\\fs\d+)?\\k\d+\}"),
+    re.compile(r"\{\\fsp\d+(?:\.\d{1,2})?\}"),
+    re.compile(r"\{\\fsp\d+(?:\.\d{1,2})?\\k\d+\}"),
+]
+
+
+def test_hostile_words_cannot_add_tags_or_lines_to_the_file(metrics: FontMetrics) -> None:
+    raw = ["{\\fs500}big", "a\\Nb", "line1\nline2", "}{", "x\r\ny", "\\", "ok{\\p1}", "end"]
+    words = clip_words(
+        [segment(*[word(t, i * 0.3, i * 0.3 + 0.2) for i, t in enumerate(raw)])], 0, 9
+    )
+    result = karaoke(metrics, words, clip=9.0)
+    ass = build_ass_v2(result.events, font="Montserrat", settings=SETTINGS, width=1080, height=1920)
+    assert "\r" not in ass
+    texts = dialogue_texts(ass)
+    assert len(texts) == len(result.events) > 0
+    for text in texts:
+        for pattern in OUR_TAGS:
+            text = pattern.sub("", text)
+        assert not any(c in text for c in "{}\\\n\r")
+
+
+# --- the box ------------------------------------------------------------------------------------
+
+
+def test_the_box_is_the_text_plus_padding(metrics: FontMetrics) -> None:
+    words = seq(["alpha", "beta", "gamma"], 0.3)
+    result = karaoke(metrics, words)
+    (line,) = lines_of(metrics, words).lines
+    (box,) = result.boxes
+    assert box.x2 - box.x1 == pytest.approx(line.width + 36)
+    assert (box.x1 + box.x2) / 2 == 504
+    assert abs(box.y2 - 1236) <= 1  # the requested bottom edge
+    assert box.y2 - box.y1 > 36 + metrics.cap_px(64)
+
+
+def test_the_box_drawing_has_integer_coordinates_only(metrics: FontMetrics) -> None:
+    box_event = karaoke(metrics, seq(["alpha", "beta"])).events[0]
+    match = re.fullmatch(r"\{\\pos\(0,0\)\\p1\}(.*)\{\\p0\}", box_event.text)
+    assert match is not None
+    drawing = match.group(1)
+    assert re.fullmatch(r"(?:[mlb]|-?\d+)(?: (?:[mlb]|-?\d+))*", drawing)
+    assert drawing.split()[0] == "m" and drawing.count(" b ") + drawing.startswith("b ") == 4
+
+
+def test_rounded_box_radius_is_capped_by_the_height() -> None:
+    flat = rounded_box(Rect(0, 0, 200, 20))
+    assert flat.startswith("m 10 0 l 190 0")  # radius 10, not 20
+    assert rounded_box(Rect(0, 0, 200, 100)).startswith("m 20 0 l 180 0")
+
+
+def test_the_box_style_alpha_follows_the_opacity() -> None:
+    def box_style(opacity: float) -> list[str]:
+        settings = replace(SETTINGS, box_opacity=opacity)
+        ass = build_ass_v2([], font="Montserrat", settings=settings, width=1080, height=1920)
+        (style,) = [x for x in ass.split("\n") if x.startswith("Style: Box")]
+        return style.removeprefix("Style: ").split(",")
+
+    assert box_style(0.75)[3] == "&H40000000"
+    assert box_style(1.0)[3] == "&H00000000"
+    assert box_style(0.0)[3] == "&HFF000000"
+    assert box_style(0.75)[18] == "7"  # top left, so the drawing is positioned absolutely
+
+
+# --- the safe zone ------------------------------------------------------------------------------
+
+
+def test_captions_for_varied_words_stay_inside_the_safe_area(metrics: FontMetrics) -> None:
+    texts = ["I", "WWWW", "illicit", "microphone", "to", "Extraordinarily", "go.", "mmmmmm"] * 6
+    words = [cw(t, i * 0.31, i * 0.31 + 0.25) for i, t in enumerate(texts)]
+    result = karaoke(metrics, words, clip=40.0)
+    assert result.lines > 10 and result.max_words <= 4
+    assert outside_count(result.boxes, SAFE) == 0
+    for box in result.boxes:
+        assert (box.x1 + box.x2) / 2 == 504
+        baseline = box.y2 - SETTINGS.box_padding_px - metrics.descent_px(64)
+        assert 1150 <= baseline <= 1230
+        assert box.x2 - box.x1 <= SETTINGS.max_width_px + 1
+
+
+def test_a_box_that_misses_the_safe_area_is_counted() -> None:
+    assert outside_count([Rect(100, 1100, 700, 1236)], SAFE) == 1
+
+
+# --- the file -----------------------------------------------------------------------------------
+
+
+def test_build_ass_v2_layout(metrics: FontMetrics) -> None:
+    result = karaoke(metrics, seq(["alpha", "beta"]))
+    ass = build_ass_v2(result.events, font="Montserrat", settings=SETTINGS, width=1080, height=1920)
+    lines = ass.split("\n")
+    assert "PlayResX: 1080" in lines and "PlayResY: 1920" in lines
+    assert "WrapStyle: 2" in lines
+    styles = [
+        line.removeprefix("Style: ").split(",") for line in lines if line.startswith("Style:")
+    ]
+    assert [s[0] for s in styles] == ["Cap", "Hook", "Box"]
+    assert all(len(s) == 23 for s in styles)
+    cap, hook, box = styles
+    assert (cap[1], cap[2]) == ("Montserrat", "64")
+    assert (cap[3], cap[4]) == ("&H0000D4FF", "&H00FFFFFF")  # spoken yellow, upcoming white
+    assert (cap[7], cap[13], cap[15], cap[16], cap[17], cap[18]) == ("-1", "1", "1", "0", "0", "5")
+    assert cap[19:22] == ["0", "0", "0"]
+    assert (hook[3], hook[4]) == ("&H00FFFFFF", "&H00FFFFFF")
+    assert (box[15], box[16], box[17], box[18]) == ("1", "0", "0", "7")  # no outline or shadow
+    assert len([x for x in lines if x.startswith("Dialogue:")]) == 2
+    assert ass.endswith("\n") and "\r" not in ass
+
+
+def test_extra_events_follow_the_caption_events() -> None:
+    extra = AssEvent(2, 0.0, 2.0, "Hook", "hello")
+    first = AssEvent(1, 0.0, 1.0, "Cap", "x")
+    ass = build_ass_v2(
+        [first], [extra], font="Montserrat", settings=SETTINGS, width=1080, height=1920
+    )
+    dialogues = [x for x in ass.split("\n") if x.startswith("Dialogue:")]
+    assert dialogues == [
+        "Dialogue: 1,0:00:00.00,0:00:01.00,Cap,,0,0,0,,x",
+        "Dialogue: 2,0:00:00.00,0:00:02.00,Hook,,0,0,0,,hello",
+    ]
+
+
+def test_v2_font_name_cannot_break_a_style_line() -> None:
+    ass = build_ass_v2([], font="Bad,\nName", settings=SETTINGS, width=1080, height=1920)
+    styles = [x for x in ass.split("\n") if x.startswith("Style:")]
+    assert len(styles) == 3
+    assert all(len(s.split(",")) == 23 for s in styles)
+    assert ass.endswith("\n") and "\r" not in ass
+
+
+def test_settings_come_from_the_captions_config() -> None:
+    config = CaptionsConfig(words_per_line=3, font="Montserrat", highlight_color="#FFD400")
+    settings = KaraokeSettings.from_config(config)
+    assert (settings.font_size, settings.max_words, settings.max_width_px) == (80, 4, 760)
+    assert settings.text_limit_px == 724.0
