@@ -2,6 +2,79 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-12 — Brief 8.2: camera polish (built; real run and Igor's re-rating pending)
+
+**Why:** both needs-edit clips of `runs/2026-10-11_t3-2` (c09, c04) fail only on the camera: late
+switches, missed short replies, laugh steals, robotic motion.
+
+**Measured before choosing** (the eight kept clips at 30 samples per second, in memory; then
+Igor's turn times for the two-face shots of c04 and c09, whole seconds; numbers only)
+- **Cause:** in 7 of the 9 two-face shots one face has a readable mouth in 0–9% of frames (the
+  other 87–100%). The old signal can never show that person: 1 switch in all eight clips.
+- **The problem is missed turns, not slow switches:** when a signal sees a turn, the cut lands
+  0–0.2 s from the labelled time.
+- Switches in two-face shots, all eight clips, under the old rule: mouth variance 1; mouth
+  against loudness 2; pixel motion 10; pixel motion against loudness 27; the mix (D-019) 8.
+- Lip sync is real but weak: mean correlation 0.145 with the sound 67 ms after the picture in
+  close-ups, about 0.03 at control lags. Pixel motion against loudness: 0.106 at 33 ms.
+- An audio-only voice reference (spectrum clustering, pitch) did not separate the two voices.
+
+**Done** (4 commits plus this one, nothing pushed)
+- **Inputs:** pixel motion round the mouth per face (frame difference of the lower face less the
+  upper face), the loudness envelope of `audio.wav` (`utils/audio.py`), and
+  `speaker.detect_every` (face boxes every Nth sample, never reused across a cut).
+- **Speaker signal (D-019, `speaker.signal: mix`):** per window, mouth openness against loudness
+  where every main face of the shot has a readable mouth, pixel motion otherwise. Shortest turn
+  that gets a cut: 1.0 s in sync windows, 1.5 s in pixel-motion windows. `signal: mouth` keeps the
+  old rule. Track files are schema 3 and record how many speech windows each signal decided.
+- **Motion:** inside a shot the face path is averaged with a centred window (0.5 s), the crop
+  holds while the face stays within 15% of the crop width (was 8%), and then makes one eased glide
+  of at least 0.6 s, capped at 0.8 crop widths per second, starting before the person has moved.
+  Switches and cuts stay hard. `speaker.smoothing` is accepted but unused.
+- Built by a Sonnet 5.5 (Medium) subagent in three steps; each diff reviewed by the planner, who
+  re-ran every check separately. **Review caught two things:** face boxes reused across a camera
+  cut (fixed with a test), and a glide that could exceed the speed cap after its destination was
+  recomputed (fixed).
+- Tests: 1242 passed, 2 skipped (was 1151). ruff, format, mypy and pip-audit clean.
+- Pinned test values that changed: the exponential-smoothing tests (300 and 600) are replaced by
+  glide tests with hand-worked values; the dead-zone test uses a ±20 px wobble for the 15% zone;
+  tests of the mouth rule through tracking and render pin `signal: mouth`; schema pins 2 → 3.
+
+**Against Igor's turn times, with the built code** (c04 and c09, 30 samples per second, boxes
+every third sample; share of speech time with the camera on the labelled speaker)
+
+| | c04 (5 real switches) | c09 (3 real switches) | Both |
+|---|---|---|---|
+| Never switching | 68% | 89% | |
+| Old rule | 68%, 0 switches | 45%, 1 switch | 58% |
+| Mix, settings as built | 67%, 4 switches (2 false), 1 turn missed | 92%, 0 switches, 1 missed | 77% |
+| Mix, coarse grid of 18 settings | | | 74–81% |
+
+- Grid: window 0.25 / 0.5 / 1.0 s, confirm 1 / 2, ratio 1.0 / 1.5 / 2.0. It is flat, so the
+  settings stay at window 0.5 s, confirm 2, ratio 1.5.
+- Analysis time at 30 samples per second with boxes every third sample: 33.7 s, 43.1 s and 65.6 s
+  for clips of 29.7 s, 44.7 s and 58.5 s (about 2 to 2.5 times before).
+
+**Gaps and risks**
+- **The mix does not beat never switching on these labels.** It is better than the old rule,
+  and its right switches are prompt, but about half its switches in c04 are wrong. The 76% / 85%
+  reported before the build came from a simpler rule that did not hold up.
+- At wide-shot face sizes no visual signal is dependable: pixel motion is right in about 60% of
+  c04's windows, and the readable person's mouth openness barely moves in about half the windows
+  labelled as their speech. Four other motion scores were no better (59–65% against 71%).
+- A person's face lost for more than 0.3 s comes back as a new track.
+- The evidence is two clips of one video with labels good to about half a second.
+- `speaker.sample_fps` and `detect_every` still default to 10 and 1; the mix was measured at 30
+  and 3. The defaults change with Part 4.
+
+**Parked**
+- A laugh can still win in pixel-motion windows (Igor: accept for now).
+- Diarization (who is talking, from the audio) as the dependable answer for wide shots.
+- A reply by a person outside the source frame cannot be shown.
+
+**Next:** the real run on `runs/2026-10-11_t3-2` (ask Igor first), Igor's labels for the held-out
+stretch (c12, 15–35 s), his re-rating of c09 and c04, then Part 4.
+
 ## 2026-10-11 — MVP walking-skeleton finish line met on private validation (6 usable of 8); public samples pending permissioned content (D-012)
 
 **Igor's ratings** (the eight clips in `runs/2026-10-11_t3-2`, speaker crop)
