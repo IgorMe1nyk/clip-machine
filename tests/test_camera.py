@@ -19,12 +19,14 @@ from clipmachine.utils.camera import (
     _variance,
     build_shots,
     camera_path,
+    centred_mean,
     choose_speakers,
     fallback_reason,
     find_cuts,
     follow_segments,
     link_tracks,
     motion_score,
+    shot_targets,
     signature_distance,
     speech_windows,
     split_at_cuts,
@@ -295,30 +297,166 @@ def test_cut_between_shots_is_a_hard_jump() -> None:
 
 
 def test_small_movements_inside_the_dead_zone_do_not_move_the_crop() -> None:
-    # dead zone is 8% of 200 px = 16 px; the face wobbles by +-5 px
-    cxs = [0.5 + (0.005 if k % 2 else -0.005) for k in range(20)]
+    # dead zone is 15% of 200 px = 30 px; the face wobbles by +-20 px (cx 0.48 / 0.52)
+    cxs = [0.5 + (0.02 if k % 2 else -0.02) for k in range(20)]
     track = Track(0, {k: face(time_of(k), cxs[k]) for k in range(20)})
     path = camera_path([Shot(0.0, 2.0, 0)], [track], 1000, 200, TIMES, cfg())
     assert len(set(path)) == 1
+    # the same input under no dead zone does move
+    tiny = camera_path([Shot(0.0, 2.0, 0)], [track], 1000, 200, TIMES, cfg(dead_zone=0))
+    assert len(set(tiny)) > 1
 
 
-def test_a_big_move_is_followed_smoothly() -> None:
-    cxs = [0.3] * 5 + [0.7] * 15
-    track = Track(0, {k: face(time_of(k), cxs[k]) for k in range(20)})
-    path = camera_path([Shot(0.0, 2.0, 0)], [track], 1000, 200, TIMES, cfg(smoothing=0.25))
-    assert path[4] == 200
-    rising = path[5:]
-    assert rising == sorted(rising)
-    assert 200 < rising[0] < 600  # a step toward the target, not a jump
-    assert rising[0] == 300  # 200 + 0.25 * (600 - 200)
-    assert rising[-1] > 560 and rising[-1] <= 600
+def px_track(pxs: list[float], first: int = 0, track_id: int = 0) -> Track:
+    """A track whose face centres the crop at these x (frame 1000 px, crop 200 px), from sample
+    `first` on."""
+    return Track(
+        track_id,
+        {first + k: face(time_of(first + k), (px + 100) / 1000) for k, px in enumerate(pxs)},
+    )
 
 
-def test_smoothing_one_follows_exactly() -> None:
-    cxs = [0.3] * 5 + [0.7] * 15
-    track = Track(0, {k: face(time_of(k), cxs[k]) for k in range(20)})
-    path = camera_path([Shot(0.0, 2.0, 0)], [track], 1000, 200, TIMES, cfg(smoothing=1.0))
-    assert path[5] == 600
+def long_times(count: int) -> list[float]:
+    return [time_of(k) for k in range(count)]
+
+
+def run_path(pxs: list[float], **changes: float) -> list[int]:
+    """One shot over len(pxs) samples at 10 fps; smooth_seconds 0 unless given."""
+    settings = cfg(**{"smooth_seconds": 0.0, **changes})
+    end = len(pxs) / FPS
+    return camera_path(
+        [Shot(0.0, end, 0)], [px_track(pxs)], 1000, 200, long_times(len(pxs)), settings
+    )
+
+
+def step_moves(path: list[int]) -> list[int]:
+    """The per-sample steps from the first to the last sample that changes."""
+    changed = [k for k in range(1, len(path)) if path[k] != path[k - 1]]
+    return [path[k] - path[k - 1] for k in range(changed[0], changed[-1] + 1)]
+
+
+def test_a_short_move_is_one_eased_glide_of_glide_seconds() -> None:
+    # the face steps 200 -> 260 px at sample 50 (t = 5.0 s); 60 px is outside the 30 px dead zone
+    # D = max(0.6, 1.5 * 60 / (0.8 * 200) = 0.5625) = 0.6 s; t_start = 5.0 - 0.3 = 4.7 s,
+    # destination = 260. x(t) = 200 + 60 * (3u^2 - 2u^3), u = (t - 4.7) / 0.6, rounded to even:
+    # u = 0, 1/6, 1/3, 1/2, 2/3, 5/6, 1 -> 200, 204.4, 215.6, 230, 244.4, 255.6, 260
+    path = run_path([200.0] * 50 + [260.0] * 50)
+    assert path[:47] == [200] * 47
+    assert path[47:54] == [200, 204, 216, 230, 244, 256, 260]
+    assert path[53:] == [260] * 47
+
+
+def test_a_glide_is_monotone_without_overshoot_eased_and_speed_capped() -> None:
+    # 300 px step: D = max(0.6, 1.5 * 300 / 160) = 2.8125 s (the speed cap decides)
+    path = run_path([200.0] * 50 + [500.0] * 100)
+    assert path[0] == 200 and path[-1] == 500
+    assert path == sorted(path)  # monotone
+    assert all(200 <= x <= 500 for x in path)  # no overshoot
+    moving = [k for k in range(len(path)) if 200 < path[k] < 500]
+    assert 2.6 <= len(moving) / FPS <= 3.0  # the glide lasts about D
+    steps = step_moves(path)
+    biggest = max(steps)
+    third = len(steps) // 3
+    assert biggest in steps[third : len(steps) - third]  # fastest in the middle third
+    assert steps[0] < biggest and steps[-1] < biggest  # eased in and out
+    assert biggest <= 0.8 * 200 / FPS + 2  # speed cap (16 px per sample) plus rounding slack
+
+
+def test_a_longer_move_takes_longer_than_a_short_one() -> None:
+    short = run_path([200.0] * 50 + [260.0] * 50)
+    long = run_path([200.0] * 50 + [500.0] * 100)
+    count = lambda p: sum(1 for k in range(len(p)) if p[k] not in (p[0], p[-1]))  # noqa: E731
+    assert 5 <= count(short) <= 7  # about glide_seconds (0.6 s)
+    assert count(long) > 2 * count(short)
+
+
+def test_the_camera_has_moved_by_the_sample_where_the_target_leaves_the_dead_zone() -> None:
+    # default smoothing (0.5 s = +-2 samples). The smoothed target first passes the 30 px dead
+    # zone at sample 50 (236 px: three of the five samples in its window are 260). The glide
+    # starts D / 2 = 0.3 s earlier, so at sample 50 (u = 0.5) the camera is already at 230 and at
+    # sample 49 (u = 1/3) it has begun moving.
+    pxs = [200.0] * 50 + [260.0] * 50
+    path = camera_path([Shot(0.0, 10.0, 0)], [px_track(pxs)], 1000, 200, long_times(100), cfg())
+    assert path[46] == 200
+    assert path[47] > 200 or path[48] > 200
+    assert path[49] > 200
+    assert path[50] == 230
+    assert path[-1] == 260
+
+
+def test_symmetric_jitter_around_a_place_gives_a_constant_path_there() -> None:
+    place = 400.0
+    pxs = [place + (5.0 if k % 2 else -5.0) for k in range(40)]
+    path = camera_path(
+        [Shot(0.0, 4.0, 0)], [px_track(pxs)], 1000, 200, long_times(40), cfg(dead_zone=0.05)
+    )
+    assert len(set(path)) == 1
+    assert abs(path[0] - place) <= 2  # the edge window is lopsided by one sample at most
+
+
+def test_the_centred_mean_has_no_lag_on_a_ramp() -> None:
+    times = long_times(20)
+    ramp = [10.0 * k for k in range(20)]
+    smoothed = centred_mean(times, ramp, 0.25)  # +-2 samples
+    for k in range(2, 18):
+        assert smoothed[k] == pytest.approx(ramp[k])
+    assert smoothed[0] == pytest.approx(10.0)  # clipped at the ends: mean of samples 0..2
+    assert centred_mean(times, ramp, 0.0) == ramp
+
+
+def test_smoothing_off_still_follows_a_step() -> None:
+    path = run_path([200.0] * 50 + [260.0] * 50, smooth_seconds=0.0)
+    assert path[-1] == 260 and path[49] > 200  # starts before the step even with no smoothing
+
+
+def test_a_hard_cut_between_shots_has_no_glide_and_no_smoothing_across_it() -> None:
+    tracks = [px_track([100.0] * 30, track_id=0), px_track([700.0] * 30, track_id=1)]
+    shots = [Shot(0.0, 1.5, 0), Shot(1.5, 3.0, 1)]
+    path = camera_path(shots, tracks, 1000, 200, long_times(30), cfg())
+    assert path[14] == 100 and path[15] == 700  # the two faces' positions exactly
+    assert set(path[:15]) == {100} and set(path[15:]) == {700}
+
+
+def test_a_glide_in_one_shot_never_runs_into_the_next() -> None:
+    # shot A: the face moves 100 -> 160 in its last 0.2 s; shot B starts 0.5 s later
+    a = px_track([100.0] * 13 + [160.0] * 2, track_id=0)
+    b = px_track([700.0] * 15, first=15, track_id=1)
+    path = camera_path(
+        [Shot(0.0, 1.5, 0), Shot(1.5, 3.0, 1)],
+        [a, b],
+        1000,
+        200,
+        long_times(30),
+        cfg(smooth_seconds=0),
+    )
+    assert path[15:] == [700] * 15
+    assert all(100 <= x <= 160 for x in path[:15])
+    assert path[14] < 160  # cut off by the end of the shot: it just stops there
+
+
+def test_targets_hold_through_missing_samples_and_start_at_the_first_face() -> None:
+    faces = [None, None, face(0.2, 0.3), None, face(0.4, 0.7), None]
+    assert shot_targets(faces, 1000, 200) == [200.0, 200.0, 200.0, 200.0, 600.0, 600.0]
+    assert shot_targets([None, None], 1000, 200) is None
+
+
+def test_a_move_across_missing_samples_starts_at_the_last_known_place() -> None:
+    # 200 px until sample 4, missing 5..11, 260 px from sample 12 (t = 1.2 s): the target steps
+    # at sample 12, so the glide (t_start = 0.9 s) is the only thing that moves the camera
+    by_frame = {k: face(time_of(k), 0.3) for k in range(5)}
+    by_frame.update({k: face(time_of(k), 0.36) for k in range(12, 40)})
+    path = camera_path(
+        [Shot(0.0, 4.0, 0)], [Track(0, by_frame)], 1000, 200, long_times(40), cfg(smooth_seconds=0)
+    )
+    assert path[:9] == [200] * 9  # held while the face is missing
+    assert path[-1] == 260
+
+
+def test_a_shot_without_its_face_holds_the_previous_shots_last_position() -> None:
+    track = px_track([300.0] * 10, track_id=0)
+    shots = [Shot(0.0, 1.0, 0), Shot(1.0, 2.0, 1), Shot(2.0, 3.0, None)]
+    path = camera_path(shots, [track], 1000, 200, long_times(30), cfg())
+    assert path == [300] * 30  # shot 1 has no track at all, shot 2 is nobody
 
 
 def test_the_crop_is_clamped_to_the_frame_at_both_edges() -> None:
@@ -338,12 +476,10 @@ def test_positions_are_even_integers() -> None:
 
 def test_a_sample_without_a_face_holds_the_last_position() -> None:
     by_frame = {k: face(time_of(k), 0.3) for k in range(5)}
-    by_frame.update({k: face(time_of(k), 0.7) for k in range(12, 20)})
+    by_frame.update({k: face(time_of(k), 0.3) for k in range(12, 20)})
     track = Track(0, by_frame)
-    path = camera_path([Shot(0.0, 2.0, 0)], [track], 1000, 200, TIMES, cfg(smoothing=1.0))
-    assert path[4] == 200
-    assert path[5:12] == [200] * 7  # held while the face is missing
-    assert path[12] == 600
+    path = camera_path([Shot(0.0, 2.0, 0)], [track], 1000, 200, TIMES, cfg())
+    assert path == [200] * 20  # the missing samples take the earlier target: nothing moves
 
 
 def test_samples_before_the_first_face_use_the_first_position() -> None:

@@ -263,8 +263,11 @@ class SpeakerConfig(StrictModel):
     # A challenger's mouth-movement variance must beat the speaker's by this factor ...
     switch_ratio: float = Field(default=1.5, ge=1)
     confirm_windows: int = Field(default=2, ge=1)  # ... for this many windows in a row
-    dead_zone: float = Field(default=0.08, ge=0, le=1)  # fraction of the crop width
-    smoothing: float = Field(default=0.25, gt=0, le=1)  # exponential factor; 1 = no smoothing
+    dead_zone: float = Field(default=0.15, ge=0, le=1)  # fraction of the crop width
+    smoothing: float = Field(default=0.25, gt=0, le=1)  # unused since Brief 8.2; old files carry it
+    smooth_seconds: float = Field(default=0.5, ge=0)  # centred averaging of the face path; 0 = off
+    glide_seconds: float = Field(default=0.6, gt=0)  # the shortest glide of the crop in a shot
+    max_speed: float = Field(default=0.8, gt=0)  # crop widths per second: the fastest glide
     # Fraction of the frame height; smaller faces are ignored, and a clip where nearly all are
     # smaller falls back to the centre crop.
     min_face_height: float = Field(default=0.08, gt=0, le=1)

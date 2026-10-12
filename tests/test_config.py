@@ -670,3 +670,57 @@ def test_a_speaker_section_from_before_brief_8_2_still_loads(project: Path, tmp_
         1.0,
         1.5,
     )
+
+
+# --- Brief 8.2 part 3: the camera glide ----------------------------------------------------------
+
+
+def test_camera_glide_defaults() -> None:
+    cfg = SpeakerConfig()
+    assert (cfg.dead_zone, cfg.smooth_seconds, cfg.glide_seconds, cfg.max_speed) == (
+        0.15,
+        0.5,
+        0.6,
+        0.8,
+    )
+    assert SpeakerConfig(smooth_seconds=0).smooth_seconds == 0  # 0 = no smoothing
+
+
+def test_default_yaml_has_the_glide_keys(project: Path) -> None:
+    speaker = load_app_config(project).speaker
+    assert (speaker.dead_zone, speaker.smooth_seconds) == (0.15, 0.5)
+    assert (speaker.glide_seconds, speaker.max_speed) == (0.6, 0.8)
+
+
+@pytest.mark.parametrize(
+    ("update", "expected"),
+    [
+        ({"smooth_seconds": -0.1}, "speaker.smooth_seconds"),
+        ({"glide_seconds": 0}, "speaker.glide_seconds"),
+        ({"max_speed": 0}, "speaker.max_speed"),
+        ({"dead_zone": -0.1}, "speaker.dead_zone"),
+    ],
+)
+def test_invalid_glide_settings_are_rejected(
+    project: Path, update: dict[str, Any], expected: str
+) -> None:
+    _default(project, lambda d: d["speaker"].update(update))
+    with pytest.raises(ConfigError, match=expected):
+        load_app_config(project)
+
+
+def test_a_speaker_section_from_before_the_glide_keys_still_loads(
+    project: Path, tmp_path: Path
+) -> None:
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "example-client"), target)
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    for key in ("smooth_seconds", "glide_seconds", "max_speed"):
+        del data["config"]["speaker"][key]
+    data["config"]["speaker"]["smoothing"] = 0.25  # the old key is still accepted
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    speaker = load_resolved_file(target).app.speaker
+
+    assert (speaker.smooth_seconds, speaker.glide_seconds, speaker.max_speed) == (0.5, 0.6, 0.8)
+    assert speaker.smoothing == 0.25

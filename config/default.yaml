@@ -76,8 +76,11 @@ speaker:                     # speaker-following crop analysis: clipmachine trac
   min_turn_motion_seconds: 1.5   # the same in windows decided by pixel motion (noisier); at least window_seconds
   switch_ratio: 1.5          # a challenger's mouth movement must exceed the speaker's by this factor
   confirm_windows: 2         # ... in this many windows in a row before the camera cuts
-  dead_zone: 0.08            # fraction of the crop width: smaller face movements do not move the crop
-  smoothing: 0.25            # 0-1, how fast the crop follows a face (1 = no smoothing)
+  dead_zone: 0.15            # fraction of the crop width the face may drift before the camera moves
+  smoothing: 0.25            # unused since Brief 8.2 (no exponential smoothing any more); old files carry it
+  smooth_seconds: 0.5        # the face path is averaged over this many seconds, centred (no lag); 0 = off
+  glide_seconds: 0.6         # the shortest glide when the camera does move
+  max_speed: 0.8             # crop widths per second: the fastest the crop may move inside a shot
   min_face_height: 0.08      # fraction of frame height; smaller faces are ignored; if nearly all are smaller, centre crop
   link_max_distance: 0.12    # fraction of frame width: faces this close between samples are one person
   min_speech_words_per_window: 1   # transcript words a window needs to count as speech

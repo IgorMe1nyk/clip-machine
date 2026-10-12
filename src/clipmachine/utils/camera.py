@@ -8,7 +8,12 @@ The pipeline, each step a function below:
   transcript words     -> speech_windows -> one bool per window
   tracks + speech      -> choose_speakers -> one track id (or None) per window
   choices              -> build_shots -> Shot (one person each, none shorter than the minimum)
-  shots + tracks       -> camera_path -> crop x per sample
+  shots + tracks       -> camera_path -> crop x per sample (still, with eased glides)
+
+Camera path: inside a shot the crop behaves like an operator's: the face path is averaged with a
+centred (zero-lag) window, the crop holds still while the face stays in a dead zone, and when the
+person really moves it makes one eased, speed-capped glide that starts before the move. A shot
+boundary is a hard cut: no smoothing or glide crosses it.
 
 Cuts: a camera shot (a "segment" here) is the stretch between two cuts in the source edit.
   picture signatures   -> find_cuts -> sample indices where a new camera shot starts
@@ -20,7 +25,7 @@ start fresh in each segment, and a cut is never counted as a speaker switch.
 
 import math
 import statistics
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
@@ -467,6 +472,116 @@ def _even(value: float) -> int:
     return int(round(value / 2)) * 2
 
 
+TIME_EPS = 1e-9
+MIN_GLIDE_PX = 2.0  # a planned glide shorter than this is skipped
+
+Glide = tuple[float, float, float, float]  # (t_start, t_end, from_x, to_x)
+
+
+def shot_targets(
+    faces: Sequence[FaceSample | None], frame_w_px: int, crop_w_px: int
+) -> list[float] | None:
+    """The crop x that centres the face, per sample of one shot (`faces`: the shot's face at each
+    sample, or None). A sample without the face takes the nearest earlier target; samples before
+    the first face take the first target. None when the shot has no face at all."""
+    upper = float(max(frame_w_px - crop_w_px, 0))
+    found = [
+        None if f is None else min(max(f.cx * frame_w_px - crop_w_px / 2, 0.0), upper)
+        for f in faces
+    ]
+    first = next((v for v in found if v is not None), None)
+    if first is None:
+        return None
+    out: list[float] = []
+    last = first
+    for v in found:
+        if v is not None:
+            last = v
+        out.append(last)
+    return out
+
+
+def centred_mean(times: Sequence[float], values: Sequence[float], radius: float) -> list[float]:
+    """Each value replaced by the mean of the values whose time is within +-radius of its own
+    (inclusive). The window is cut at the ends of the sequence, so nothing is padded and there is no
+    lag. `times` must be ascending. radius 0 leaves the values as they are."""
+    out: list[float] = []
+    for t, v in zip(times, values, strict=True):
+        lo = bisect_left(times, t - radius - TIME_EPS)
+        hi = bisect_right(times, t + radius + TIME_EPS)
+        out.append(v if hi - lo <= 1 else math.fsum(values[lo:hi]) / (hi - lo))
+    return out
+
+
+def value_at(times: Sequence[float], values: Sequence[float], t: float) -> float:
+    """The value at time t, linear between samples and held beyond the ends."""
+    if t <= times[0]:
+        return values[0]
+    if t >= times[-1]:
+        return values[-1]
+    right = bisect_right(times, t)
+    t0, t1 = times[right - 1], times[right]
+    return values[right - 1] + (values[right] - values[right - 1]) * (t - t0) / (t1 - t0)
+
+
+def plan_glides(
+    times: Sequence[float], smoothed: Sequence[float], crop_w_px: int, cfg: SpeakerConfig
+) -> list[Glide]:
+    """The glides of one shot, as (t_start, t_end, from_x, to_x), in time order.
+
+    The camera starts at smoothed[0] and holds while the smoothed target stays within
+    dead_zone * crop_w_px of it. At the first sample time t_out where it does not, one glide is
+    planned: duration D = max(glide_seconds, 1.5 * distance / (max_speed * crop_w_px)) (the peak
+    speed of the ease is 1.5 * distance / D), starting at max(t_out - D / 2, the end of the
+    previous glide, the shot's first sample time) so the camera moves as the person starts moving,
+    ending at the smoothed target at t_start + D. D comes from a first guess of the destination
+    (the target at t_start + glide_seconds); the destination is then recomputed once with that D.
+    The scan resumes at the first sample at or after the glide's end. A glide under MIN_GLIDE_PX is
+    skipped and the scan goes on with the next sample.
+    """
+    glides: list[Glide] = []
+    if not times:
+        return glides
+    dead = cfg.dead_zone * crop_w_px
+    position = smoothed[0]
+    previous_end = times[0]
+    i = 0
+    while i < len(times):
+        if abs(smoothed[i] - position) <= dead:
+            i += 1
+            continue
+        t_out = times[i]
+        early = max(t_out - cfg.glide_seconds / 2, previous_end, times[0])
+        guess = value_at(times, smoothed, early + cfg.glide_seconds)
+        duration = max(cfg.glide_seconds, 1.5 * abs(guess - position) / (cfg.max_speed * crop_w_px))
+        t_start = max(t_out - duration / 2, previous_end, times[0])
+        destination = value_at(times, smoothed, t_start + duration)
+        if abs(destination - position) < MIN_GLIDE_PX:
+            i += 1
+            continue
+        # the recomputed destination may be further away: lengthen the glide so the cap holds
+        duration = max(duration, 1.5 * abs(destination - position) / (cfg.max_speed * crop_w_px))
+        glides.append((t_start, t_start + duration, position, destination))
+        position, previous_end = destination, t_start + duration
+        i = bisect_left(times, previous_end - TIME_EPS, lo=i + 1)
+    return glides
+
+
+def glide_position(start_x: float, glides: Sequence[Glide], t: float) -> float:
+    """Where the camera is at time t: start_x, then each glide eased with 3u^2 - 2u^3 and held at
+    its destination until the next one starts."""
+    x = start_x
+    for t_start, t_end, from_x, to_x in glides:
+        if t >= t_end:
+            x = to_x
+        elif t > t_start:
+            u = (t - t_start) / (t_end - t_start)
+            return from_x + (to_x - from_x) * (3 * u * u - 2 * u * u * u)
+        else:
+            break
+    return x
+
+
 def camera_path(
     shots: Sequence[Shot],
     tracks: Sequence[Track],
@@ -477,37 +592,47 @@ def camera_path(
 ) -> list[int]:
     """The crop's left edge in source pixels at each sample time (even integers).
 
-    Within a shot the crop follows the shot's face centre with exponential smoothing and a dead
-    zone (it does not move while the target is within dead_zone * crop width of it). At a shot
-    boundary it jumps straight to the new face. It is clamped to the frame. A sample without
-    the shot's face keeps the last position; samples before the first face use the first
-    position found; a clip with no usable face stays centred. `tracks` use the same sample
-    indices as `sample_times`.
+    Shot by shot, like a camera operator: mostly still, and one smooth glide when the person
+    really moves. A shot boundary is a hard cut and nothing crosses it. Inside a shot (see the
+    helpers above): the target is the crop x centring the face (shot_targets); it is averaged over
+    +-smooth_seconds / 2 of each sample, with no lag (centred_mean); the camera holds at the first
+    smoothed target until that drifts more than dead_zone * crop width away; then it glides in one
+    eased move that starts before the person has moved (the whole clip is known), lasts at least
+    glide_seconds and is no faster than max_speed crop widths per second (plan_glides). A shot
+    without its face holds the previous shot's last position. Positions are clamped to the frame;
+    samples before the first position found use it; a clip with no usable face stays centred.
+    `tracks` use the same sample indices as `sample_times`.
     """
     upper = max(frame_w_px - crop_w_px, 0)
     top = upper - upper % 2
     centre = _even(upper / 2)
     by_id = {t.id: t for t in tracks}
-    positions: list[float | None] = []
-    x: float | None = None
-    reset = True
+    groups: dict[int, list[int]] = {}
     shot_index = -1
     for k, t in enumerate(sample_times):
         while shot_index + 1 < len(shots) and t >= shots[shot_index + 1].start - 1e-9:
             shot_index += 1
-            reset = True
-        shot = shots[shot_index] if 0 <= shot_index < len(shots) else None
-        face = None
-        if shot is not None and shot.track is not None and shot.track in by_id:
-            face = by_id[shot.track].by_frame.get(k)
-        if face is not None:
-            target = min(max(face.cx * frame_w_px - crop_w_px / 2, 0.0), float(upper))
-            if x is None or reset:
-                x = target
-            elif abs(target - x) > cfg.dead_zone * crop_w_px:
-                x += cfg.smoothing * (target - x)
-            reset = False
-        positions.append(x)
+        groups.setdefault(shot_index if shot_index < len(shots) else -1, []).append(k)
+
+    positions: list[float | None] = [None] * len(sample_times)
+    held: float | None = None  # where the camera was at the end of the previous shot
+    for index in sorted(groups):
+        ks = groups[index]
+        shot = shots[index] if 0 <= index < len(shots) else None
+        track = by_id.get(shot.track) if shot is not None and shot.track is not None else None
+        targets = None
+        if track is not None:
+            targets = shot_targets([track.by_frame.get(k) for k in ks], frame_w_px, crop_w_px)
+        if targets is None:
+            for k in ks:
+                positions[k] = held
+            continue
+        times = [sample_times[k] for k in ks]
+        smoothed = centred_mean(times, targets, cfg.smooth_seconds / 2)
+        glides = plan_glides(times, smoothed, crop_w_px, cfg)
+        for k, t in zip(ks, times, strict=True):
+            positions[k] = glide_position(smoothed[0], glides, t)
+        held = positions[ks[-1]]
 
     first = next((p for p in positions if p is not None), None)
     if first is None:
