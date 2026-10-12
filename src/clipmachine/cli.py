@@ -17,6 +17,7 @@ from clipmachine.pipeline import (
 )
 from clipmachine.preflight import MissingToolError
 from clipmachine.runs import RunError
+from clipmachine.stages.render import render_safe_zone_preview
 from clipmachine.stages.report import REPORT_HTML
 from clipmachine.utils import faces
 from clipmachine.utils.faces import FacesError
@@ -33,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Turn a long video into short vertical clips.",
     )
     sub = parser.add_subparsers(
-        dest="command", required=True, metavar="{run,report,track,fetch-face-model}"
+        dest="command", required=True, metavar="{run,report,track,safe-zones,fetch-face-model}"
     )
 
     run = sub.add_parser(
@@ -66,6 +67,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also write clips/<id>.track.preview.mp4 (or set speaker.debug_preview)",
     )
+
+    safe = sub.add_parser(
+        "safe-zones",
+        help="render one kept clip with the safe-zone margins drawn on it, to check placement "
+        "(written under runs/_scratch/safe-zones/, never into the run folder)",
+    )
+    safe.add_argument("run_folder", type=Path)
+    safe.add_argument("--clip", required=True, help="the id of a kept clip, e.g. c01")
 
     sub.add_parser(
         "fetch-face-model",
@@ -158,6 +167,16 @@ def _cmd_track(args: argparse.Namespace, root: Path) -> int:
     return EXIT_OK
 
 
+def _cmd_safe_zones(args: argparse.Namespace, root: Path) -> int:
+    """Render one clip with the margins drawn; the run folder is only read."""
+    run_folder: Path = args.run_folder
+    if not is_run_folder(run_folder):
+        raise RunError(f"{run_folder} is not a run folder (no run.json)")
+    app = load_resolved_file(run_folder / RESOLVED_CONFIG).app
+    print(render_safe_zone_preview(run_folder, root, app, args.clip))
+    return EXIT_OK
+
+
 def _cmd_fetch_face_model(root: Path) -> int:
     """The only place the face models are downloaded; the track command never does it.
 
@@ -185,6 +204,8 @@ def main(argv: Sequence[str] | None = None, root: Path | None = None) -> int:
             return _cmd_run(args, project_root)
         if args.command == "track":
             return _cmd_track(args, project_root)
+        if args.command == "safe-zones":
+            return _cmd_safe_zones(args, project_root)
         if args.command == "fetch-face-model":
             return _cmd_fetch_face_model(project_root)
         return _cmd_report(args)

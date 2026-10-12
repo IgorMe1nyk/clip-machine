@@ -123,6 +123,20 @@ def test_real_render_of_box_karaoke_captions_and_the_hook(project: Path) -> None
     assert data["hook_shown"] is True and data["outside_safe_zone"] == 0
 
 
+def test_real_safe_zone_preview_is_a_valid_clip_in_the_scratch_folder(project: Path) -> None:
+    ctx = make_ctx(project, style="box_karaoke")
+    write_inputs(ctx.run_dir, [("c01", 1, 0.5, 3.5)], width=320, height=180)
+    make_source(ctx.run_dir / "source.mp4")
+    before = sorted(p.relative_to(ctx.run_dir) for p in ctx.run_dir.rglob("*"))
+
+    out = render.render_safe_zone_preview(ctx.run_dir, project, ctx.config.app, "c01")
+
+    assert out == (project / "runs" / "_scratch" / "safe-zones" / "run" / "c01.mp4").resolve()
+    info = ffmpeg.probe(out)  # libass and drawbox accepted the filter; the size is verified too
+    assert info.video is not None and (info.video.width, info.video.height) == (1080, 1920)
+    assert sorted(p.relative_to(ctx.run_dir) for p in ctx.run_dir.rglob("*")) == before
+
+
 def make_halves_source(path: Path) -> None:
     """5 s at 30 fps, 320x180: the left half red, the right half blue, with a sine tone."""
     args = [

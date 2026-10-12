@@ -44,6 +44,7 @@ from pydantic import ValidationError
 
 from clipmachine.context import RunContext
 from clipmachine.models import (
+    AppConfig,
     ClipCropBox,
     FetchMeta,
     RenderedClip,
@@ -187,10 +188,10 @@ def _sweep(clips_dir: Path, keep_ids: set[str], *, everything: bool) -> None:
             path.unlink(missing_ok=True)
 
 
-def _fonts_relative(run_dir: Path, fonts_dir: Path) -> str:
-    """The font folder relative to the run folder, forward slashes (ffmpeg runs in run_dir)."""
+def _relative(run_dir: Path, path: Path) -> str:
+    """`path` relative to the run folder, forward slashes (ffmpeg runs in run_dir)."""
     try:
-        relative = os.path.relpath(fonts_dir, run_dir)
+        relative = os.path.relpath(path, run_dir)
     except ValueError as exc:  # another drive: no relative path exists
         raise RunError(
             "the run folder and assets/fonts are on different drives; keep runs/ inside the project"
@@ -198,8 +199,16 @@ def _fonts_relative(run_dir: Path, fonts_dir: Path) -> str:
     return Path(relative).as_posix()
 
 
+def _fonts_relative(run_dir: Path, fonts_dir: Path) -> str:
+    """The font folder relative to the run folder, forward slashes (ffmpeg runs in run_dir)."""
+    return _relative(run_dir, fonts_dir)
+
+
 def _settings(ctx: RunContext) -> RenderedSettings:
-    app = ctx.config.app
+    return _settings_of(ctx.config.app)
+
+
+def _settings_of(app: AppConfig) -> RenderedSettings:
     return RenderedSettings(
         width=app.video.width,
         height=app.video.height,
@@ -316,6 +325,15 @@ def _speaker_crop(plan: Plan, clip: ScoredClip) -> SpeakerCrop:
         )
     except (faces.FacesError, ffmpeg.MediaError) as exc:
         raise RunError(f"speaker tracking failed for {clip.id}: {exc}") from exc
+    return _crop_from_track(plan, clip, track, reused, plan.clips_dir)
+
+
+def _crop_from_track(
+    plan: Plan, clip: ScoredClip, track: TrackFile, reused: bool, out_dir: Path
+) -> SpeakerCrop:
+    """The crop a clip's track gives; the sendcmd file (if the crop moves) goes in `out_dir`."""
+    from clipmachine import tracking  # tracking imports this module
+
     sha = _file_sha256(tracking.track_path(plan.clips_dir, clip.id))
     cuts = track.summary.cuts
     if track.fallback_reason is not None:  # exactly the centre crop
@@ -331,9 +349,9 @@ def _speaker_crop(plan: Plan, clip: ScoredClip) -> SpeakerCrop:
     box = CropBox(w=plan.crop.w, h=plan.crop.h, x=path[0][1], y=plan.crop.y)
     sendcmd_rel = None
     if len(path) > 1:
-        cmd = plan.clips_dir / f"{clip.id}{CROP_CMD_SUFFIX}"
+        cmd = out_dir / f"{clip.id}{CROP_CMD_SUFFIX}"
         write_text_atomic(cmd, ffmpeg.crop_commands(path))
-        sendcmd_rel = f"{CLIPS_DIR}/{cmd.name}"
+        sendcmd_rel = _relative(plan.run_dir, cmd)
     switches = track.summary.switches
     return SpeakerCrop(box, sendcmd_rel, sha, None, len(path) - 1, reused, cuts, switches, track)
 
@@ -572,11 +590,21 @@ def _crop_json(crop: CropBox) -> ClipCropBox:
     return ClipCropBox(w=crop.w, h=crop.h, x=crop.x, y=crop.y)
 
 
-def run(ctx: RunContext) -> None:
-    run_dir = ctx.run_dir.resolve()
-    root = (ctx.project_root if ctx.project_root is not None else REPO_ROOT).resolve()
-    app = ctx.config.app
+@dataclass(frozen=True)
+class Inputs:
+    """What the render stage reads before it touches any file: shared by run() and the
+    safe-zone preview."""
 
+    fonts_dir: Path
+    metrics: FontMetrics | None  # box_karaoke only
+    kept: list[ScoredClip]
+    video: VideoStreamInfo
+    source: Path
+    segments: list[TranscriptSegment] | None  # set in speaker mode
+    track_plan: "TrackPlan | None"
+
+
+def _load_inputs(run_dir: Path, root: Path, app: AppConfig) -> Inputs:
     # Preflight: a missing font is an error, never a silent fallback.
     fonts_dir = root / FONTS_DIR
     if not (fonts_dir / app.captions.font_file).is_file():
@@ -627,31 +655,32 @@ def run(ctx: RunContext) -> None:
             )
         except faces.FacesError as exc:
             raise RunError(str(exc)) from exc
+    return Inputs(fonts_dir, metrics, kept, video, source, segments, track_plan)
 
-    clips_dir = run_dir / CLIPS_DIR
-    _sweep(clips_dir, {c.id for c in kept}, everything=not ctx.resuming)
-    if not kept:
-        log.info("render: 0 kept clips, nothing to render")
-        return
-    clips_dir.mkdir(exist_ok=True)
 
-    settings = _settings(ctx)
+def _make_plan(run_dir: Path, clips_dir: Path, app: AppConfig, inputs: Inputs) -> Plan:
+    settings = _settings_of(app)
+    video = inputs.video
     try:
         box = center_crop(
             video.width, video.height, video.rotation, settings.width, settings.height
         )
     except ValueError as exc:
         raise RunError(f"cannot crop the source: {exc}") from exc
-    plan = Plan(
+    metrics = inputs.metrics
+    segments = (
+        inputs.segments if inputs.segments is not None else _load_transcript(run_dir).segments
+    )
+    return Plan(
         run_dir=run_dir,
         clips_dir=clips_dir,
-        source=source,
+        source=inputs.source,
         video=video,
         crop=box,
         settings=settings,
-        fonts_rel=_fonts_relative(run_dir, fonts_dir),
-        segments=segments if segments is not None else _load_transcript(run_dir).segments,
-        speaker=track_plan,
+        fonts_rel=_fonts_relative(run_dir, inputs.fonts_dir),
+        segments=segments,
+        speaker=inputs.track_plan,
         preview=app.speaker.debug_preview,
         metrics=metrics,
         karaoke=None if metrics is None else KaraokeSettings.from_config(app.captions),
@@ -667,6 +696,22 @@ def run(ctx: RunContext) -> None:
         ),
     )
 
+
+def run(ctx: RunContext) -> None:
+    run_dir = ctx.run_dir.resolve()
+    root = (ctx.project_root if ctx.project_root is not None else REPO_ROOT).resolve()
+    app = ctx.config.app
+
+    inputs = _load_inputs(run_dir, root, app)
+    kept = inputs.kept
+    clips_dir = run_dir / CLIPS_DIR
+    _sweep(clips_dir, {c.id for c in kept}, everything=not ctx.resuming)
+    if not kept:
+        log.info("render: 0 kept clips, nothing to render")
+        return
+    clips_dir.mkdir(exist_ok=True)
+    plan = _make_plan(run_dir, clips_dir, app, inputs)
+
     rendered = skipped = 0
     for clip in kept:
         if ctx.resuming and _already_rendered(plan, clip):
@@ -676,3 +721,102 @@ def run(ctx: RunContext) -> None:
         _render_clip(plan, clip)
         rendered += 1
     log.info(f"render: {rendered} rendered, {skipped} already done")
+
+
+SAFE_ZONE_DIR = Path("runs") / "_scratch" / "safe-zones"
+
+
+def render_safe_zone_preview(run_dir: Path, root: Path, app: AppConfig, clip_id: str) -> Path:
+    """Render one kept clip with the safe-zone margins drawn on it, for checking placement by eye.
+
+    Everything is written to <root>/runs/_scratch/safe-zones/<run folder name>/ (<id>.mp4, <id>.ass
+    and, when the crop moves, <id>.crop.cmd) and nowhere else: the run folder is only read, so no
+    sweep, no clip json and no analysis. In speaker mode the clip needs a valid track from an
+    earlier render. ffmpeg still runs with the run folder as its working directory. Returns the
+    path of the mp4.
+    """
+    run_dir = run_dir.resolve()
+    root = root.resolve()
+    if run_dir.parent != (root / "runs").resolve():
+        raise RunError(f"{run_dir} is not a run folder inside {root / 'runs'}")
+    scratch = (root / "runs" / "_scratch").resolve()
+    out_dir = (root / SAFE_ZONE_DIR / run_dir.name).resolve()
+    if not out_dir.is_relative_to(scratch):
+        raise RunError(f"refusing to write outside {scratch}")
+    if not CLIP_ID_RE.fullmatch(clip_id):
+        raise RunError(f"{clip_id!r} is not a clip id")
+
+    if app.video.crop == "speaker" and not (run_dir / CLIPS_DIR).is_dir():
+        # build_plan would create clips/; this command must not write in the run folder
+        raise RunError(f"no valid track for {clip_id}; render the run first")
+    inputs = _load_inputs(run_dir, root, app)
+    clip = next((c for c in inputs.kept if c.id == clip_id), None)
+    if clip is None:
+        raise RunError(f"{clip_id} is not a kept clip of this run")
+    plan = _make_plan(run_dir, run_dir / CLIPS_DIR, app, inputs)
+    settings = plan.settings
+    duration = clip.end - clip.start
+
+    chosen: SpeakerCrop | None = None
+    track: TrackFile | None = None
+    if plan.speaker is not None:
+        from clipmachine import tracking  # tracking imports this module
+
+        track = tracking.load_plan_track(
+            plan.speaker, clip.id, clip.start, clip.end, crop_w=plan.crop.w
+        )
+        if track is None:
+            raise RunError(f"no valid track for {clip.id}; render the run first")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if track is not None:
+        chosen = _crop_from_track(plan, clip, track, True, out_dir)
+    crop = plan.crop if chosen is None else chosen.crop
+
+    words = clip_words(plan.segments, clip.start, clip.end)
+    if settings.caption_style == "legacy":
+        captions = _legacy_captions(plan, words, duration)
+    else:
+        captions = _karaoke_captions(plan, clip, words, chosen, duration)
+    ass = out_dir / f"{clip.id}.ass"
+    write_text_atomic(ass, captions.text)
+
+    vf = ffmpeg.video_filter(
+        crop,
+        settings.width,
+        settings.height,
+        _relative(run_dir, ass),
+        plan.fonts_rel,
+        None if chosen is None else chosen.sendcmd_rel,
+        ffmpeg.safe_zone_lines(
+            settings.width,
+            settings.height,
+            settings.safe_top,
+            settings.safe_bottom,
+            settings.safe_left,
+            settings.safe_right,
+        ),
+    )
+    temp = out_dir / f"{clip.id}{TEMP_SUFFIX}"
+    mp4 = out_dir / f"{clip.id}.mp4"
+    args = ffmpeg.render_args(
+        plan.source,
+        temp,
+        start=clip.start,
+        duration=duration,
+        vf=vf,
+        crf=settings.crf,
+        preset=settings.preset,
+        audio_bitrate=settings.audio_bitrate,
+        audio_fade=settings.audio_fade_seconds,
+    )
+    try:
+        ffmpeg.render_clip(args, run_dir, duration)
+        ffmpeg.verify_clip(
+            ffmpeg.probe(temp), width=settings.width, height=settings.height, duration=duration
+        )
+        os.replace(temp, mp4)
+    except ffmpeg.MediaError as exc:
+        raise RunError(f"render failed for {clip.id}: {exc}") from exc
+    finally:
+        temp.unlink(missing_ok=True)
+    return mp4

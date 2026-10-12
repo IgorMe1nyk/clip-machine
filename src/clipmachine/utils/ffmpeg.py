@@ -353,11 +353,13 @@ def video_filter(
     subtitles_rel: str,
     fontsdir_rel: str,
     sendcmd_rel: str | None = None,
+    extra: str | None = None,
 ) -> str:
-    """[sendcmd ->] crop -> scale -> setsar -> subtitles, all numbers plain integers.
+    """[sendcmd ->] crop -> scale -> setsar -> subtitles [-> extra], all numbers plain integers.
 
     The paths must be relative to the directory ffmpeg runs in, so no drive letter ever reaches
-    the filter parser. `sendcmd_rel` is a command file made from crop_commands.
+    the filter parser. `sendcmd_rel` is a command file made from crop_commands. `extra` is a
+    filter chain appended last (the safe-zone preview's lines); the render stage never uses it.
     """
     ass = _filter_path(subtitles_rel, "subtitle file path")
     fonts = _filter_path(fontsdir_rel, "font folder path")
@@ -365,9 +367,35 @@ def video_filter(
         f"crop={crop.w}:{crop.h}:{crop.x}:{crop.y},scale={width}:{height},setsar=1,"
         f"subtitles=filename={ass}:fontsdir={fonts}"
     )
+    if extra is not None:
+        chain = f"{chain},{extra}"
     if sendcmd_rel is None:
         return chain
     return f"sendcmd=f={_filter_path(sendcmd_rel, 'crop command file path')},{chain}"
+
+
+# TikTok's button column, in pixels on a 1080x1920 canvas: about 300 px wide, from y 840 down
+TIKTOK_COLUMN_LEFT = 780
+TIKTOK_COLUMN_TOP = 840
+SAFE_LINE_PX = 2
+
+
+def safe_zone_lines(width: int, height: int, top: int, bottom: int, left: int, right: int) -> str:
+    """A `drawbox` chain for the safe-zone preview: four translucent red lines just inside the
+    margins and the outline of TikTok's button column in yellow. Plain integers only."""
+    line = SAFE_LINE_PX
+    column_x = round(TIKTOK_COLUMN_LEFT * width / 1080)
+    column_y = round(TIKTOK_COLUMN_TOP * height / 1920)
+    boxes = [
+        (0, top, width, line, "red@0.6", "fill"),
+        (0, height - bottom - line, width, line, "red@0.6", "fill"),
+        (left, 0, line, height, "red@0.6", "fill"),
+        (width - right - line, 0, line, height, "red@0.6", "fill"),
+        (column_x, column_y, width - column_x, height - column_y, "yellow@0.5", str(line)),
+    ]
+    return ",".join(
+        f"drawbox=x={x}:y={y}:w={w}:h={h}:color={c}:t={t}" for x, y, w, h, c, t in boxes
+    )
 
 
 def render_args(

@@ -208,3 +208,46 @@ def test_filter_chain_with_a_command_file_starts_with_sendcmd() -> None:
 def test_unsafe_command_file_paths_are_refused(bad: str) -> None:
     with pytest.raises(ffmpeg.MediaError, match="cannot be used inside an ffmpeg filter"):
         ffmpeg.video_filter(CROP, 1080, 1920, "clips/c04.ass", "../../assets/fonts", bad)
+
+
+# --- the safe-zone preview's lines (Brief R1) -----------------------------------------------------
+
+LINES_1080 = (
+    "drawbox=x=0:y=290:w=1080:h=2:color=red@0.6:t=fill,"
+    "drawbox=x=0:y=1246:w=1080:h=2:color=red@0.6:t=fill,"
+    "drawbox=x=120:y=0:w=2:h=1920:color=red@0.6:t=fill,"
+    "drawbox=x=886:y=0:w=2:h=1920:color=red@0.6:t=fill,"
+    "drawbox=x=780:y=840:w=300:h=1080:color=yellow@0.5:t=2"
+)
+
+
+def test_safe_zone_lines_mark_the_margins_and_tiktoks_button_column() -> None:
+    assert ffmpeg.safe_zone_lines(1080, 1920, 290, 672, 120, 192) == LINES_1080
+
+
+def test_safe_zone_lines_scale_the_button_column_with_the_canvas() -> None:
+    lines = ffmpeg.safe_zone_lines(540, 960, 145, 336, 60, 96)
+    assert lines.endswith("drawbox=x=390:y=420:w=150:h=540:color=yellow@0.5:t=2")
+    assert "drawbox=x=0:y=145:w=540:h=2:" in lines
+
+
+def test_safe_zone_lines_are_plain_integers_and_safe_in_a_filter() -> None:
+    vf = ffmpeg.safe_zone_lines(1080, 1920, 290, 672, 120, 192)
+    assert not DRIVE_OR_BACKSLASH.search(vf) and " " not in vf and "'" not in vf
+    for option in re.findall(r"(?:drawbox=|:)[xywh]=([^:,]+)", vf):
+        assert re.fullmatch(r"\d+", option)
+
+
+def test_the_extra_filter_is_appended_after_the_subtitles_and_changes_nothing_else() -> None:
+    plain = ffmpeg.video_filter(CROP, 1080, 1920, "clips/c04.ass", "../../assets/fonts")
+    with_lines = ffmpeg.video_filter(
+        CROP, 1080, 1920, "clips/c04.ass", "../../assets/fonts", None, LINES_1080
+    )
+    assert with_lines == f"{plain},{LINES_1080}"
+    moving = ffmpeg.video_filter(
+        CROP, 1080, 1920, "clips/c04.ass", "../../assets/fonts", "clips/c04.crop.cmd", LINES_1080
+    )
+    assert moving.startswith("sendcmd=f=clips/c04.crop.cmd,crop=") and moving.endswith(LINES_1080)
+    assert "drawbox" not in ffmpeg.video_filter(
+        CROP, 1080, 1920, "clips/c04.ass", "../../assets/fonts", "clips/c04.crop.cmd"
+    )
