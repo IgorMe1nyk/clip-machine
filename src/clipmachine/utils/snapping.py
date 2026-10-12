@@ -13,6 +13,13 @@ word of the transcript always starts a sentence.
 Every sentence carries how it ends and the gap after it. A punctuated end with a gap under
 min_cut_gap seconds is an "edge" too: a cut there would land inside continuous speech. The last
 sentence of the transcript is never an edge. Boundaries that are edges are flagged.
+
+Cut times: a clip is cut in the middle of the pause before its first word and after its last word,
+at most start_pad seconds before the first word and end_pad seconds after the last word. Where the
+words touch or overlap there is no pause and no padding.
+
+Units: SentenceIndex.units() merges the sentences between cuttable boundaries into stretches that
+can be cut before and after. snap() over an index of units can only start and end on a clean cut.
 """
 
 import math
@@ -70,6 +77,28 @@ class SentenceIndex:
     def cut_before(self, n: int) -> bool:
         """Whether a clip may start at sentence n (the transcript start, or a real end before)."""
         return n == 0 or self.cut_after(n - 1)
+
+    def units(self) -> "SentenceIndex":
+        """An index over the same words whose sentences are the stretches between cuttable
+        boundaries: a unit runs from a sentence a clip may start at to the next sentence a clip
+        may end after. Its end kind and gap are those of its last sentence."""
+        units: list[Sentence] = []
+        first: int | None = None  # index of the sentence that opened the current unit
+        for n, sentence in enumerate(self.sentences):
+            if first is None:
+                if not self.cut_before(n):
+                    continue
+                first = n
+            if self.cut_after(n):
+                units.append(
+                    Sentence(self.sentences[first].first, sentence.last, sentence.end, sentence.gap)
+                )
+                first = None
+        return SentenceIndex(
+            words=self.words,
+            sentences=tuple(units),
+            firsts=tuple(u.first for u in units),
+        )
 
 
 @dataclass(frozen=True)
@@ -201,10 +230,11 @@ def _sentence_overlap(index: SentenceIndex, number: int, low: float, high: float
 
 
 def _padded_bounds(
-    index: SentenceIndex, a: int, b: int, padding: float, duration: float
+    index: SentenceIndex, a: int, b: int, start_pad: float, end_pad: float, duration: float
 ) -> tuple[float, float]:
-    """Start and end of sentences a..b with padding, never into a neighbouring word, the
-    sentence's own words, or outside 0..duration."""
+    """Start and end of sentences a..b: the middle of the pause before the first word and after
+    the last word, at most start_pad before and end_pad after. No pause (touching or overlapping
+    words) means no padding; never outside 0..duration."""
     first_index = index.sentences[a].first
     last_index = index.sentences[b].last
     first = index.words[first_index]
@@ -213,38 +243,52 @@ def _padded_bounds(
     next_start = (
         index.words[last_index + 1].start if last_index + 1 < len(index.words) else duration
     )
-    start = min(max(first.start - padding, previous_end, 0.0), first.start)
-    end = max(min(last.end + padding, next_start), last.end)
+    gap_before = max(0.0, first.start - previous_end)
+    gap_after = max(0.0, next_start - last.end)
+    start = first.start - min(gap_before / 2, start_pad)
+    end = last.end + min(gap_after / 2, end_pad)
     # round first, then clamp, so rounding can never push a time outside the audio
     return max(round(start, ROUND), 0.0), min(round(end, ROUND), duration)
 
 
 def span_times(
-    index: SentenceIndex, a: int, b: int, *, padding: float, duration: float
+    index: SentenceIndex,
+    a: int,
+    b: int,
+    *,
+    start_pad: float,
+    end_pad: float,
+    duration: float,
 ) -> tuple[float, float]:
-    """Start and end of sentences a..b (indices into index.sentences) with padding: the same
-    rule snap() applies, so a sub-range of a snapped span is cut the same way."""
-    return _padded_bounds(index, a, b, padding, duration)
+    """Start and end of sentences a..b (indices into index.sentences) with mid-gap cut times: the
+    same rule snap() applies, so a sub-range of a snapped span is cut the same way."""
+    return _padded_bounds(index, a, b, start_pad, end_pad, duration)
 
 
 def locate(
-    index: SentenceIndex, start: float, end: float, *, padding: float, duration: float
+    index: SentenceIndex,
+    start: float,
+    end: float,
+    *,
+    start_pad: float,
+    end_pad: float,
+    duration: float,
 ) -> tuple[int, int] | None:
-    """The sentences a..b whose padded span is exactly (start, end), or None.
+    """The sentences a..b whose cut times are exactly (start, end), or None.
 
     Inverse of span_times for spans that snap() produced: used to recover which sentences of the
     transcript a stored candidate covers. Times compare equal within a millisecond.
     """
     tolerance = 0.5 * 10**-ROUND
     count = len(index.sentences)
-    starts = [
-        a
-        for a in range(count)
-        if abs(span_times(index, a, a, padding=padding, duration=duration)[0] - start) <= tolerance
-    ]
+
+    def times(a: int, b: int) -> tuple[float, float]:
+        return span_times(index, a, b, start_pad=start_pad, end_pad=end_pad, duration=duration)
+
+    starts = [a for a in range(count) if abs(times(a, a)[0] - start) <= tolerance]
     for a in starts:
         for b in range(a, count):
-            high = span_times(index, a, b, padding=padding, duration=duration)[1]
+            high = times(a, b)[1]
             if abs(high - end) <= tolerance:
                 return a, b
             if high > end:
@@ -258,7 +302,8 @@ def _can_add(
     b: int,
     number: int,
     removed: set[int],
-    padding: float,
+    start_pad: float,
+    end_pad: float,
     duration: float,
     max_length: float,
 ) -> bool:
@@ -266,7 +311,7 @@ def _can_add(
     if not 0 <= number < len(index.sentences) or number in removed:
         return False
     low, high = (a, number) if number > b else (number, b)
-    start, end = _padded_bounds(index, low, high, padding, duration)
+    start, end = _padded_bounds(index, low, high, start_pad, end_pad, duration)
     return end - start <= max_length + EPSILON
 
 
@@ -275,7 +320,8 @@ def snap(
     model_start: float,
     model_end: float,
     *,
-    padding: float,
+    start_pad: float,
+    end_pad: float,
     duration: float,
     min_length: float,
     max_length: float,
@@ -283,14 +329,18 @@ def snap(
 ) -> Snapped | Dropped:
     """Snap one moment. Returns the snapped span, or why it had to be dropped.
 
+    It snaps onto the sentences of whatever index it is given. Pass index.units() to restrict it
+    to clean cuts: every unit starts and ends at a cuttable boundary, so the result never does
+    anything else.
+
     Start: the first word of the sentence containing model_start. End: the last word of the
     sentence containing model_end. A time between two words belongs to the sentence of the
-    word after it (start) or before it (end). Then padding is added. If the padded length is
-    over max_length, whole sentences are removed, preferring to keep the sentence that overlaps
-    the model's own range more (ties keep the first sentence). If it is under min_length,
-    whole sentences are added at the end (the payoff side), and at the start only when the end
-    is blocked. If it is under preferred_min, sentences are added at the end only, as long as
-    it stays within max_length.
+    word after it (start) or before it (end). Then the cut times are set (mid-gap, capped). If
+    that length is over max_length, whole sentences are removed, preferring to keep the sentence
+    that overlaps the model's own range more (ties keep the first sentence). If it is under
+    min_length, whole sentences are added at the end (the payoff side), and at the start only
+    when the end is blocked. If it is under preferred_min, sentences are added at the end only,
+    as long as it stays within max_length.
     """
     words = index.words
     if not words:
@@ -305,7 +355,7 @@ def snap(
     grown_end = grown_backward = grown_preferred = shrunk_front = shrunk_back = 0
 
     while True:
-        start, end = _padded_bounds(index, a, b, padding, duration)
+        start, end = _padded_bounds(index, a, b, start_pad, end_pad, duration)
         length = end - start
         if min_length - EPSILON <= length <= max_length + EPSILON:
             break
@@ -313,7 +363,8 @@ def snap(
         if length > max_length:
             if a == b:
                 return Dropped(
-                    f"one sentence is {length:.1f} s, longer than the {max_length:g} s maximum"
+                    f"one stretch with no clean cut point inside it is {length:.1f} s, "
+                    f"longer than the {max_length:g} s maximum"
                 )
             front = _sentence_overlap(index, a, model_start, model_end)
             back = _sentence_overlap(index, b, model_start, model_end)
@@ -328,10 +379,10 @@ def snap(
             continue
 
         # toward the end (the payoff side) first; backward only when the end is blocked
-        if _can_add(index, a, b, b + 1, removed, padding, duration, max_length):
+        if _can_add(index, a, b, b + 1, removed, start_pad, end_pad, duration, max_length):
             b += 1
             grown_end += 1
-        elif _can_add(index, a, b, a - 1, removed, padding, duration, max_length):
+        elif _can_add(index, a, b, a - 1, removed, start_pad, end_pad, duration, max_length):
             a -= 1
             grown_backward += 1
         else:
@@ -342,10 +393,10 @@ def snap(
 
     # Preferred length: toward the end only, never backward and never past the maximum.
     while True:
-        start, end = _padded_bounds(index, a, b, padding, duration)
+        start, end = _padded_bounds(index, a, b, start_pad, end_pad, duration)
         if end - start >= preferred_min - EPSILON:
             break
-        if not _can_add(index, a, b, b + 1, removed, padding, duration, max_length):
+        if not _can_add(index, a, b, b + 1, removed, start_pad, end_pad, duration, max_length):
             break
         b += 1
         grown_preferred += 1
@@ -379,12 +430,6 @@ def snap(
         notes.append(EDGE_START_NOTE)
     if edge_end:
         notes.append(EDGE_END_NOTE)
-    start_pad = first.start - start
-    end_pad = end - last.end
-    if start_pad < padding - 0.005:
-        notes.append(f"start padding limited to {max(start_pad, 0.0):.2f} s of {padding:g} s")
-    if end_pad < padding - 0.005:
-        notes.append(f"end padding limited to {max(end_pad, 0.0):.2f} s of {padding:g} s")
 
     return Snapped(
         start=start,

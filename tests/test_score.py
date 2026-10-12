@@ -1,8 +1,9 @@
 """The score stage on a synthetic run, with the API faked (no network, no key).
 
 The transcript is test_candidates.py's: 12 sentences of 15 words, one per segment. Sentence n runs
-from 9.0 * n to 9.0 * n + 8.8, and the 0.2 s padding exactly fills the gaps, so a span of
-sentences a..b is padded to (9.0 * a - 0.2, 9.0 * b + 9.0), clamped to 0 and to the audio end.
+from 9.0 * n to 9.0 * n + 8.8. Each 0.2 s gap is cut in the middle, so a span of sentences a..b
+is cut at (9.0 * a - 0.1, 9.0 * b + 8.9), clamped to 0 and to the audio end (which is 0.2 s after
+the last word, so the last span ends 0.1 s after it).
 """
 
 import dataclasses
@@ -58,7 +59,8 @@ from clipmachine.utils.snapping import (
 )
 from test_candidates import FAKE_KEY, SECRET, make_segments, write_transcript
 
-PADDING = 0.2
+START_PAD = SnapConfig().max_start_pad_seconds  # caps; the 0.2 s gaps are cut in the middle
+END_PAD = SnapConfig().max_end_pad_seconds
 
 
 def clip(
@@ -132,7 +134,14 @@ class Rig:
         duration = round(self.segments[-1].end + 0.2, 3)
         made = []
         for number, (a, b) in enumerate(ranges, start=1):
-            start, end = span_times(index, a, b, padding=PADDING, duration=duration)
+            start, end = span_times(
+                index,
+                a,
+                b,
+                start_pad=recorded.max_start_pad_seconds,
+                end_pad=recorded.max_end_pad_seconds,
+                duration=duration,
+            )
             text = words_text(index, index.sentences[a].first, index.sentences[b].last)
             made.append(
                 Candidate(
@@ -241,7 +250,7 @@ def test_numbered_sentences_match_the_snapping_rules(rig: Rig) -> None:
             seg = rig.segments[global_number]
             assert f"{local} [{seg.start:.2f}-{seg.end:.2f}] {seg.text}\n" in user
         assert f'<candidate id="c{candidate_number:02d}" ' in user
-    assert 'seconds="27.2" sentences="3"' in user
+    assert 'seconds="27.0" sentences="3"' in user
     assert user.count("<candidate ") == 2 and user.count("</candidate>") == 2
 
 
@@ -528,14 +537,29 @@ def test_enum_values_are_case_insensitive(rig: Rig) -> None:
 
 
 def test_keep_sentences_become_times_from_the_word_timestamps(rig: Rig) -> None:
-    rig.candidates((2, 6))  # five sentences: 17.8 - 63.0
+    rig.candidates((2, 6))  # five sentences: 17.9 - 62.9
     rig.script(answer(batch(clip("c01", keep=(2, 4)))))
     (only,) = rig.run().clips
-    # local 2..4 are global 3..5: sentence 3 starts at 27.0 (padded 26.8), sentence 5 ends 53.8
-    assert (only.candidate_start, only.candidate_end) == (17.8, 63.0)
-    assert (only.start, only.end) == (26.8, 54.0)
+    # local 2..4 are global 3..5: sentence 3 starts at 27.0 (cut at 26.9), sentence 5 ends 53.8
+    # (cut at 53.9)
+    assert (only.candidate_start, only.candidate_end) == (17.9, 62.9)
+    assert (only.start, only.end) == (26.9, 53.9)
     assert only.trimmed is True
     assert "trimmed to sentences 2-4 of 5" in only.notes
+
+
+def test_times_come_from_the_pads_recorded_in_candidates_json(rig: Rig) -> None:
+    # the gaps are 0.2 s, so the half-gap (0.1 s) is above the start cap and the end cap here
+    recorded = SnapConfig(max_start_pad_seconds=0.05, max_end_pad_seconds=0.07)
+    rig.candidates((2, 6), snap=recorded)
+    rig.script(answer(batch(clip("c01", keep=(2, 4)))))
+    (only,) = rig.run().clips
+    assert only.candidate_start == pytest.approx(18.0 - 0.05)
+    assert only.candidate_end == pytest.approx(62.8 + 0.07)
+    # local 2..4 are global 3..5: 27.0 - 0.05 and 53.8 + 0.07
+    assert only.start == pytest.approx(27.0 - 0.05)
+    assert only.end == pytest.approx(53.8 + 0.07)
+    assert only.trimmed is True
 
 
 def test_the_whole_range_is_not_a_trim(rig: Rig) -> None:
@@ -554,7 +578,7 @@ def test_out_of_range_keep_sentences_are_ignored_with_a_note(
     rig.script(answer(batch(clip("c01", keep=keep))))
     (only,) = rig.run().clips
     assert only.trimmed is False and (only.extended_start, only.extended_end) == (0, 0)
-    assert (only.start, only.end) == (17.8, 63.0)
+    assert (only.start, only.end) == (17.9, 62.9)
     assert any(
         n.startswith("adjustment ignored: sentences") and "outside -1-8" in n for n in only.notes
     )
@@ -568,7 +592,7 @@ def test_a_range_with_none_of_the_clips_own_sentences_is_ignored(
     rig.candidates((2, 6))
     rig.script(answer(batch(clip("c01", keep=keep))))
     (only,) = rig.run().clips
-    assert (only.start, only.end) == (17.8, 63.0)
+    assert (only.start, only.end) == (17.9, 62.9)
     assert any("contain none of the clip's own sentences 1-5" in n for n in only.notes)
     assert only.dropped_by == "adjust_ignored"
 
@@ -586,12 +610,12 @@ def test_extending_back_forward_and_both_maps_to_times(rig: Rig) -> None:
     )
     by_id = {c.id: c for c in rig.run(keep_top=8).clips}
     one, two, three = by_id["c01"], by_id["c02"], by_id["c03"]
-    # candidate sentences 3..6 are 26.8-63.0; number 0 is global sentence 2 (17.8)
-    assert (one.start, one.end) == (17.8, 63.0)
+    # candidate sentences 3..6 are 26.9-62.9; number 0 is global sentence 2 (17.9)
+    assert (one.start, one.end) == (17.9, 62.9)
     assert (one.extended_start, one.extended_end, one.trimmed) == (1, 0, False)
-    assert (two.start, two.end) == (26.8, 72.0)
+    assert (two.start, two.end) == (26.9, 71.9)
     assert (two.extended_start, two.extended_end, two.trimmed) == (0, 1, False)
-    assert (three.start, three.end) == (17.8, 63.0)
+    assert (three.start, three.end) == (17.9, 62.9)
     assert (three.extended_start, three.extended_end) == (1, 1)
     assert "adjusted to sentences 0-4 of 4: start extended by 1" in one.notes
     assert (three.kept_sentences.first, three.kept_sentences.last) == (0, 4)  # type: ignore[union-attr]
@@ -602,7 +626,7 @@ def test_trim_and_extend_at_once_is_recorded_as_both(rig: Rig) -> None:
     rig.script(answer(batch(clip("c01", keep=(0, 3)))))  # one earlier, last sentence cut
     out = rig.run()
     (only,) = out.clips
-    assert (only.start, only.end) == (17.8, 54.0)
+    assert (only.start, only.end) == (17.9, 53.9)
     assert (only.trimmed, only.extended_start, only.extended_end) == (True, 1, 0)
     assert "adjusted to sentences 0-3 of 4: start extended by 1, trimmed" in only.notes
     summary = out.summary
@@ -611,28 +635,28 @@ def test_trim_and_extend_at_once_is_recorded_as_both(rig: Rig) -> None:
 
 def test_an_extension_over_the_maximum_is_ignored_and_recorded(rig: Rig) -> None:
     rig.candidates((3, 6))  # numbers shown: -2..7 (global sentences 0..9)
-    rig.script(answer(batch(clip("c01", score=9, keep=(-2, 7)))))  # 0.0-90.0 s
+    rig.script(answer(batch(clip("c01", score=9, keep=(-2, 7)))))  # 0.0-89.9 s
     out = rig.run()
     (only,) = out.clips
-    assert (only.start, only.end) == (26.8, 63.0) and only.extended_start == 0
-    assert any("ignored: 90.0 s is over the 60 s maximum" in n for n in only.notes)
+    assert (only.start, only.end) == (26.9, 62.9) and only.extended_start == 0
+    assert any("ignored: 89.9 s is over the 60 s maximum" in n for n in only.notes)
     assert only.dropped_by == "adjust_ignored" and only.kept is False
     assert (out.summary.trims_ignored, out.summary.adjust_ignored) == (1, 1)
 
 
 def test_a_trim_under_the_minimum_length_is_ignored_with_a_note(rig: Rig) -> None:
     rig.candidates((2, 6))
-    rig.script(answer(batch(clip("c01", keep=(2, 3)))))  # two sentences: 18.2 s, under 20 s
+    rig.script(answer(batch(clip("c01", keep=(2, 3)))))  # two sentences: 18.0 s, under 20 s
     (only,) = rig.run().clips
-    assert only.trimmed is False and (only.start, only.end) == (17.8, 63.0)
-    assert any("ignored: 18.2 s is under the 20 s minimum" in n for n in only.notes)
+    assert only.trimmed is False and (only.start, only.end) == (17.9, 62.9)
+    assert any("ignored: 18.0 s is under the 20 s minimum" in n for n in only.notes)
 
 
 def test_resolve_adjust_over_the_maximum_is_ignored() -> None:
     segments = make_segments()
     index = build_index(segments, 40)
     duration = segments[-1].end + 0.2
-    start, end = span_times(index, 0, 5, padding=PADDING, duration=duration)
+    start, end = span_times(index, 0, 5, start_pad=START_PAD, end_pad=END_PAD, duration=duration)
     candidate = Candidate(
         id="c01",
         start=start,
@@ -652,7 +676,8 @@ def test_resolve_adjust_over_the_maximum_is_ignored() -> None:
     kwargs: dict[str, Any] = {
         "before": 4,
         "after": 3,
-        "padding": PADDING,
+        "start_pad": START_PAD,
+        "end_pad": END_PAD,
         "duration": duration,
         "min_length": 10.0,
     }
@@ -660,7 +685,7 @@ def test_resolve_adjust_over_the_maximum_is_ignored() -> None:
     result = resolve_adjust(index, located, keep, max_length=30.0, **kwargs)
     assert result.trimmed is False and "over the 30 s maximum" in (result.note or "")
     ok = resolve_adjust(index, located, keep, max_length=60.0, **kwargs)
-    assert ok.trimmed is True and (ok.start, ok.end) == (0.0, 36.0)
+    assert ok.trimmed is True and (ok.start, ok.end) == (0.0, 35.9)
 
 
 # --- selection -----------------------------------------------------------------------------------
@@ -780,12 +805,12 @@ def test_long_hook_and_reason_are_noted_not_failed(rig: Rig) -> None:
 
 
 def test_a_trim_on_a_flagged_start_maps_to_times_and_is_recorded(rig: Rig) -> None:
-    rig.candidates((2, 6), notes={1: [EDGE_START_NOTE]})  # five sentences, 17.8 - 63.0
+    rig.candidates((2, 6), notes={1: [EDGE_START_NOTE]})  # five sentences, 17.9 - 62.9
     rig.script(answer(batch(clip("c01", keep=(2, 4)))))
     out = rig.run()
     (only,) = out.clips
-    assert (only.start, only.end) == (26.8, 54.0)  # local 2..4 are global 3..5
-    assert (only.candidate_start, only.candidate_end) == (17.8, 63.0)
+    assert (only.start, only.end) == (26.9, 53.9)  # local 2..4 are global 3..5
+    assert (only.candidate_start, only.candidate_end) == (17.9, 62.9)
     assert only.trimmed is True and only.kept is True and only.rank == 1
     assert only.start_at_segment_edge is True and only.end_at_segment_edge is False
     assert only.sentences == 5
@@ -805,7 +830,7 @@ def test_untrimmed_clips_carry_the_flags_and_no_kept_sentences(rig: Rig) -> None
 
 def test_a_kept_clip_whose_trim_was_ignored_for_length_is_not_kept(rig: Rig) -> None:
     rig.candidates((2, 6))
-    rig.script(answer(batch(clip("c01", score=9, keep=(2, 3)))))  # 18.2 s: under the minimum
+    rig.script(answer(batch(clip("c01", score=9, keep=(2, 3)))))  # 18.0 s: under the minimum
     out = rig.run()
     (only,) = out.clips
     assert only.verdict == "keep" and only.reject_reason is None  # the model's words are kept
@@ -932,10 +957,10 @@ def test_end_to_end_an_overlapping_clip_is_dropped_and_recorded(rig: Rig) -> Non
 
 
 def test_overlap_uses_the_adjusted_times(rig: Rig) -> None:
-    # as candidates they overlap by 50.3% of the shorter, but c02 is trimmed to 2 of 4 sentences
-    rig.candidates((2, 5), (4, 7))  # 17.8-54.0 and 35.8-72.0: 18.2 s of 36.2 s
-    rig.script(answer(batch(clip("c01", score=8), clip("c02", score=9, keep=(2, 4)))))
-    out = rig.run()  # c02 becomes 44.8-72.0: 9.2 s of 27.2 s overlap
+    # as candidates they overlap by 75% of the shorter, but c02 is trimmed to 3 of 5 sentences
+    rig.candidates((2, 5), (3, 7))  # 17.9-53.9 and 26.9-71.9: 27.0 s of 36.0 s
+    rig.script(answer(batch(clip("c01", score=8), clip("c02", score=9, keep=(3, 5)))))
+    out = rig.run()  # c02 becomes 44.9-71.9: 9.0 s of 27.0 s overlap
     assert [c.kept for c in out.clips] == [True, True]
     assert out.summary.dropped_overlap == 0
 

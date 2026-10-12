@@ -7,6 +7,8 @@ import pytest
 
 from clipmachine.models import TranscriptSegment, TranscriptWord
 from clipmachine.utils.snapping import (
+    EDGE_END_NOTE,
+    EDGE_START_NOTE,
     END_EDGE,
     END_PAUSE,
     Dropped,
@@ -21,7 +23,7 @@ from clipmachine.utils.snapping import (
 )
 
 WORD = 0.5  # seconds per word
-GAP = 0.3  # seconds between words, so 0.2 s of padding never collides by default
+GAP = 0.3  # seconds between words: the cut sits 0.15 s from each neighbouring word by default
 STEP = WORD + GAP
 
 
@@ -70,24 +72,28 @@ def run_snap(
     model_start: float,
     model_end: float,
     *,
-    padding: float = 0.2,
+    start_pad: float = 0.25,
+    end_pad: float = 0.5,
     duration: float = 1000.0,
     min_length: float = 1.0,
     max_length: float = 500.0,
     preferred_min: float = 0.0,
     fallback_words: int = 40,
     gap: float = GAP,
+    clean: bool = False,  # snap over index.units(): only clean cut points
 ) -> Snapped | Dropped:
     segments = (
         build(spec_or_segments, gap=gap)  # type: ignore[arg-type]
         if spec_or_segments and isinstance(spec_or_segments[0], str)
         else spec_or_segments
     )
+    index = build_index(segments, fallback_words)  # type: ignore[arg-type]
     return snap(
-        build_index(segments, fallback_words),  # type: ignore[arg-type]
+        index.units() if clean else index,
         model_start,
         model_end,
-        padding=padding,
+        start_pad=start_pad,
+        end_pad=end_pad,
         duration=duration,
         min_length=min_length,
         max_length=max_length,
@@ -382,13 +388,31 @@ def test_snap_flags_follow_the_end_kinds() -> None:
     assert [s.end for s in index.sentences] == [".", END_EDGE, "."]
     # the middle sentence starts after a real end and ends at an edge
     middle = snapped(
-        snap(index, 1.5, 2.5, padding=0.0, duration=10.0, min_length=0.1, max_length=500.0)
+        snap(
+            index,
+            1.5,
+            2.5,
+            start_pad=0.0,
+            end_pad=0.0,
+            duration=10.0,
+            min_length=0.1,
+            max_length=500.0,
+        )
     )
     assert (middle.first_word, middle.last_word) == (2, 3)
     assert (middle.edge_start, middle.edge_end) == (False, True)
     # the last sentence starts after an edge
     last = snapped(
-        snap(index, 3.5, 4.5, padding=0.0, duration=10.0, min_length=0.1, max_length=500.0)
+        snap(
+            index,
+            3.5,
+            4.5,
+            start_pad=0.0,
+            end_pad=0.0,
+            duration=10.0,
+            min_length=0.1,
+            max_length=500.0,
+        )
     )
     assert (last.first_word, last.last_word) == (4, 5)
     assert (last.edge_start, last.edge_end) == (True, False)
@@ -400,18 +424,18 @@ def test_snap_flags_follow_the_end_kinds() -> None:
 def test_mid_sentence_start_and_end_snap_to_sentence_boundaries() -> None:
     result = snapped(run_snap(FOUR, ws(4) + 0.1, ws(8) + 0.1, gap=GAP))
     assert (result.first_word, result.last_word) == (3, 9)
-    assert result.start == pytest.approx(ws(3) - 0.2)
-    assert result.end == pytest.approx(we(9) + 0.2)
+    assert result.start == pytest.approx(ws(3) - 0.15)
+    assert result.end == pytest.approx(we(9) + 0.15)
     assert (result.edge_start, result.edge_end) == (False, False)
     assert any(n.startswith("start moved -") for n in result.notes)
     assert any(n.startswith("end moved +") for n in result.notes)
 
 
-def test_start_and_end_already_on_boundaries_are_only_padded() -> None:
+def test_start_and_end_already_on_boundaries_are_only_cut_mid_gap() -> None:
     result = snapped(run_snap(FOUR, ws(3), we(9)))
     assert (result.first_word, result.last_word) == (3, 9)
-    assert result.start == pytest.approx(ws(3) - 0.2)
-    assert result.end == pytest.approx(we(9) + 0.2)
+    assert result.start == pytest.approx(ws(3) - 0.15)
+    assert result.end == pytest.approx(we(9) + 0.15)
     assert result.notes == ()
 
 
@@ -471,20 +495,20 @@ def test_padding_never_runs_into_a_neighbouring_word() -> None:
     spec = FOUR
     result = snapped(run_snap(spec, ws(3, 0.55), we(9, 0.55), gap=gap))
     # word 2 ends 0.05 s before word 3 starts, word 10 starts 0.05 s after word 9 ends
-    assert result.start == pytest.approx(we(2, 0.55))
-    assert result.end == pytest.approx(ws(10, 0.55))
-    assert any("start padding limited to 0.05 s of 0.2 s" in n for n in result.notes)
-    assert any("end padding limited to 0.05 s of 0.2 s" in n for n in result.notes)
+    # the cut is in the middle of each 0.05 s gap, so it never touches a neighbouring word
+    assert result.start == pytest.approx(ws(3, 0.55) - 0.025)
+    assert result.end == pytest.approx(we(9, 0.55) + 0.025)
+    assert result.start > we(2, 0.55)
+    assert result.end < ws(10, 0.55)
 
 
 def test_padding_is_clamped_to_the_start_and_end_of_the_audio() -> None:
     segments = build(["Hi there. Bye now."], origin=0.1)
     last_end = segments[0].words[-1].end
     result = snapped(run_snap(segments, 0.0, last_end, duration=last_end + 0.05))
-    assert result.start == 0.0
-    assert result.end == pytest.approx(last_end + 0.05)
-    assert any("start padding limited to 0.10 s" in n for n in result.notes)
-    assert any("end padding limited to 0.05 s" in n for n in result.notes)
+    # the gap from 0.0 is 0.1 s and the gap to the duration is 0.05 s: half of each
+    assert result.start == pytest.approx(0.05)
+    assert result.end == pytest.approx(last_end + 0.025)
 
 
 def test_end_never_passes_the_audio_duration() -> None:
@@ -496,7 +520,7 @@ def test_end_never_passes_the_audio_duration() -> None:
 
 
 def test_zero_padding_gives_exact_word_times() -> None:
-    result = snapped(run_snap(FOUR, ws(3), we(9), padding=0.0))
+    result = snapped(run_snap(FOUR, ws(3), we(9), start_pad=0.0, end_pad=0.0))
     assert (result.start, result.end) == (pytest.approx(ws(3)), pytest.approx(we(9)))
     assert result.notes == ()
 
@@ -615,7 +639,14 @@ def test_shrinking_never_re_adds_a_removed_sentence() -> None:
 
 def test_empty_transcript_is_dropped() -> None:
     result = snap(
-        build_index([]), 0.0, 10.0, padding=0.2, duration=10.0, min_length=1.0, max_length=60.0
+        build_index([]),
+        0.0,
+        10.0,
+        start_pad=0.25,
+        end_pad=0.5,
+        duration=10.0,
+        min_length=1.0,
+        max_length=60.0,
     )
     assert isinstance(result, Dropped)
 
@@ -632,7 +663,16 @@ def test_snapped_spans_always_hold_the_invariants() -> None:
     for _ in range(400):
         a = rng.uniform(-5.0, duration)
         b = a + rng.uniform(0.1, 80.0)
-        result = snap(index, a, b, padding=0.2, duration=duration, min_length=8.0, max_length=25.0)
+        result = snap(
+            index,
+            a,
+            b,
+            start_pad=0.25,
+            end_pad=0.5,
+            duration=duration,
+            min_length=8.0,
+            max_length=25.0,
+        )
         if isinstance(result, Dropped):
             continue
         words = index.words
@@ -694,6 +734,9 @@ def test_dedupe_of_nothing() -> None:
 # --- span_times and locate (used by the score stage) ---------------------------------------------
 
 
+PADS = {"start_pad": 0.25, "end_pad": 0.5}
+
+
 def _index_of_three_sentences() -> tuple[object, float]:
     spec = ["one two three four.", "five six seven eight.", "nine ten eleven twelve."]
     segments = build(spec)
@@ -708,13 +751,21 @@ def test_span_times_matches_what_snap_produced() -> None:
         index,  # type: ignore[arg-type]
         0.0,
         100.0,
-        padding=0.2,
+        start_pad=0.25,
+        end_pad=0.5,
         duration=duration,  # type: ignore[arg-type]
         min_length=1.0,
         max_length=500.0,
     )
     assert isinstance(snapped, Snapped)
-    start, end = span_times(index, 0, 2, padding=0.2, duration=duration)  # type: ignore[arg-type]
+    start, end = span_times(
+        index,  # type: ignore[arg-type]
+        0,
+        2,
+        start_pad=0.25,
+        end_pad=0.5,
+        duration=duration,  # type: ignore[arg-type]
+    )
     assert (start, end) == (snapped.start, snapped.end)
 
 
@@ -724,8 +775,8 @@ def test_locate_recovers_the_sentences_of_every_span() -> None:
     index, duration = _index_of_three_sentences()
     for a in range(3):
         for b in range(a, 3):
-            start, end = span_times(index, a, b, padding=0.2, duration=duration)  # type: ignore[arg-type]
-            found = locate(index, start, end, padding=0.2, duration=duration)  # type: ignore[arg-type]
+            start, end = span_times(index, a, b, **PADS, duration=duration)  # type: ignore[arg-type]
+            found = locate(index, start, end, **PADS, duration=duration)  # type: ignore[arg-type]
             assert found == (a, b)
 
 
@@ -733,7 +784,7 @@ def test_locate_returns_none_for_times_that_are_not_a_snapped_span() -> None:
     from clipmachine.utils.snapping import locate
 
     index, duration = _index_of_three_sentences()
-    assert locate(index, 0.123, 4.567, padding=0.2, duration=duration) is None  # type: ignore[arg-type]
+    assert locate(index, 0.123, 4.567, **PADS, duration=duration) is None  # type: ignore[arg-type]
 
 
 def test_edge_flags_read_back_what_snap_wrote() -> None:
@@ -747,3 +798,237 @@ def test_edge_flags_read_back_what_snap_wrote() -> None:
     assert edge_flags(["something else"]) == (False, False)
     assert edge_flags([EDGE_START_NOTE]) == (True, False)
     assert edge_flags([EDGE_END_NOTE]) == (False, True)
+
+
+# --- mid-gap cut times (Brief 10) ----------------------------------------------------------------
+
+# Words are 0.5 s long. Times here are multiples of 0.125 so the arithmetic is exact. The caps are
+# the defaults: 0.25 s before the first word, 0.5 s after the last.
+START_PAD = 0.25
+END_PAD = 0.5
+
+
+def times_of(
+    index: SentenceIndex,
+    a: int,
+    b: int,
+    *,
+    start_pad: float = START_PAD,
+    end_pad: float = END_PAD,
+    duration: float = 100.0,
+) -> tuple[float, float]:
+    from clipmachine.utils.snapping import span_times
+
+    return span_times(index, a, b, start_pad=start_pad, end_pad=end_pad, duration=duration)
+
+
+def test_the_cut_is_in_the_middle_of_a_gap_smaller_than_twice_the_cap() -> None:
+    # a. 0-0.5 | 0.25 gap | b. 0.75-1.25 | 0.5 gap | c. 1.75-2.25
+    index = make_index([("a.", 0.25), ("b.", 0.5), ("c.", 0.0)])
+    start, end = times_of(index, 1, 1)
+    assert start == pytest.approx(0.75 - 0.125)  # half of the 0.25 s gap before
+    assert end == pytest.approx(1.25 + 0.25)  # half of the 0.5 s gap after
+
+
+@pytest.mark.parametrize(
+    ("start_pad", "end_pad"), [(0.25, 0.5), (0.1, 0.3), (0.5, 0.1), (0.0, 0.0)]
+)
+def test_a_long_silence_gives_exactly_the_caps(start_pad: float, end_pad: float) -> None:
+    # b. is 4.5-5.0 with 4 s of silence on each side
+    index = make_index([("a.", 4.0), ("b.", 4.0), ("c.", 0.0)])
+    start, end = times_of(index, 1, 1, start_pad=start_pad, end_pad=end_pad)
+    assert start == pytest.approx(4.5 - start_pad)
+    assert end == pytest.approx(5.0 + end_pad)
+
+
+def test_the_start_of_the_transcript_uses_the_gap_from_zero() -> None:
+    index = build_index(build(["Hi there."], origin=0.25))  # words 0.25-0.75 and 1.05-1.55
+    assert times_of(index, 0, 0)[0] == pytest.approx(0.25 - 0.125)  # half of the 0.25 s before
+    far = build_index(build(["Hi there."], origin=3.0))
+    assert times_of(far, 0, 0)[0] == pytest.approx(3.0 - START_PAD)  # capped
+    assert times_of(build_index(build(["Hi there."])), 0, 0)[0] == 0.0  # no gap at all
+
+
+def test_the_end_of_the_transcript_uses_the_gap_to_the_duration() -> None:
+    index = build_index(build(["Hi there."]))
+    last_end = index.words[-1].end
+    assert times_of(index, 0, 0, duration=last_end + 0.25)[1] == pytest.approx(last_end + 0.125)
+    assert times_of(index, 0, 0, duration=last_end + 9.0)[1] == pytest.approx(last_end + END_PAD)
+    assert times_of(index, 0, 0, duration=last_end)[1] == pytest.approx(last_end)
+
+
+def test_overlapping_words_give_no_padding() -> None:
+    # a. 0-0.5 | -0.125 | b. 0.375-0.875 | 0.5 | c. 1.375-1.875
+    index = make_index([("a.", -0.125), ("b.", 0.5), ("c.", 0.0)])
+    assert times_of(index, 0, 0)[1] == pytest.approx(0.5)  # the next word starts before it ends
+    assert times_of(index, 1, 1)[0] == pytest.approx(0.375)  # the previous one ends after it starts
+    # and the cut never crosses the words themselves
+    for a in range(3):
+        start, end = times_of(index, a, a)
+        word = index.words[index.sentences[a].first]
+        assert start <= word.start and end >= word.end
+
+
+def test_locate_inverts_span_times_under_mid_gap_cuts() -> None:
+    from clipmachine.utils.snapping import locate
+
+    gaps = [0.5, 4.0, 0.25, -0.125, 1.0, 0.125, 0.75]
+    items = [(f"w{k}.", gap) for k, gap in enumerate(gaps)] + [("end.", 0.0)]
+    index = make_index(items)
+    count = len(index.sentences)
+    assert count == len(items)
+    duration = 40.0
+    for start_pad, end_pad in ((0.25, 0.5), (0.1, 0.3), (0.0, 0.0)):
+        for a in range(count):
+            for b in range(a, count):
+                start, end = times_of(
+                    index, a, b, start_pad=start_pad, end_pad=end_pad, duration=duration
+                )
+                found = locate(
+                    index, start, end, start_pad=start_pad, end_pad=end_pad, duration=duration
+                )
+                assert found == (a, b)
+
+
+# --- units (Brief 10) ----------------------------------------------------------------------------
+
+UNIT_ITEMS = [
+    ("a.", PAUSE),  # 0: a real end
+    ("b.", 0.0),  # 1: an edge
+    ("c.", 0.0),  # 2: an edge
+    ("d.", PAUSE),  # 3: a real end
+    ("e", QUARTER),
+    ("f", PAUSE),  # 4: e f, ending at a pause
+    ("g", QUARTER),
+    ("h.", 0.0),  # 5: g h, the last sentence
+]
+
+
+def test_units_merge_the_sentences_between_cuttable_boundaries() -> None:
+    index = make_index(UNIT_ITEMS, fallback=2)
+    assert [s.end for s in index.sentences] == [".", END_EDGE, END_EDGE, ".", END_PAUSE, "."]
+    units = index.units()
+    assert spans(units) == [(0, 0), (1, 3), (4, 5), (6, 7)]
+    # the kind and the gap of a unit are those of its last sentence
+    assert [s.end for s in units.sentences] == [".", ".", END_PAUSE, "."]
+    assert [s.gap for s in units.sentences] == [PAUSE, PAUSE, PAUSE, math.inf]
+    assert units.firsts == (0, 1, 4, 6)
+    assert units.words is index.words  # the same word indices
+    assert all(units.cut_before(n) and units.cut_after(n) for n in range(len(units.sentences)))
+
+
+def test_units_of_a_transcript_of_edges_is_one_unit_closed_by_the_last_sentence() -> None:
+    index = make_index([("a.", 0.0), ("b.", 0.0), ("c.", 0.0)])
+    assert [s.end for s in index.sentences] == [END_EDGE, END_EDGE, "."]
+    assert spans(index.units()) == [(0, 2)]
+
+
+def test_units_of_real_ends_are_the_sentences_themselves() -> None:
+    index = make_index([("a.", PAUSE), ("b.", PAUSE), ("c.", 0.0)])
+    assert spans(index.units()) == spans(index)
+
+
+def test_units_of_an_empty_index_is_empty() -> None:
+    units = build_index([]).units()
+    assert units.sentences == () and units.firsts == () and units.words == ()
+
+
+def random_items(rng: random.Random, count: int) -> list[tuple[str, float]]:
+    """Words with random end punctuation and gaps from tiny to long, so some ends are edges."""
+    items = []
+    for k in range(count):
+        token = f"w{k}" + ("." if rng.random() < 0.3 else "")
+        items.append((token, rng.choice([0.0, 0.125, 0.25, 0.5, 1.0, -0.125])))
+    return items
+
+
+def test_snapping_over_units_never_starts_or_ends_on_an_edge() -> None:
+    rng = random.Random(11)
+    index = make_index(random_items(rng, 400), fallback=12)
+    assert any(not index.cut_after(n) for n in range(len(index.sentences)))  # edges exist
+    units = index.units()
+    duration = index.words[-1].end + 1.0
+    produced = 0
+    for _ in range(400):
+        a = rng.uniform(-5.0, duration)
+        b = a + rng.uniform(0.1, 60.0)
+        result = snap(
+            units,
+            a,
+            b,
+            start_pad=START_PAD,
+            end_pad=END_PAD,
+            duration=duration,
+            min_length=4.0,
+            max_length=40.0,
+        )
+        if isinstance(result, Dropped):
+            continue
+        produced += 1
+        first = index.sentence_of(result.first_word)
+        last = index.sentence_of(result.last_word)
+        assert index.sentences[first].first == result.first_word
+        assert index.sentences[last].last == result.last_word
+        assert index.cut_before(first)
+        assert index.cut_after(last)
+        assert (result.edge_start, result.edge_end) == (False, False)
+        assert EDGE_START_NOTE not in result.notes and EDGE_END_NOTE not in result.notes
+        assert 0.0 <= result.start < result.end <= duration
+        assert 4.0 - 1e-6 <= result.end - result.start <= 40.0 + 1e-6
+    assert produced > 20
+
+
+# 0 a. (real) | 1..10 ten edge sentences, 0.5 s each with no gap | 11 z. (real) | 12 q. (last)
+LONG_STRETCH = [("a.", PAUSE)] + [(f"b{k}.", 0.0) for k in range(10)] + [("z.", PAUSE), ("q.", 0.0)]
+
+
+def test_a_moment_inside_an_uncuttable_stretch_extends_to_the_nearest_clean_cuts() -> None:
+    index = make_index(LONG_STRETCH)
+    assert spans(index.units()) == [(0, 0), (1, 11), (12, 12)]
+    result = snapped(
+        snap(
+            index.units(),
+            2.0,
+            3.0,  # inside b2..b4
+            start_pad=START_PAD,
+            end_pad=END_PAD,
+            duration=20.0,
+            min_length=1.0,
+            max_length=20.0,
+        )
+    )
+    assert (result.first_word, result.last_word) == (1, 11)
+    assert result.start == pytest.approx(1.0 - 0.25)  # b0 starts at 1.0, 0.5 s after a.
+    assert result.end == pytest.approx(6.5 + 0.25)  # z. ends at 6.5, 0.5 s before q.
+    assert (result.edge_start, result.edge_end) == (False, False)
+    # over the sentence index the same moment would be cut at edges
+    loose = snapped(
+        snap(
+            index,
+            2.0,
+            3.0,
+            start_pad=START_PAD,
+            end_pad=END_PAD,
+            duration=20.0,
+            min_length=0.1,
+            max_length=20.0,
+        )
+    )
+    assert (loose.edge_start, loose.edge_end) == (True, True)
+
+
+def test_a_moment_inside_an_uncuttable_stretch_is_dropped_when_the_stretch_is_too_long() -> None:
+    index = make_index(LONG_STRETCH)
+    result = snap(
+        index.units(),
+        2.0,
+        3.0,
+        start_pad=START_PAD,
+        end_pad=END_PAD,
+        duration=20.0,
+        min_length=1.0,
+        max_length=5.0,  # the stretch needs 6.0 s
+    )
+    assert isinstance(result, Dropped)
+    assert "no clean cut point" in result.reason
+    assert "longer than the 5 s maximum" in result.reason

@@ -239,6 +239,7 @@ def _find(ctx: RunContext, run_dir: Path) -> None:
         min_pause=app.snap.min_pause_seconds,
         min_cut_gap=app.snap.min_cut_gap,
     )
+    units = index.units()  # snapping runs over clean cut points only
 
     for block in blocks:
         values = {
@@ -275,10 +276,11 @@ def _find(ctx: RunContext, run_dir: Path) -> None:
                 warnings.append(f"{where}: dropped, {reason}")
                 continue
             result = snap(
-                index,
+                units,
                 moment.start,
                 moment.end,
-                padding=cfg.snap_padding_seconds,
+                start_pad=app.snap.max_start_pad_seconds,
+                end_pad=app.snap.max_end_pad_seconds,
                 duration=transcript.audio_duration_seconds,
                 min_length=min_length,
                 max_length=max_length,

@@ -133,13 +133,21 @@ def locate_all(
     index: SentenceIndex,
     candidates: list[Candidate],
     *,
-    padding: float,
+    start_pad: float,
+    end_pad: float,
     duration: float,
 ) -> list[Located]:
     """Find every candidate's sentences, or fail without naming any text."""
     found = []
     for candidate in candidates:
-        span = locate(index, candidate.start, candidate.end, padding=padding, duration=duration)
+        span = locate(
+            index,
+            candidate.start,
+            candidate.end,
+            start_pad=start_pad,
+            end_pad=end_pad,
+            duration=duration,
+        )
         if span is not None:
             a, b = span
             text = words_text(index, index.sentences[a].first, index.sentences[b].last)
@@ -252,7 +260,8 @@ def resolve_adjust(
     *,
     before: int,
     after: int,
-    padding: float,
+    start_pad: float,
+    end_pad: float,
     duration: float,
     min_length: float,
     max_length: float,
@@ -261,8 +270,8 @@ def resolve_adjust(
 
     first and last use the numbers the model was shown: the clip is 1..n, the context before it
     is ... -1, 0 and the context after it is n+1.... The new times come from those sentences'
-    word times plus the same padding snapping uses. A range outside the shown numbers, one that
-    contains none of the clip's own sentences, or one that lands outside the clip length is
+    word times plus the same mid-gap cut times snapping uses. A range outside the shown numbers,
+    one that contains none of the clip's own sentences, or one that lands outside the clip length is
     ignored and noted: the model never supplies a time.
     """
     candidate = located.candidate
@@ -288,7 +297,8 @@ def resolve_adjust(
         index,
         located.first + keep.first - 1,
         located.first + keep.last - 1,
-        padding=padding,
+        start_pad=start_pad,
+        end_pad=end_pad,
         duration=duration,
     )
     length = end - start
@@ -415,7 +425,7 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
         )
     candidates = found.candidates
     min_length, max_length = app.clip.min_seconds, app.clip.max_seconds
-    padding = found.settings.snap_padding_seconds
+    start_pad, end_pad = found.snap.max_start_pad_seconds, found.snap.max_end_pad_seconds
     duration = transcript.audio_duration_seconds
 
     warnings: list[str] = []
@@ -428,7 +438,7 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
         min_pause=found.snap.min_pause_seconds,
         min_cut_gap=found.snap.min_cut_gap,
     )
-    located = locate_all(index, candidates, padding=padding, duration=duration)
+    located = locate_all(index, candidates, start_pad=start_pad, end_pad=end_pad, duration=duration)
 
     system_template, user_template = load_prompt(root, PROMPT_FILE)
     client = ClaudeClient(run_dir, root, app)
@@ -471,7 +481,8 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
             clip.keep_sentences,
             before=cfg.extend_before,
             after=cfg.extend_after,
-            padding=padding,
+            start_pad=start_pad,
+            end_pad=end_pad,
             duration=duration,
             min_length=min_length,
             max_length=max_length,

@@ -1,7 +1,8 @@
 """The candidates stage on a synthetic transcript, with the API faked (no network, no key).
 
 Transcript layout: 12 sentences of 15 words. Every word is 0.4 s long with 0.2 s between words, so
-sentence n runs from 9.0 * n to 9.0 * n + 8.8 and the 0.2 s padding exactly fills the gaps.
+sentence n runs from 9.0 * n to 9.0 * n + 8.8. Each 0.2 s gap between sentences is cut in the
+middle: a clip starts 0.1 s before its first word and ends 0.1 s after its last word.
 """
 
 import dataclasses
@@ -359,17 +360,17 @@ def test_end_to_end_with_a_faked_client(rig: Rig) -> None:
     first, second = out.candidates
     assert (first.id, second.id) == ("c01", "c02")
     # 20.0 is inside sentence 2 (18.0-26.8); 45.0 sits in the gap before sentence 5, so the end
-    # is sentence 4's (36.0-44.8); padding fills the 0.2 s gaps exactly
-    assert (first.start, first.end) == (17.8, 45.0)
+    # is sentence 4's (36.0-44.8); the cut is in the middle of each 0.2 s gap
+    assert (first.start, first.end) == (17.9, 44.9)
     assert (first.model_start, first.model_end) == (20.0, 45.0)
-    assert first.duration == pytest.approx(27.2)
+    assert first.duration == pytest.approx(27.0)
     assert (first.block, first.type, first.hook) == (1, "story", "Hook one.")
     assert first.reason == "because"
     assert first.word_count == 45  # sentences 2, 3 and 4
     assert first.text.startswith("alpha2x0 w2x1") and first.text.endswith("w4x14.")
     assert "start moved -2.00 s to the start of its sentence" in first.snap_notes
     # 72.0 starts sentence 8; 100.0 is inside sentence 11, so the whole of it is included
-    assert (second.start, second.end) == (71.8, 108.0)
+    assert (second.start, second.end) == (71.9, 107.9)
     assert (second.block, second.type) == (2, "insight")
     assert out.model == "claude-haiku-5-5"
     assert (out.clip_min_seconds, out.clip_max_seconds) == (20, 60)
@@ -461,11 +462,13 @@ def test_candidates_come_out_in_time_order(rig: Rig) -> None:
     assert out.candidates[0].start == 0.0  # clamped at the start of the audio
 
 
-def test_segment_edge_boundaries_are_counted(rig: Rig) -> None:
+def test_a_clip_never_starts_or_ends_on_a_segment_edge(rig: Rig) -> None:
     rig.block_minutes = 10.0
     segments = make_segments(12)
     # segments 1-3 and 5-7 have no full stop: each run of 60 unpunctuated words (segments 1-4 and
-    # 5-8, all gaps 0.2 s, under min_pause) is split at its middle, which is an edge
+    # 5-8, all gaps 0.2 s, under min_pause) is split at its middle, which is an edge. Snapping runs
+    # over the stretches between clean cuts, so the moment grows to whole runs and is trimmed to
+    # the maximum length at a run boundary, never at an edge.
     for n in (1, 2, 3, 5, 6, 7):
         words = [w.model_copy(update={"word": w.word.rstrip(".")}) for w in segments[n].words]
         segments[n] = segments[n].model_copy(update={"words": words})
@@ -473,9 +476,12 @@ def test_segment_edge_boundaries_are_counted(rig: Rig) -> None:
     rig.script(answer(moments(moment(40.0, 55.0))))
     out = rig.run()
     (only,) = out.candidates
-    assert (out.summary.segment_edge_starts, out.summary.segment_edge_ends) == (1, 1)
-    assert "start is a segment edge: no sentence punctuation before it" in only.snap_notes
-    assert "end is a segment edge: no sentence punctuation after it" in only.snap_notes
+    assert (out.summary.segment_edge_starts, out.summary.segment_edge_ends) == (0, 0)
+    assert not any("segment edge" in n for n in only.snap_notes)
+    # the clip is segments 5-8 (45.0-80.8, cut 0.1 s into each 0.2 s gap): it starts after the
+    # full stop that ends segment 4 and ends at the full stop that ends segment 8
+    assert (only.start, only.end) == (44.9, 80.9)
+    assert only.text.startswith("alpha5x0") and only.text.endswith("w8x14.")
 
 
 def test_candidates_json_records_the_snap_settings(rig: Rig) -> None:
@@ -494,13 +500,27 @@ def test_candidates_json_records_changed_snap_settings(rig: Rig) -> None:
     assert rig.output().snap == custom
 
 
+def test_cut_times_use_the_configured_pad_caps(rig: Rig) -> None:
+    rig.block_minutes = 10.0
+    rig.script(answer(moments(moment(20.0, 45.0))))
+    custom = SnapConfig(max_start_pad_seconds=0.05, max_end_pad_seconds=0.07)
+    ctx = rig.ctx()
+    app = ctx.config.app.model_copy(update={"snap": custom})
+    candidates.run(dataclasses.replace(ctx, config=dataclasses.replace(ctx.config, app=app)))
+    (only,) = rig.output().candidates
+    # sentences 2..4 (18.0 - 44.8); the 0.2 s gaps are cut in the middle, capped at the pads
+    assert only.start == pytest.approx(18.0 - 0.05)
+    assert only.end == pytest.approx(44.8 + 0.07)
+    assert rig.output().snap == custom
+
+
 def test_short_moment_grows_toward_the_preferred_length(rig: Rig) -> None:
     rig.preferred = (30.0, 50.0)
     rig.block_minutes = 10.0
     rig.script(answer(moments(moment(20.0, 45.0))))
     out = rig.run()
     (only,) = out.candidates
-    assert only.start == 17.8
+    assert only.start == 17.9
     assert only.duration >= 30.0
     assert any("toward the preferred length" in n for n in only.snap_notes)
     assert out.summary.grew_backward == 0

@@ -24,7 +24,7 @@ candidates:
   block_minutes: 10
   per_block_max: 8
   max_output_tokens: 2000
-  snap_padding_seconds: 0.2
+  snap_padding_seconds: 0.2  # accepted but no longer used: cut times come from snap.max_start_pad_seconds / max_end_pad_seconds
   dedupe_overlap: 0.5        # overlap / shorter length; above this the later one is dropped
   thinking: disabled         # disabled / adaptive (Haiku 5.5 accepts both)
   effort: low                # low / medium / high / xhigh / max
@@ -34,8 +34,8 @@ candidates:
 snap:                        # where a clip may be cut (Brief 10)
   min_pause_seconds: 0.35    # an unpunctuated gap between words this long is a sentence boundary
   min_cut_gap: 0.15          # never cut where the gap between words is smaller; <= min_pause_seconds
-  max_start_pad_seconds: 0.25   # cap on the pause before a clip's first word that the cut may use (used from the next commit)
-  max_end_pad_seconds: 0.5   # cap on the pause after a clip's last word that the cut may use (used from the next commit)
+  max_start_pad_seconds: 0.25   # the cut sits in the middle of the pause, at most this far before the first word
+  max_end_pad_seconds: 0.5   # the cut sits in the middle of the pause, at most this far after the last word
 score:
   max_per_call: 20           # candidates judged together in one call; more are sent in chunks
   max_output_tokens: 8000    # thinking and answer together

@@ -69,6 +69,8 @@ class CandidatesConfig(StrictModel):
     block_minutes: float = Field(default=10, gt=0)
     per_block_max: int = Field(default=8, gt=0)
     max_output_tokens: int = Field(default=2000, gt=0)
+    # Accepted but no longer used: cut times come from snap.max_start_pad_seconds and
+    # snap.max_end_pad_seconds.
     snap_padding_seconds: float = Field(default=0.2, ge=0)
     dedupe_overlap: float = Field(default=0.5, ge=0, le=1)
     # Haiku 5.5 thinks by default and thinking counts toward max_tokens; the cheapest valid
@@ -92,7 +94,8 @@ class SnapConfig(StrictModel):
     min_cut_gap: float = Field(
         default=0.15, ge=0
     )  # never cut where the gap between words is smaller
-    # Not used until the next Brief 10 commit (pause-centred cut times in the padding rule).
+    # The cut sits in the middle of the pause, at most this far before the first word / after the
+    # last word.
     max_start_pad_seconds: float = Field(default=0.25, ge=0)
     max_end_pad_seconds: float = Field(default=0.5, ge=0)
 
