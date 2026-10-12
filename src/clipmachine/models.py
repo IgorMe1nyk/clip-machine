@@ -306,18 +306,45 @@ class CaptionsConfig(StrictModel):
     margin_v: int = Field(default=350, ge=0)  # pixels from the bottom edge
     # Brief 6.1: moves every caption event in time; positive = captions appear later
     offset_seconds: float = Field(default=0.15, ge=-1.0, le=1.0)
+    # added in Brief R1; defaults keep run folders made before it loadable and rendering as before
+    style: Literal["box_karaoke", "legacy"] = "legacy"
+    max_words: int = Field(default=4, ge=1, le=12)  # words on one line (box_karaoke)
+    max_width_px: int = Field(default=760, gt=0)  # the whole box, padding included
+    word_gap_em: float = Field(default=0.45, ge=0.1, le=2.0)  # gap between words, x font size
+    letter_spacing_px: float = Field(default=1.0, ge=0, le=10)
+    line_gap_em: float = Field(default=0.35, ge=0, le=2.0)  # gap between two lines, x font size
+    spoken_color: str = "#FFD400"
+    upcoming_color: str = "#FFFFFF"
+    box_opacity: float = Field(default=0.75, ge=0, le=1)
+    box_padding_px: int = Field(default=18, ge=0, le=100)
 
     @model_validator(mode="after")
     def _check_values(self) -> "CaptionsConfig":
-        if not HEX_COLOR_RE.fullmatch(self.highlight_color):
-            raise ValueError(
-                f"highlight_color must look like #RRGGBB, got {self.highlight_color!r}"
-            )
+        for name in ("highlight_color", "spoken_color", "upcoming_color"):
+            if not HEX_COLOR_RE.fullmatch(getattr(self, name)):
+                raise ValueError(f"{name} must look like #RRGGBB, got {getattr(self, name)!r}")
         if not FONT_FILE_RE.fullmatch(self.font_file):
             raise ValueError(
                 f"font_file must be a plain .ttf or .otf file name, got {self.font_file!r}"
             )
         return self
+
+
+class HookConfig(StrictModel):
+    """The hook overlay (Brief R1): the clip's hook line as big text at the start."""
+
+    enabled: bool = False
+    seconds: float = Field(default=2.0, gt=0, le=10)
+    fade_ms: int = Field(default=150, ge=0, le=2000)
+
+
+class SafeConfig(StrictModel):
+    """Pixels on the output canvas that the apps cover; captions and hook stay inside the rest."""
+
+    top: int = Field(default=290, ge=0)
+    bottom: int = Field(default=672, ge=0)
+    left: int = Field(default=120, ge=0)
+    right: int = Field(default=192, ge=0)
 
 
 class RenderConfig(StrictModel):
@@ -377,6 +404,37 @@ class AppConfig(StrictModel):
     score: ScoreConfig = Field(default_factory=ScoreConfig)
     render: RenderConfig = Field(default_factory=RenderConfig)
     speaker: SpeakerConfig = Field(default_factory=SpeakerConfig)
+    hook: HookConfig = Field(default_factory=HookConfig)
+    safe: SafeConfig = Field(default_factory=SafeConfig)
+
+    @model_validator(mode="after")
+    def _check_safe_area(self) -> "AppConfig":
+        safe, video, captions = self.safe, self.video, self.captions
+        if safe.left + safe.right >= video.width:
+            raise ValueError(
+                f"safe.left ({safe.left}) + safe.right ({safe.right}) must be less than "
+                f"video.width ({video.width})"
+            )
+        if safe.top + safe.bottom >= video.height:
+            raise ValueError(
+                f"safe.top ({safe.top}) + safe.bottom ({safe.bottom}) must be less than "
+                f"video.height ({video.height})"
+            )
+        if captions.style == "box_karaoke":
+            area = video.width - safe.left - safe.right
+            if captions.max_width_px > area:
+                raise ValueError(
+                    f"captions.max_width_px ({captions.max_width_px}) must not exceed the safe "
+                    f"width ({area} = video.width - safe.left - safe.right)"
+                )
+            if captions.max_width_px <= 2 * captions.box_padding_px:
+                raise ValueError(
+                    f"captions.max_width_px ({captions.max_width_px}) must be more than twice "
+                    f"captions.box_padding_px ({captions.box_padding_px})"
+                )
+        if self.hook.enabled and captions.style != "box_karaoke":
+            raise ValueError("hook.enabled needs captions.style 'box_karaoke'")
+        return self
 
     @model_validator(mode="after")
     def _check_preferred(self) -> "AppConfig":
@@ -777,6 +835,24 @@ class RenderedSettings(StrictModel):
     caption_offset_seconds: float = 0.0  # added in Brief 6.1; old JSON files load as 0.0
     # added in Brief 10; old JSON files load as 0.0, which makes old outputs stale so they re-render
     audio_fade_seconds: float = 0.0
+    # added in Brief R1; old JSON files load as the legacy style with no hook and no margins
+    caption_style: str = "legacy"
+    max_words: int = 0
+    max_width_px: int = 0
+    word_gap_em: float = 0.0
+    letter_spacing_px: float = 0.0
+    line_gap_em: float = 0.0
+    spoken_color: str = ""
+    upcoming_color: str = ""
+    box_opacity: float = 0.0
+    box_padding_px: int = 0
+    hook_enabled: bool = False
+    hook_seconds: float = 0.0
+    hook_fade_ms: int = 0
+    safe_top: int = 0
+    safe_bottom: int = 0
+    safe_left: int = 0
+    safe_right: int = 0
 
 
 class RenderedOutput(StrictModel):
@@ -812,6 +888,13 @@ class RenderedClip(StrictModel):
     track_sha256: str | None = None  # SHA-256 of the track.json file this clip was rendered from
     track_fallback: str | None = None  # the track's fallback reason: rendered as a centre crop
     crop_changes: int = 0  # how many times the crop moves during the clip
+    # added in Brief R1; old files read as no notes and no counts
+    notes: list[str] = []  # reason codes only, never text
+    caption_lines: int = 0
+    caption_max_words: int = 0  # most words in one caption line
+    hook_shown: bool = False
+    hook_moved: bool = False  # moved down to clear a face
+    outside_safe_zone: int = 0  # caption/hook boxes not fully inside the safe area
 
 
 class TrackSource(StrictModel):

@@ -13,7 +13,15 @@ from clipmachine.config import (
     load_resolved_file,
     validate_client_name,
 )
-from clipmachine.models import SnapConfig, SpeakerConfig
+from clipmachine.models import (
+    CaptionsConfig,
+    HookConfig,
+    RenderedClip,
+    RenderedSettings,
+    SafeConfig,
+    SnapConfig,
+    SpeakerConfig,
+)
 from helpers import edit_yaml
 
 
@@ -731,3 +739,156 @@ def test_a_speaker_section_from_before_the_glide_keys_still_loads(
 
     assert (speaker.smooth_seconds, speaker.glide_seconds, speaker.max_speed) == (0.5, 0.6, 0.8)
     assert speaker.smoothing == 0.25
+
+
+# --- Brief R1: captions v2, hook and safe zones ---------------------------------------------------
+
+
+def test_config_without_the_r1_keys_loads_as_legacy(project: Path) -> None:
+    app = load_app_config(project)  # default.yaml has none of the new keys
+    assert app.captions.style == "legacy"
+    assert (app.captions.max_words, app.captions.max_width_px) == (4, 760)
+    assert (app.captions.word_gap_em, app.captions.letter_spacing_px) == (0.45, 1.0)
+    assert (app.captions.spoken_color, app.captions.upcoming_color) == ("#FFD400", "#FFFFFF")
+    assert (app.captions.box_opacity, app.captions.box_padding_px) == (0.75, 18)
+    assert app.hook == HookConfig() and app.hook.enabled is False
+    assert (app.safe.top, app.safe.bottom, app.safe.left, app.safe.right) == (290, 672, 120, 192)
+
+
+def _box_karaoke(d: dict[str, Any]) -> None:
+    d["captions"]["style"] = "box_karaoke"
+
+
+def test_box_karaoke_with_the_default_margins_is_valid(project: Path) -> None:
+    _default(project, _box_karaoke)
+    _default(project, lambda d: d.update(hook={"enabled": True}))
+    app = load_app_config(project)
+    assert app.captions.style == "box_karaoke" and app.hook.enabled is True
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (lambda d: d["captions"].update(spoken_color="FFD400"), "spoken_color"),
+        (lambda d: d["captions"].update(upcoming_color="#FFF"), "upcoming_color"),
+        (lambda d: d["captions"].update(style="neon"), "captions.style"),
+        (lambda d: d["captions"].update(max_words=0), "captions.max_words"),
+        (lambda d: d["captions"].update(max_words=13), "captions.max_words"),
+        (lambda d: d["captions"].update(max_width_px=0), "captions.max_width_px"),
+        (lambda d: d["captions"].update(word_gap_em=0.05), "captions.word_gap_em"),
+        (lambda d: d["captions"].update(letter_spacing_px=-1), "captions.letter_spacing_px"),
+        (lambda d: d["captions"].update(line_gap_em=3), "captions.line_gap_em"),
+        (lambda d: d["captions"].update(box_opacity=1.5), "captions.box_opacity"),
+        (lambda d: d["captions"].update(box_padding_px=101), "captions.box_padding_px"),
+        (lambda d: d.update(hook={"seconds": 0}), "hook.seconds"),
+        (lambda d: d.update(hook={"fade_ms": -1}), "hook.fade_ms"),
+        (lambda d: d.update(hook={"enable": True}), "hook.enable"),  # typo: unknown key
+        (lambda d: d.update(safe={"top": -1}), "safe.top"),
+        # margins that leave no room
+        (lambda d: d.update(safe={"left": 600, "right": 480}), "safe.left"),
+        (lambda d: d.update(safe={"top": 1000, "bottom": 920}), "safe.top"),
+        # hook needs the new caption style
+        (lambda d: d.update(hook={"enabled": True}), "hook.enabled"),
+    ],
+)
+def test_invalid_r1_settings_are_rejected(
+    project: Path, mutate: Callable[[dict[str, Any]], None], expected: str
+) -> None:
+    _default(project, mutate)
+    with pytest.raises(ConfigError, match=expected):
+        load_app_config(project)
+
+
+@pytest.mark.parametrize(
+    ("captions", "expected"),
+    [
+        ({"max_width_px": 769}, "safe width"),  # 1080 - 120 - 192 = 768
+        ({"max_width_px": 36}, "box_padding_px"),  # not more than twice the padding
+    ],
+)
+def test_box_karaoke_width_must_fit_the_safe_area(
+    project: Path, captions: dict[str, Any], expected: str
+) -> None:
+    _default(project, _box_karaoke)
+    _default(project, lambda d: d["captions"].update(captions))
+    with pytest.raises(ConfigError, match=expected):
+        load_app_config(project)
+
+
+def test_legacy_style_ignores_the_box_width(project: Path) -> None:
+    _default(project, lambda d: d["captions"].update(max_width_px=5000))
+    assert load_app_config(project).captions.max_width_px == 5000
+
+
+def test_resolved_file_from_before_r1_still_loads(project: Path, tmp_path: Path) -> None:
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "example-client"), target)
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    for key in ("hook", "safe"):
+        del data["config"][key]
+    for key in CaptionsConfig.model_fields.keys() - {
+        "words_per_line",
+        "font",
+        "highlight_color",
+        "font_file",
+        "font_size",
+        "margin_v",
+        "offset_seconds",
+    }:
+        del data["config"]["captions"][key]
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+    app = load_resolved_file(target).app
+    assert app.captions.style == "legacy" and app.hook.enabled is False
+    assert app.safe == SafeConfig()
+
+
+def test_rendered_settings_and_clip_json_from_before_r1_still_load() -> None:
+    old_settings = {
+        "width": 1080,
+        "height": 1920,
+        "crf": 20,
+        "preset": "medium",
+        "audio_bitrate": "160k",
+        "font": "Montserrat",
+        "font_file": "Montserrat-Bold.ttf",
+        "font_size": 80,
+        "margin_v": 350,
+        "words_per_line": 3,
+        "highlight_color": "#FFD400",
+    }
+    settings = RenderedSettings.model_validate(old_settings)
+    assert settings.caption_style == "legacy" and settings.hook_enabled is False
+    assert (settings.safe_top, settings.safe_bottom, settings.max_words) == (0, 0, 0)
+    assert settings.spoken_color == "" and settings.box_opacity == 0.0
+
+    old_clip = {
+        "id": "c01",
+        "rank": 1,
+        "score": 8,
+        "start": 1.0,
+        "end": 31.0,
+        "duration": 30.0,
+        "source": {
+            "width": 1920,
+            "height": 1080,
+            "rotation": 0,
+            "r_frame_rate": "30/1",
+            "avg_frame_rate": "30/1",
+            "variable_frame_rate": False,
+        },
+        "crop": {"w": 608, "h": 1080, "x": 656, "y": 0},
+        "settings": old_settings,
+        "caption_events": 12,
+        "output": {
+            "width": 1080,
+            "height": 1920,
+            "video_codec": "h264",
+            "audio_codec": "aac",
+            "duration_seconds": 30.0,
+            "size_bytes": 1000,
+        },
+        "render_seconds": 4.0,
+    }
+    clip = RenderedClip.model_validate(old_clip)
+    assert clip.notes == [] and clip.caption_lines == 0 and clip.caption_max_words == 0
+    assert (clip.hook_shown, clip.hook_moved, clip.outside_safe_zone) == (False, False, 0)
