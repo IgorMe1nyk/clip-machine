@@ -20,6 +20,9 @@ words touch or overlap there is no pause and no padding.
 
 Units: SentenceIndex.units() merges the sentences between cuttable boundaries into stretches that
 can be cut before and after. snap() over an index of units can only start and end on a clean cut.
+
+Campaign mode uses the same cut times for moments a person chose: snap_near() moves a start and an
+end, each on its own, to the nearest clean cut within a limit (else keeps the given time).
 """
 
 import math
@@ -43,6 +46,9 @@ DEFAULT_MIN_CUT_GAP = 0.15
 # can read the flags back from candidates.json without matching on a copy of the text.
 EDGE_START_NOTE = "start is a segment edge: no sentence punctuation before it"
 EDGE_END_NOTE = "end is a segment edge: no sentence punctuation after it"
+# Prefixes of the notes snap_near() writes when it keeps a time; a caller shows them as warnings.
+START_KEPT_NOTE = "start kept: no clean sentence edge within"
+END_KEPT_NOTE = "end kept: no clean sentence edge within"
 
 
 @dataclass(frozen=True)
@@ -441,6 +447,71 @@ def snap(
         notes=tuple(notes),
         grew_backward=grown_backward,
     )
+
+
+@dataclass(frozen=True)
+class NearSnap:
+    start: float
+    end: float | None  # None when no end was given
+    start_moved: float | None  # seconds moved, signed; None: no clean edge close enough, kept
+    end_moved: float | None
+    notes: tuple[str, ...]  # seconds only, never text
+
+
+def _cut_times(
+    units: SentenceIndex, start_pad: float, end_pad: float, duration: float
+) -> list[tuple[float, float]]:
+    """The cut times (start, end) of every unit on its own."""
+    return [
+        span_times(units, n, n, start_pad=start_pad, end_pad=end_pad, duration=duration)
+        for n in range(len(units.sentences))
+    ]
+
+
+def _nearest(candidates: Sequence[float], target: float, limit: float) -> float | None:
+    """The candidate nearest to target within limit (inclusive); ties go to the earlier."""
+    near = [c for c in candidates if abs(c - target) <= limit + EPSILON]
+    return min(near, key=lambda c: (round(abs(c - target), TIE_DIGITS), c), default=None)
+
+
+def snap_near(
+    units: SentenceIndex,
+    start: float,
+    end: float | None,
+    *,
+    start_pad: float,
+    end_pad: float,
+    duration: float,
+    max_move: float,
+) -> NearSnap:
+    """Move a person's start and end, each on its own, to the nearest clean cut within max_move
+    seconds; a time with no clean cut that close is kept. `units` is index.units(). The end only
+    goes to cuts after the final start. With end=None the end is left alone (None)."""
+    cuts = _cut_times(units, start_pad, end_pad, duration)
+    notes: list[str] = []
+
+    new_start = _nearest([c[0] for c in cuts], start, max_move)
+    start_moved: float | None = None
+    if new_start is None:
+        new_start = start
+        notes.append(f"{START_KEPT_NOTE} {max_move:g} s")
+    else:
+        start_moved = new_start - start
+        if abs(start_moved) >= 0.005:
+            notes.append(f"start moved {start_moved:+.2f} s to a clean sentence edge")
+
+    if end is None:
+        return NearSnap(new_start, None, start_moved, None, tuple(notes))
+    new_end = _nearest([c[1] for c in cuts if c[1] > new_start], end, max_move)
+    end_moved: float | None = None
+    if new_end is None:
+        new_end = end
+        notes.append(f"{END_KEPT_NOTE} {max_move:g} s")
+    else:
+        end_moved = new_end - end
+        if abs(end_moved) >= 0.005:
+            notes.append(f"end moved {end_moved:+.2f} s to a clean sentence edge")
+    return NearSnap(new_start, new_end, start_moved, end_moved, tuple(notes))
 
 
 def dedupe(spans: Sequence[tuple[float, float]], max_overlap: float) -> list[int]:
