@@ -4,6 +4,9 @@ from pathlib import Path
 
 import yaml
 
+from clipmachine.campaign.loader import load_campaign, load_moments
+from clipmachine.config import load_app_config
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "campaigns" / "_example"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -34,3 +37,15 @@ def test_the_example_watermark_is_a_png_of_the_expected_size() -> None:
     assert data.startswith(PNG_SIGNATURE)
     assert data[12:16] == b"IHDR"
     assert (int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")) == (360, 96)
+
+
+def test_the_shipped_example_loads_with_the_real_config() -> None:
+    app = load_app_config(REPO_ROOT)
+    campaign = load_campaign(REPO_ROOT, "_example", app)
+    moments = load_moments(campaign)
+    assert campaign.warnings == ()
+    assert campaign.hook_font_size == app.hook.font_size
+    assert campaign.watermark.blend == "normal" and campaign.watermark.background == "transparent"
+    assert len(moments) == 3
+    assert moments[1].end is None  # `end: auto`
+    assert all(m.end is not None for m in (moments[0], moments[2]))
