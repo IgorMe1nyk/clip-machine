@@ -622,3 +622,31 @@ def test_without_cuts_the_result_is_what_the_five_functions_give() -> None:
     assert done.tracks == tracks
     assert done.shots == shots
     assert done.crop_xs == camera_path(shots, tracks, 1000, 200, clip_times(40), config)
+
+
+# --- the link gap is a time, not a count --------------------------------------------------
+
+
+def gap_case(fps: int, missing: int) -> Followed:
+    """One face that is missing for some samples in the middle, at fps samples a second."""
+    count = 4 + missing + 4
+    frames = [
+        [] if 4 <= k < 4 + missing else [FaceSample(k / fps, 0.5, 0.5, 0.15, 0.3, 0.0)]
+        for k in range(count)
+    ]
+    times = [round(k / fps, 3) for k in range(count)]
+    return follow_segments(frames, times, [], [], count / fps, 1000, 200, cfg(sample_fps=fps))
+
+
+def test_a_face_missing_for_six_samples_relinks_at_30_fps_but_not_at_10() -> None:
+    assert len(gap_case(30, 6).tracks) == 1  # 0.2 s, within 0.3 s
+    assert len(gap_case(10, 6).tracks) == 2  # 0.6 s, too long
+
+
+def test_the_link_gap_at_10_fps_is_still_three_samples() -> None:
+    assert len(gap_case(10, 3).tracks) == 1
+    assert len(gap_case(10, 4).tracks) == 2
+
+
+def test_face_sample_motion_defaults_to_none() -> None:
+    assert face(0.0, 0.5).motion is None

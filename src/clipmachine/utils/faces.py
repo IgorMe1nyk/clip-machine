@@ -16,7 +16,7 @@ import math
 import os
 import urllib.request
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
@@ -83,6 +83,16 @@ YUNET_NMS_THRESHOLD = 0.3  # YuNet boxes overlapping more than this are merged
 YUNET_TOP_K = 5000  # boxes kept before merging
 CROP_LANDMARK_FACES = 2  # a crop may hold a neighbour; the matching step picks the right face
 MATCH_FRACTION = 0.5  # a landmarker face is the detector's if its centre is this close (x height)
+# Pixel-motion areas, as fractions of the face box round its centre.
+MOTION_HALF_WIDTH = 0.30  # both areas span the centre +- this fraction of the box width
+MOUTH_TOP = 0.12  # the mouth area runs from centre + this fraction of the box height ...
+MOUTH_BOTTOM = 0.50  # ... to centre + this
+UPPER_TOP = -0.38  # the upper-face area runs from centre - this fraction of the box height ...
+UPPER_BOTTOM = 0.0  # ... to the centre
+MIN_MOTION_WIDTH = 8  # pixels; a narrower area is not measured
+MIN_MOTION_HEIGHT = 6  # pixels; a shorter area is not measured
+MOTION_SIZE = (24, 16)  # (width, height) each area is shrunk to before comparing
+MOTION_CONTRAST_FLOOR = 4.0  # added to the picture's contrast so flat areas do not explode
 
 
 class FacesError(Exception):
@@ -102,22 +112,27 @@ class Landmark(Protocol):
 @dataclass(frozen=True)
 class RawFace:
     """One detected face, normalised to the frame: centre, size, and mouth openness divided by the
-    face height (None: the face was found but its mouth could not be read)."""
+    face height (None: the face was found but its mouth could not be read). `motion` is the
+    movement round the mouth since the previous sample (None: no previous frame, or it could not
+    be measured)."""
 
     cx: float
     cy: float
     w: float
     h: float
     mouth: float | None
+    motion: float | None = None
 
 
 @dataclass(frozen=True)
 class FoundFaces:
     """The faces of one frame, and the height of the tallest face the detector saw before small
-    ones were dropped (0.0 when it saw none), so "faces too small" is judged from all of them."""
+    ones were dropped (0.0 when it saw none), so "faces too small" is judged from all of them.
+    `boxes` are the kept boxes this call used, left to right, so a caller can reuse them."""
 
     faces: list[RawFace]
     largest_height: float
+    boxes: list["FaceBox"] = field(default_factory=list)
 
 
 @dataclass
@@ -181,7 +196,10 @@ def raw_face(landmarks: Sequence[Landmark]) -> RawFace:
 def to_samples(faces: Sequence[RawFace], t: float) -> list[FaceSample]:
     """Faces of one frame as FaceSamples at time t, left to right (a stable order)."""
     ordered = sorted(faces, key=lambda f: (f.cx, f.cy))
-    return [FaceSample(t=t, cx=f.cx, cy=f.cy, w=f.w, h=f.h, mouth=f.mouth) for f in ordered]
+    return [
+        FaceSample(t=t, cx=f.cx, cy=f.cy, w=f.w, h=f.h, mouth=f.mouth, motion=f.motion)
+        for f in ordered
+    ]
 
 
 @dataclass(frozen=True)
@@ -201,6 +219,34 @@ def keep_boxes(boxes: Sequence[FaceBox], min_height: float, max_faces: int) -> l
     big = [b for b in boxes if b.h >= min_height]
     tallest = sorted(big, key=lambda b: (-b.h, b.cx))[: max(max_faces, 0)]
     return sorted(tallest, key=lambda b: b.cx)
+
+
+Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1) in pixels
+
+
+def motion_rects(box: FaceBox, frame_w: int, frame_h: int) -> tuple[Rect, Rect] | None:
+    """The pixel rectangles (mouth area, upper-face area) to compare between two frames, clamped to
+    the frame. None when either is narrower than MIN_MOTION_WIDTH or shorter than
+    MIN_MOTION_HEIGHT pixels."""
+
+    def rect(top: float, bottom: float) -> Rect:
+        xa = int((box.cx - MOTION_HALF_WIDTH * box.w) * frame_w)
+        xb = int((box.cx + MOTION_HALF_WIDTH * box.w) * frame_w)
+        ya = int((box.cy + top * box.h) * frame_h)
+        yb = int((box.cy + bottom * box.h) * frame_h)
+        return (
+            min(max(xa, 0), frame_w),
+            min(max(ya, 0), frame_h),
+            min(max(xb, 0), frame_w),
+            min(max(yb, 0), frame_h),
+        )
+
+    mouth = rect(MOUTH_TOP, MOUTH_BOTTOM)
+    upper = rect(UPPER_TOP, UPPER_BOTTOM)
+    for x0, y0, x1, y1 in (mouth, upper):
+        if x1 - x0 < MIN_MOTION_WIDTH or y1 - y0 < MIN_MOTION_HEIGHT:
+            return None
+    return mouth, upper
 
 
 def crop_square(box: FaceBox, frame_w: int, frame_h: int, scale: float) -> tuple[int, int, int]:
@@ -498,25 +544,79 @@ def _crop_landmarks(finder: FaceFinder, crop_rgb: "NDArray[np.uint8]") -> list[R
     return [raw_face(landmarks) for landmarks in result.face_landmarks]
 
 
-def find_faces(finder: FaceFinder, frame_rgb: "NDArray[np.uint8]") -> FoundFaces:
+def face_motion(
+    gray: "NDArray[np.uint8]", previous_gray: "NDArray[np.uint8]", box: FaceBox
+) -> float | None:
+    """How much the picture round the face's mouth changed between two grey frames, less how much
+    the upper face changed (so a moving head cancels out). None when the areas are too small or
+    the frames differ in shape.
+
+    Each area is cut from both frames, shrunk to MOTION_SIZE, and scored as the mean absolute
+    difference divided by (the contrast of the newer one + MOTION_CONTRAST_FLOOR).
+    """
+    import numpy as np
+
+    if gray.shape != previous_gray.shape:
+        return None
+    height, width = gray.shape[:2]
+    rects = motion_rects(box, width, height)
+    if rects is None:
+        return None
+    cv2 = _cv2()
+
+    def score(rect: Rect) -> float:
+        x0, y0, x1, y1 = rect
+        now = cv2.resize(gray[y0:y1, x0:x1], MOTION_SIZE, interpolation=cv2.INTER_AREA)
+        before = cv2.resize(previous_gray[y0:y1, x0:x1], MOTION_SIZE, interpolation=cv2.INTER_AREA)
+        now = now.astype(np.float32)
+        before = before.astype(np.float32)
+        return float(np.mean(np.abs(now - before)) / (np.std(now) + MOTION_CONTRAST_FLOOR))
+
+    mouth, upper = rects
+    return max(0.0, score(mouth) - score(upper))
+
+
+def find_faces(
+    finder: FaceFinder,
+    frame_rgb: "NDArray[np.uint8]",
+    previous_rgb: "NDArray[np.uint8] | None" = None,
+    boxes: list[FaceBox] | None = None,
+) -> FoundFaces:
     """The faces in one RGB frame: one RawFace per kept YuNet box, with the box's own position and
     size and the mouth read from a crop around it (None if the landmarker found no matching face).
+
+    With `previous_rgb`, each face also gets its `motion` since that frame. With `boxes` (the
+    `boxes` of an earlier result) the detector is not run and those boxes are used as the kept
+    ones.
     """
     import numpy as np
 
     height, width = frame_rgb.shape[:2]
-    detected = _detect_boxes(finder, frame_rgb)
-    largest = max((box.h for box in detected), default=0.0)
+    if boxes is None:
+        detected = _detect_boxes(finder, frame_rgb)
+        largest = max((box.h for box in detected), default=0.0)
+        kept = keep_boxes(detected, finder.min_face_height, finder.max_faces)
+    else:
+        kept = list(boxes)
+        largest = max((box.h for box in kept), default=0.0)
+    grays: tuple[NDArray[np.uint8], NDArray[np.uint8]] | None = None
+    if previous_rgb is not None:
+        cv2 = _cv2()
+        grays = (
+            cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY),
+            cv2.cvtColor(previous_rgb, cv2.COLOR_RGB2GRAY),
+        )
     out: list[RawFace] = []
-    for box in keep_boxes(detected, finder.min_face_height, finder.max_faces):
+    for box in kept:
         x0, y0, side = crop_square(box, width, height, finder.crop_scale)
         crop = np.ascontiguousarray(frame_rgb[y0 : y0 + side, x0 : x0 + side])
         found = [
             to_frame(raw, x0, y0, side, width, height) for raw in _crop_landmarks(finder, crop)
         ]
         mouth = match_mouth(box, found, width, height)
-        out.append(RawFace(cx=box.cx, cy=box.cy, w=box.w, h=box.h, mouth=mouth))
-    return FoundFaces(faces=out, largest_height=largest)
+        motion = None if grays is None else face_motion(grays[0], grays[1], box)
+        out.append(RawFace(cx=box.cx, cy=box.cy, w=box.w, h=box.h, mouth=mouth, motion=motion))
+    return FoundFaces(faces=out, largest_height=largest, boxes=kept)
 
 
 def close_finder(finder: FaceFinder) -> None:  # SEAM

@@ -26,6 +26,7 @@ from dataclasses import dataclass, field, replace
 from clipmachine.models import SpeakerConfig
 
 MAX_LINK_GAP = 3  # samples a face may vanish and still be re-linked to its track
+MAX_LINK_GAP_SECONDS = 0.3  # the same gap in time: follow_segments scales it to the sample rate
 SMALL_FACE_MAJORITY = 0.8  # share of face samples that must be small for "faces_too_small"
 MIN_VARIANCE = 1e-9  # mouth-movement variance below this counts as no movement
 
@@ -37,7 +38,9 @@ FALLBACK_SOURCE_NOT_WIDER = "source_not_wider_than_crop"
 @dataclass(frozen=True)
 class FaceSample:
     """One face in one sampled frame. `mouth` is the mouth openness divided by the face height, or
-    None when the face was found but its mouth could not be read."""
+    None when the face was found but its mouth could not be read. `motion` is the pixel movement
+    round the mouth since the previous sample, less the movement of the upper face (None: no
+    previous frame, a cut, or it could not be measured)."""
 
     t: float
     cx: float
@@ -45,6 +48,7 @@ class FaceSample:
     w: float
     h: float
     mouth: float | None
+    motion: float | None = None
 
 
 @dataclass
@@ -463,6 +467,7 @@ def follow_segments(
     unique across the clip, Track.by_frame keyed by clip-wide sample index (holding the original
     FaceSamples) and crop xs in sample order.
     """
+    max_gap = max(1, round(MAX_LINK_GAP_SECONDS * cfg.sample_fps))
     tracks: list[Track] = []
     shots: list[Shot] = []
     crop_xs: list[int] = []
@@ -482,7 +487,7 @@ def follow_segments(
             for local_faces, faces in zip(local_frames, frames[a:b], strict=True)
             for local, original in zip(local_faces, faces, strict=True)
         }
-        local_tracks = link_tracks(local_frames, cfg.link_max_distance)
+        local_tracks = link_tracks(local_frames, cfg.link_max_distance, max_gap=max_gap)
         speech = speech_windows(
             local_words, length, cfg.window_seconds, cfg.min_speech_words_per_window
         )

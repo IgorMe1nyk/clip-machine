@@ -2,7 +2,7 @@
 nor mediapipe. Everything is synthetic: flat grey frames and scripted faces."""
 
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +11,16 @@ import pytest
 
 from clipmachine import tracking
 from clipmachine.utils import faces
-from clipmachine.utils.faces import DETECTOR, LANDMARKER, FaceFinder, FoundFaces, RawFace
+from clipmachine.utils.faces import (
+    DETECTOR,
+    LANDMARKER,
+    FaceBox,
+    FaceFinder,
+    FoundFaces,
+    RawFace,
+)
+
+MOTION = 0.25  # what the fake finder reports as motion whenever there is a previous frame
 
 # t (seconds from the clip start) -> the faces in that frame, before small ones are dropped
 Scenario = Callable[[float], list[RawFace]]
@@ -66,6 +75,9 @@ class TrackFakes:
     closed: int = 0
     fps: float = 10.0
     index: int = 0  # frames handed to find_faces since read_frames was last called
+    detected: list[int] = field(default_factory=list)  # samples on which the detector ran
+    previous_seen: list[bool] = field(default_factory=list)  # find_faces got a previous frame
+    boxes_given: list[list[FaceBox] | None] = field(default_factory=list)
     # read_timed_frames: the source's own frames around a cut. Unless scripted, they come from
     # `look` at timed_fps, with timestamps from the -ss point like ffmpeg's showinfo.
     timed: list[tuple[float, int]] | None = None  # scripted (timestamp, grey level) pairs
@@ -127,14 +139,34 @@ class TrackFakes:
             max_faces=settings["max_faces"],
         )
 
-    def find_faces(self, finder: FaceFinder, frame: Any) -> FoundFaces:
+    def find_faces(
+        self,
+        finder: FaceFinder,
+        frame: Any,
+        previous_rgb: Any = None,
+        boxes: list[FaceBox] | None = None,
+    ) -> FoundFaces:
         """What the real finder returns: boxes under min_face_height dropped but still counted in
-        largest_height, and at most max_faces kept."""
-        t = self.index / self.fps
+        largest_height, and at most max_faces kept. The detector "runs" (and is recorded in
+        `detected`) only when no boxes are handed in; mouths are scripted for every sample, and
+        motion is MOTION when there is a previous frame, else None."""
+        sample = self.index
+        t = sample / self.fps
         self.index += 1
+        self.previous_seen.append(previous_rgb is not None)
+        self.boxes_given.append(boxes)
         seen = self.scenario(t)
         kept = [f for f in seen if f.h >= finder.min_face_height][: finder.max_faces]
-        return FoundFaces(faces=kept, largest_height=max((f.h for f in seen), default=0.0))
+        if boxes is None:
+            self.detected.append(sample)
+            largest = max((f.h for f in seen), default=0.0)
+            kept_boxes = [FaceBox(f.cx, f.cy, f.w, f.h, 1.0) for f in kept]
+        else:
+            largest = max((b.h for b in boxes), default=0.0)
+            kept_boxes = list(boxes)
+        motion = None if previous_rgb is None else MOTION
+        faces_out = [replace(f, motion=motion) for f in kept]
+        return FoundFaces(faces=faces_out, largest_height=largest, boxes=kept_boxes)
 
     def close_finder(self, finder: FaceFinder) -> None:
         self.closed += 1

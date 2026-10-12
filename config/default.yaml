@@ -68,6 +68,7 @@ speaker:                     # speaker-following crop analysis: clipmachine trac
   face_crop_scale: 2.0       # the crop around a face for the mouth reading is this many times its box (1-6)
   cut_threshold: 0.12        # 0-1, picture change between two samples that counts as a shot cut
   max_faces: 4               # faces looked for in each frame (1-8)
+  detect_every: 1            # face boxes are detected on every Nth sample and reused in between (1-10)
   window_seconds: 0.5        # the speaker is chosen per window of this length
   min_shot_seconds: 1.5      # no shot is shorter than this (no flicker); at least window_seconds
   switch_ratio: 1.5          # a challenger's mouth movement must exceed the speaker's by this factor

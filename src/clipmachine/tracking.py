@@ -19,7 +19,7 @@ counts only.
 import logging
 import time
 from collections.abc import Collection, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -284,6 +284,8 @@ def _detect_faces(plan: TrackPlan, start: float, duration: float) -> Detected:
     frames: list[list[camera.FaceSample]] = []
     largest: list[float] = []
     signatures: list[list[float]] = []
+    previous: NDArray[np.uint8] | None = None
+    boxes: list[faces.FaceBox] | None = None  # the last detection's kept boxes, reused in between
     try:
         for k, frame in enumerate(
             ffmpeg.read_frames(
@@ -291,10 +293,18 @@ def _detect_faces(plan: TrackPlan, start: float, duration: float) -> Detected:
             )
         ):
             t = round(k / cfg.sample_fps, 3)
-            found = faces.find_faces(finder, frame)
+            signature = frame_signature(frame)
+            # boxes from before a cut would sit on the old shot's faces: detect afresh there
+            changed = bool(signatures) and (
+                camera.signature_distance(signatures[-1], signature) >= cfg.cut_threshold
+            )
+            reuse = boxes if k % cfg.detect_every != 0 and not changed else None
+            found = faces.find_faces(finder, frame, previous, reuse)
+            boxes = found.boxes
+            previous = frame
             frames.append(faces.to_samples(found.faces, t))
             largest.append(found.largest_height)
-            signatures.append(frame_signature(frame))
+            signatures.append(signature)
     finally:
         faces.close_finder(finder)
     return Detected(frames, largest, signatures, (frame_w, frame_h))
@@ -396,6 +406,8 @@ def analyse_clip(
     frames = detected.frames
     times = [round(k / cfg.sample_fps, 3) for k in range(len(frames))]
     cut_samples = camera.find_cuts(detected.signatures, cfg.cut_threshold)
+    for k in cut_samples:  # movement measured across a cut is not movement
+        frames[k] = [replace(f, motion=None) for f in frames[k]]
     cut_times = [times[k] for k in cut_samples]
     cut_exact = [_exact_cut_time(plan, start, times[k - 1], times[k]) for k in cut_samples]
 

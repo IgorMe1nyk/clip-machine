@@ -579,3 +579,124 @@ def test_real_finder_finds_no_face_in_a_blank_image() -> None:
         assert (found.faces, found.largest_height) == ([], 0.0)
     finally:
         faces.close_finder(finder)
+
+
+# --- pixel motion round the mouth ---------------------------------------------------------
+
+
+def test_motion_rects_for_a_known_box() -> None:
+    # centre (500, 400) px, box 100 x 120 px: x 470..530; mouth y 414..460; upper y 354..400
+    rects = faces.motion_rects(box(0.5, 0.5, 0.1, 0.15), 1000, 800)
+    assert rects is not None
+    mouth, upper = rects
+    assert mouth == pytest.approx((470, 414, 530, 460), abs=1)
+    assert upper == pytest.approx((470, 354, 530, 400), abs=1)
+
+
+def test_motion_rects_are_clamped_to_the_frame() -> None:
+    rects = faces.motion_rects(box(0.01, 0.9, 0.2, 0.4), 1000, 800)
+    assert rects is not None
+    mouth, upper = rects
+    assert mouth[0] == 0 and mouth[3] == 800
+    assert upper[0] == 0 and 0 <= upper[1] < upper[3]
+
+
+def test_motion_rects_are_none_for_a_tiny_box() -> None:
+    assert faces.motion_rects(box(0.5, 0.5, 0.005, 0.01), 1000, 800) is None
+
+
+def test_motion_rects_are_none_when_the_mouth_area_is_cut_off_by_the_frame_edge() -> None:
+    assert faces.motion_rects(box(0.5, 0.99, 0.1, 0.15), 1000, 800) is None
+
+
+def grey_noise(seed: int = 1) -> "np.ndarray[Any, Any]":
+    return np.random.default_rng(seed).integers(0, 256, size=(200, 300), dtype=np.uint8)
+
+
+MOTION_BOX = box(0.5, 0.5, 0.3, 0.5)
+
+
+def test_face_motion_of_identical_frames_is_zero() -> None:
+    pytest.importorskip("cv2")
+    frame = grey_noise()
+    assert faces.face_motion(frame, frame.copy(), MOTION_BOX) == 0.0
+
+
+def test_face_motion_sees_a_change_only_in_the_mouth_area() -> None:
+    pytest.importorskip("cv2")
+    before = grey_noise()
+    now = before.copy()
+    rects = faces.motion_rects(MOTION_BOX, 300, 200)
+    assert rects is not None
+    x0, y0, x1, y1 = rects[0]
+    now[y0:y1, x0:x1] = 255 - now[y0:y1, x0:x1]
+    motion = faces.face_motion(now, before, MOTION_BOX)
+    assert motion is not None and motion > 0.1
+
+
+def test_face_motion_cancels_a_change_in_both_areas() -> None:
+    pytest.importorskip("cv2")
+    before = grey_noise()
+    now = before.copy()
+    rects = faces.motion_rects(MOTION_BOX, 300, 200)
+    assert rects is not None
+    for x0, y0, x1, y1 in rects:
+        now[y0:y1, x0:x1] = 255 - now[y0:y1, x0:x1]
+    motion = faces.face_motion(now, before, MOTION_BOX)
+    assert motion is not None and motion < 0.05
+
+
+def test_face_motion_is_none_for_frames_of_different_shapes_or_a_tiny_box() -> None:
+    pytest.importorskip("cv2")
+    assert faces.face_motion(grey_noise(), grey_noise()[:100], MOTION_BOX) is None
+    assert faces.face_motion(grey_noise(), grey_noise(), box(0.5, 0.5, 0.005, 0.01)) is None
+
+
+def test_to_samples_copies_motion() -> None:
+    samples = to_samples([RawFace(0.2, 0.5, 0.1, 0.2, 0.3, motion=0.7)], 0.0)
+    assert samples[0].motion == 0.7
+    assert to_samples([RawFace(0.2, 0.5, 0.1, 0.2, 0.3)], 0.0)[0].motion is None
+
+
+def test_find_faces_has_no_motion_without_a_previous_frame(
+    finding: Callable[[list[FaceBox]], FakeFinding],
+) -> None:
+    finding([box(0.5, 0.5, 0.1, 0.15)])
+    found = faces.find_faces(finder_for(), FRAME)
+    assert found.faces[0].motion is None
+    assert found.boxes == [box(0.5, 0.5, 0.1, 0.15)]
+
+
+def test_find_faces_measures_motion_against_the_previous_frame(
+    finding: Callable[[list[FaceBox]], FakeFinding],
+) -> None:
+    pytest.importorskip("cv2")
+    finding([box(0.5, 0.5, 0.2, 0.4)])
+    now = np.random.default_rng(3).integers(0, 256, size=(800, 1000, 3), dtype=np.uint8)
+    same = faces.find_faces(finder_for(), now, now.copy()).faces[0].motion
+    assert same == 0.0
+
+
+def test_find_faces_with_boxes_skips_the_detector_and_returns_them(
+    finding: Callable[[list[FaceBox]], FakeFinding], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = finding([box(0.9, 0.5, 0.1, 0.1)])  # what the detector would say; must not be used
+    calls: list[int] = []
+
+    def counting(finder: object, frame: object) -> list[FaceBox]:
+        calls.append(1)
+        return fake.boxes
+
+    monkeypatch.setattr(faces, "_detect_boxes", counting)
+    given = [box(0.3, 0.5, 0.05, 0.08), box(0.7, 0.4, 0.06, 0.1)]
+    fake.crop_faces = lambda w, h: [RawFace(0.5, 0.5, 0.3, 0.4, 0.2)]
+
+    found = faces.find_faces(finder_for(), FRAME, boxes=given)
+
+    assert calls == []
+    assert found.boxes == given
+    assert [f.cx for f in found.faces] == [0.3, 0.7]
+    assert [f.mouth for f in found.faces] == [0.2, 0.2]
+    assert found.largest_height == 0.1
+    empty = faces.find_faces(finder_for(), FRAME, boxes=[])
+    assert (empty.faces, empty.largest_height, empty.boxes) == ([], 0.0, [])

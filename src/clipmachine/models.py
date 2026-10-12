@@ -247,6 +247,9 @@ class SpeakerConfig(StrictModel):
     # Picture change between two samples (0-1) that counts as a cut in the source's edit.
     cut_threshold: float = Field(default=0.12, gt=0, le=1)
     max_faces: int = Field(default=4, ge=1, le=8)
+    # Face boxes are detected on every Nth sample and reused in between (mouth and motion are still
+    # read on every sample).
+    detect_every: int = Field(default=1, ge=1, le=10)
     window_seconds: float = Field(default=0.5, gt=0)  # the speaker is chosen per window
     min_shot_seconds: float = Field(default=1.5, gt=0)  # no shot is shorter than this
     # A challenger's mouth-movement variance must beat the speaker's by this factor ...

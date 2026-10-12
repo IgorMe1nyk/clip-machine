@@ -785,3 +785,91 @@ def test_build_plan_checks_both_model_files(project: Path) -> None:
     assert plan.settings == app.speaker
     assert (plan.target_width, plan.target_height) == (1080, 1920)
     assert len(plan.model_sha256) == 64 and len(plan.detector_sha256) == 64
+
+
+# --- detect_every and motion --------------------------------------------------------------
+
+
+def one_talker(t: float) -> list[track_fakes.RawFace]:
+    return [track_fakes.RawFace(0.5, 0.5, 0.15, 0.3, track_fakes.talking(t))]
+
+
+def test_boxes_are_detected_on_every_nth_sample_and_reused_in_between(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fakes = track_fakes.install(monkeypatch, one_talker)
+
+    track = analyse_clip(
+        make_plan(tmp_path, settings=SpeakerConfig(detect_every=3)), "c01", 10.0, 10.9
+    )
+
+    assert fakes.detected == [0, 3, 6]
+    assert [b is None for b in fakes.boxes_given] == [True, False, False] * 3
+    assert track.summary.samples == 9
+    assert track.summary.mouth_read_pct == 100.0  # mouths are still read on every sample
+
+
+def test_boxes_are_never_reused_across_a_cut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fakes = track_fakes.install(monkeypatch, one_talker, track_fakes.cut_at(1.0, levels=(0, 120)))
+
+    track = analyse_clip(
+        make_plan(tmp_path, settings=SpeakerConfig(detect_every=3)), "c01", 10.0, 11.5
+    )
+
+    assert track.cuts == [1.0]
+    # sample 10 is the first of the new shot: detected although 10 is not a multiple of 3
+    assert fakes.detected == [0, 3, 6, 9, 10, 12]
+    assert fakes.boxes_given[10] is None
+
+
+def test_every_sample_is_detected_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fakes = track_fakes.install(monkeypatch, one_talker)
+    analyse_clip(make_plan(tmp_path), "c01", 10.0, 10.5)
+    assert fakes.detected == [0, 1, 2, 3, 4]
+    assert all(b is None for b in fakes.boxes_given)
+
+
+def test_the_previous_frame_is_passed_from_the_second_sample_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fakes = track_fakes.install(monkeypatch, one_talker)
+    analyse_clip(make_plan(tmp_path), "c01", 10.0, 10.4)
+    assert fakes.previous_seen == [False, True, True, True]
+
+
+def test_motion_is_none_on_the_first_sample_and_on_a_cut_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[list[camera.FaceSample]] = []
+    real = camera.follow_segments
+
+    def spy(frames: list[list[camera.FaceSample]], *args: object) -> camera.Followed:
+        seen.extend(frames)
+        return real(frames, *args)  # type: ignore[arg-type]
+
+    track_fakes.install(monkeypatch, one_talker, track_fakes.cut_at(1.0, levels=(0, 120)))
+    monkeypatch.setattr(tracking.camera, "follow_segments", spy)
+
+    track = analyse_clip(make_plan(tmp_path), "c01", 10.0, 12.0)
+
+    assert track.cuts == [1.0]
+    assert [f.motion for f in seen[0]] == [None]  # first sample
+    assert [f.motion for f in seen[5]] == [track_fakes.MOTION]
+    assert [f.motion for f in seen[10]] == [None]  # the first sample of the new shot
+    assert [f.motion for f in seen[11]] == [track_fakes.MOTION]
+
+
+def test_detect_every_does_not_change_a_still_scene(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    track_fakes.install(monkeypatch, track_fakes.two_people(switch_at=10.0))
+    base = analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0)
+    every3 = analyse_clip(
+        make_plan(tmp_path, settings=SpeakerConfig(detect_every=3)), "c01", 10.0, 30.0
+    )
+    assert every3.shots == base.shots
+    assert every3.samples == base.samples
