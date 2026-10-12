@@ -2,7 +2,7 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
-## 2026-10-12 — Brief R1: captions v2 (karaoke box), hook overlay, safe zones (built; real run done; Igor's ratings pending)
+## 2026-10-12 — Brief R1: captions v2 (karaoke box), hook overlay, safe zones (built; real run done; style approved; MVP re-rating pending)
 
 **Why:** make clips more watchable at $0: captions that read at a glance and do not feel cramped,
 the hook line on screen at the start, and nothing under the TikTok, Reels and Shorts buttons.
@@ -60,10 +60,20 @@ config at Igor's request; `default.yaml` stays at 64 until he has seen it on a p
 - No real frame was looked at by Claude: placement was checked from the numbers in the `.ass`
   files and the clip json. The pictures are Igor's to judge.
 
+**Igor's check** (c05, c14 and c01 on his phone, size 96): style approved, font size good, hook
+placement fine; the captions sat a bit too high.
+- **Changed after it (D-022 update, D-023 update):** `captions.font_size` 64 → 96 and
+  `safe.bottom` 672 → 560 in `config/default.yaml`. The 560 margin still has to be checked
+  against the real TikTok UI with a draft upload.
+- **Second render** of `runs/2026-10-12_t3` with both values: 6 clips in 98 s wall time (tracks
+  reused, no analysis). Caption boxes now sit at y 1253–1348 in every clip (were 1141–1236);
+  hook bands unchanged at y 749–1051; still nothing outside the margins (0 of 6).
+- Tests after the change: 1413 passed, 2 skipped; ruff, format, mypy and pip-audit clean.
+
 **Not done**
 - Stacked-shot caption and hook placement, and their tests: moved to Brief 8.3.
 - Font weight 500–600: only Montserrat Bold (700) is installed.
-- Igor's ratings of the real run (3 clips on a phone, then all clips under the MVP rubric).
+- Igor's re-rating of all six clips under the MVP rubric (the next EVAL.md row).
 
 **Cost:** $0. No API calls, no new dependency.
 
