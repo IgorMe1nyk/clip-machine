@@ -336,6 +336,8 @@ class HookConfig(StrictModel):
     enabled: bool = False
     seconds: float = Field(default=2.0, gt=0, le=10)
     fade_ms: int = Field(default=150, ge=0, le=2000)
+    # added in Brief 11; the hook's own size, separate from captions.font_size
+    font_size: int = Field(default=80, ge=20, le=200)
 
 
 class SafeConfig(StrictModel):
@@ -853,6 +855,8 @@ class RenderedSettings(StrictModel):
     safe_bottom: int = 0
     safe_left: int = 0
     safe_right: int = 0
+    # added in Brief 11; old JSON files load as 0, which makes old outputs stale so they re-render
+    hook_font_size: int = 0
 
 
 class RenderedOutput(StrictModel):

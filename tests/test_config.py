@@ -790,6 +790,31 @@ def test_config_without_the_r1_keys_loads_as_legacy(project: Path) -> None:
     assert (app.safe.top, app.safe.bottom, app.safe.left, app.safe.right) == (290, 560, 120, 192)
 
 
+def test_the_hook_font_size_is_80_and_separate_from_the_caption_size(project: Path) -> None:
+    app = load_app_config(project)
+    assert app.hook.font_size == 80 and app.captions.font_size == 96
+
+
+def test_a_config_without_hook_font_size_loads_as_80(project: Path) -> None:
+    _default(project, lambda d: d["hook"].pop("font_size"))
+    assert load_app_config(project).hook.font_size == 80
+
+
+@pytest.mark.parametrize("size", [20, 200])
+def test_the_hook_font_size_range_ends_are_valid(project: Path, size: int) -> None:
+    _default(project, lambda d: d["hook"].update(font_size=size))
+    assert load_app_config(project).hook.font_size == size
+
+
+def test_a_resolved_file_without_hook_font_size_still_loads(project: Path, tmp_path: Path) -> None:
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "example-client"), target)
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    del data["config"]["hook"]["font_size"]
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert load_resolved_file(target).app.hook.font_size == 80
+
+
 def _box_karaoke(d: dict[str, Any]) -> None:
     d["captions"]["style"] = "box_karaoke"
 
@@ -818,6 +843,8 @@ def test_box_karaoke_with_the_default_margins_is_valid(project: Path) -> None:
         (lambda d: d.update(hook={"seconds": 0}), "hook.seconds"),
         (lambda d: d.update(hook={"fade_ms": -1}), "hook.fade_ms"),
         (lambda d: d.update(hook={"enable": True}), "hook.enable"),  # typo: unknown key
+        (lambda d: d["hook"].update(font_size=19), "hook.font_size"),
+        (lambda d: d["hook"].update(font_size=201), "hook.font_size"),
         (lambda d: d.update(safe={"top": -1}), "safe.top"),
         # margins that leave no room
         (lambda d: d.update(safe={"left": 600, "right": 480}), "safe.left"),
@@ -896,6 +923,7 @@ def test_rendered_settings_and_clip_json_from_before_r1_still_load() -> None:
     assert settings.caption_style == "legacy" and settings.hook_enabled is False
     assert (settings.safe_top, settings.safe_bottom, settings.max_words) == (0, 0, 0)
     assert settings.spoken_color == "" and settings.box_opacity == 0.0
+    assert settings.hook_font_size == 0  # Brief 11: old outputs are stale and re-render
 
     old_clip = {
         "id": "c01",

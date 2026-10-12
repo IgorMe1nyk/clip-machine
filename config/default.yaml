@@ -116,6 +116,7 @@ hook:                        # the clip's hook line as big text at the start (ne
   enabled: true
   seconds: 2.0               # shown from 0 to this
   fade_ms: 150               # fade-out at the end
+  font_size: 80              # the hook's own ASS font size, separate from captions.font_size; 20-200
 safe:                        # pixels the TikTok / Reels / Shorts apps cover (D-023)
   top: 290
   bottom: 560                # organic posts; the strictest published number is 672. To be checked against the real TikTok UI

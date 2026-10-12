@@ -646,7 +646,7 @@ def build_ass_v2(
 # --- hook overlay (Brief R1) -------------------------------------------------------------------
 
 HOOK_CAPTION_GAP_PX = 12  # least gap between the hook band and the caption box below it
-HOOK_SIZE_FRACTIONS = (1.0, 0.9, 0.8, 0.7)  # font sizes tried, as fractions of the caption size
+HOOK_SIZE_FRACTIONS = (1.0, 0.9, 0.8, 0.7)  # font sizes tried, as fractions of the hook's base size
 HOOK_MAX_LINES = 2
 LAYER_HOOK_BOX = 2
 LAYER_HOOK_TEXT = 3
@@ -698,11 +698,13 @@ def build_hook(
     fade_ms: int,
     line_gap_em: float,
     clip_seconds: float,
+    font_size: int | None = None,
 ) -> HookResult:
     """The hook as white text on a dark band at the top of the safe area, from 0 to `seconds`
-    with a fade-out. At most two lines; the font size goes down to 70 % and then words are
-    dropped (an ellipsis on the last one) until it fits the safe width. The band moves below any
-    face in `faces` (output-frame rectangles); `faces=None` means nothing is known about faces.
+    with a fade-out. At most two lines; `font_size` is the base size (None: the caption size), the
+    size goes down to 70 % of it and then words are dropped (an ellipsis on the last one) until it
+    fits the safe width. The band moves below any face in `faces` (output-frame rectangles);
+    `faces=None` means nothing is known about faces.
 
     `text` is untrusted: `clean_word` removes `{ } \\` and turns newlines into spaces.
     """
@@ -713,7 +715,8 @@ def build_hook(
     words = cleaned.split(" ")
     pad = settings.box_padding_px
     limit = (safe.x2 - safe.x1) - 2 * pad
-    sizes = [math.floor(settings.font_size * f) for f in HOOK_SIZE_FRACTIONS]
+    base = settings.font_size if font_size is None else font_size
+    sizes = [math.floor(base * f) for f in HOOK_SIZE_FRACTIONS]
 
     layout: list[list[str]] | None = None
     size = sizes[0]
@@ -721,7 +724,7 @@ def build_hook(
         layout = _hook_layout(words, size, limit, settings, metrics)
         if layout is not None:
             break
-    if layout is not None and size < settings.font_size:
+    if layout is not None and size < base:
         notes.append("hook_shrunk")
     if layout is None:
         notes.append("hook_truncated")
@@ -738,7 +741,7 @@ def build_hook(
             ):
                 body = body[:-1]
             layout = [[body + mark]]
-        if size < settings.font_size and "hook_shrunk" not in notes:
+        if size < base and "hook_shrunk" not in notes:
             notes.append("hook_shrunk")
 
     cap = metrics.cap_px(size)

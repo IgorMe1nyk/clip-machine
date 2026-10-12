@@ -1275,6 +1275,45 @@ def test_a_changed_caption_setting_makes_the_old_output_stale(
     assert read_json(ctx.run_dir / "clips" / "c01.json")["settings"]["word_gap_em"] == 0.6
 
 
+def test_the_hook_is_drawn_at_its_own_configured_size_not_the_caption_size(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    ctx = v2_ctx(project)
+    assert ctx.config.app.captions.font_size == 96  # the caption size, unchanged by the hook
+
+    render.run(ctx)
+
+    text = hook_lines(ctx.run_dir)[1]
+    assert "\\fs80}" in text  # the shipped hook size; the Hook style itself is the caption size
+    assert read_json(ctx.run_dir / "clips" / "c01.json")["settings"]["hook_font_size"] == 80
+
+
+def test_a_changed_hook_font_size_reaches_the_ass_file_and_makes_the_output_stale(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    ctx = v2_ctx(project)
+    render.run(ctx)
+    fake.calls.clear()
+
+    ctx.config.app.hook = ctx.config.app.hook.model_copy(update={"font_size": 60})
+    render.run(resume(ctx))
+
+    assert fake.ids == ["c01", "c02"]
+    assert "\\fs60}" in hook_lines(ctx.run_dir)[1]
+    assert read_json(ctx.run_dir / "clips" / "c01.json")["settings"]["hook_font_size"] == 60
+
+
+def test_a_hook_font_size_equal_to_the_caption_size_needs_no_size_tag(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    ctx = v2_ctx(project)
+    ctx.config.app.hook = ctx.config.app.hook.model_copy(update={"font_size": 96})
+
+    render.run(ctx)
+
+    assert not re.search(r"\\fs\d", hook_lines(ctx.run_dir)[1])  # \fsp is letter spacing
+
+
 def test_an_unreadable_font_file_fails_before_anything_is_deleted(
     project: Path, fake: FakeFfmpeg
 ) -> None:

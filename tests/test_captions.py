@@ -1,3 +1,4 @@
+import math
 import re
 from dataclasses import replace
 from pathlib import Path
@@ -6,6 +7,7 @@ import pytest
 
 from clipmachine.models import CaptionsConfig, TranscriptSegment, TranscriptWord
 from clipmachine.utils.captions import (
+    HOOK_SIZE_FRACTIONS,
     AssEvent,
     CaptionWord,
     HookResult,
@@ -754,6 +756,7 @@ def hook(
     seconds: float = 2.0,
     clip: float = 30.0,
     fade_ms: int = 150,
+    font_size: int | None = None,
 ) -> HookResult:
     return build_hook(
         text,
@@ -765,6 +768,7 @@ def hook(
         fade_ms=fade_ms,
         line_gap_em=0.35,
         clip_seconds=clip,
+        font_size=font_size,
     )
 
 
@@ -863,6 +867,56 @@ def test_a_hook_too_wide_for_one_line_at_full_size_is_shrunk(metrics: FontMetric
     (event,) = hook_text_events(result)
     assert hook_size(event) == 57 and "\\fs57}" in event.text
     assert result.band is not None and result.band.inside(SAFE)
+
+
+# --- the hook's own base size (Brief 11); the caption size in these tests is 64 -------------------
+
+
+def test_no_hook_font_size_means_the_caption_size(metrics: FontMetrics) -> None:
+    default = hook(metrics, "synthetic hook line", [])
+    explicit = hook(metrics, "synthetic hook line", [], font_size=SETTINGS.font_size)
+    assert default.events == explicit.events and default.notes == explicit.notes
+    (event,) = hook_text_events(default)
+    assert not re.search(r"\\fs\d", event.text)  # the Hook style already has the caption size
+
+
+@pytest.mark.parametrize("base", [40, 100])
+def test_a_hook_font_size_other_than_the_caption_size_gets_a_size_tag(
+    metrics: FontMetrics, base: int
+) -> None:
+    result = hook(metrics, "synthetic hook line", [], font_size=base)
+    (event,) = hook_text_events(result)
+    assert hook_size(event) == base and f"\\fs{base}}}" in event.text
+    assert result.notes == []  # smaller than the caption size is not "shrunk"
+
+
+def test_the_hook_shrinks_in_fractions_of_its_own_base_size(metrics: FontMetrics) -> None:
+    for base in (40, 100):
+        count = next(
+            n for n in range(1, 200) if metrics.text_width("m" * n, base, 1.0) > HOOK_LIMIT
+        )
+        result = hook(metrics, "m" * count, [], font_size=base)
+        (event,) = hook_text_events(result)
+        assert result.notes == ["hook_shrunk"]
+        assert hook_size(event) in {math.floor(base * f) for f in HOOK_SIZE_FRACTIONS[1:]}
+        assert result.band is not None and result.band.inside(SAFE)
+
+
+def test_a_truncated_hook_is_shrunk_to_seventy_percent_of_the_base_size(
+    metrics: FontMetrics,
+) -> None:
+    result = hook(metrics, "w" * 400, [], font_size=100)
+    (event,) = hook_text_events(result)
+    assert {"hook_truncated", "hook_shrunk"} <= set(result.notes)
+    assert hook_size(event) == 70
+
+
+def test_a_hook_at_its_base_size_is_not_shrunk_even_below_the_caption_size(
+    metrics: FontMetrics,
+) -> None:
+    result = hook(metrics, "alpha beta", [], font_size=20)
+    (event,) = hook_text_events(result)
+    assert hook_size(event) == 20 and result.notes == []
 
 
 def test_a_60_word_hook_is_truncated_to_two_lines_inside_the_safe_area(

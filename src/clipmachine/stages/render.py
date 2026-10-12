@@ -240,6 +240,7 @@ def _settings_of(app: AppConfig) -> RenderedSettings:
         safe_bottom=app.safe.bottom,
         safe_left=app.safe.left,
         safe_right=app.safe.right,
+        hook_font_size=app.hook.font_size,
     )
 
 
@@ -437,6 +438,7 @@ def _karaoke_captions(
             fade_ms=settings.hook_fade_ms,
             line_gap_em=settings.line_gap_em,
             clip_seconds=duration,
+            font_size=settings.hook_font_size,
         )
         hook_events = hook.events
         shown, moved = hook.shown, hook.moved
