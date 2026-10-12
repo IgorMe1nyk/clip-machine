@@ -39,11 +39,13 @@ from clipmachine.runs import RunError, write_json_atomic
 from clipmachine.stages import score
 from clipmachine.stages.score import (
     Adjust,
+    CutInfo,
     Draft,
     Located,
     candidate_block,
     chunk,
     context_sentences,
+    final_cut,
     ids_problem,
     resolve_adjust,
     select,
@@ -248,7 +250,9 @@ def test_numbered_sentences_match_the_snapping_rules(rig: Rig) -> None:
     for candidate_number, (a, b) in enumerate([(2, 4), (7, 9)], start=1):
         for local, global_number in enumerate(range(a, b + 1), start=1):
             seg = rig.segments[global_number]
-            assert f"{local} [{seg.start:.2f}-{seg.end:.2f}] {seg.text}\n" in user
+            # every sentence here starts a clean cut and ends in a real full stop
+            marks = "start=ok end=."
+            assert f"{local} [{seg.start:.2f}-{seg.end:.2f} {marks}] {seg.text}\n" in user
         assert f'<candidate id="c{candidate_number:02d}" ' in user
     assert 'seconds="27.0" sentences="3"' in user
     assert user.count("<candidate ") == 2 and user.count("</candidate>") == 2
@@ -303,7 +307,7 @@ def _section(lines: list[str], tag: str) -> list[str]:
     return lines[lines.index(f"<{tag}>") + 1 : lines.index(f"</{tag}>")]
 
 
-NUMBERED = re.compile(r"^(-?\d+) \[\d+\.\d\d-\d+\.\d\d\] (.*)$")
+NUMBERED = re.compile(r"^(-?\d+) \[\d+\.\d\d-\d+\.\d\d start=(?:ok|no) end=\S+\] (.*)$")
 
 
 def _numbers(lines: list[str]) -> list[tuple[int, str]]:
@@ -378,21 +382,22 @@ def test_tag_lookalikes_in_the_context_are_neutralised(rig: Rig) -> None:
     assert "] [tag removed]" in user
 
 
-def test_boundary_flags_come_from_the_snap_notes_and_reach_the_prompt(rig: Rig) -> None:
+def test_the_old_segment_edge_attributes_no_longer_reach_the_prompt(rig: Rig) -> None:
+    # was: the snap notes become start_at_segment_edge / end_at_segment_edge on the <candidate>
+    # tag. The marks now come from the sentence index; the tag carries only id, seconds, sentences.
     rig.candidates(
         (0, 2), (3, 5), (6, 8), notes={1: [EDGE_START_NOTE], 3: [EDGE_START_NOTE, EDGE_END_NOTE]}
     )
     rig.script(answer(batch(clip("c01"), clip("c02"), clip("c03"))))
     rig.run()
     user = rig.user_text()
-
-    def flags(candidate_id: str) -> str:
-        head = next(line for line in user.splitlines() if f'id="{candidate_id}"' in line)
-        return head.split('sentences="3" ')[1]
-
-    assert flags("c01") == 'start_at_segment_edge="true" end_at_segment_edge="false">'
-    assert flags("c02") == 'start_at_segment_edge="false" end_at_segment_edge="false">'
-    assert flags("c03") == 'start_at_segment_edge="true" end_at_segment_edge="true">'
+    assert "segment_edge" not in user
+    heads = [line for line in user.splitlines() if line.startswith("<candidate ")]
+    assert len(heads) == 3
+    for head, candidate_id in zip(heads, ("c01", "c02", "c03"), strict=True):
+        assert re.fullmatch(
+            rf'<candidate id="{candidate_id}" seconds="[\d.]+" sentences="3">', head
+        )
 
 
 def test_prompt_asks_for_repair_first_and_judging_by_meaning(rig: Rig) -> None:
@@ -408,8 +413,200 @@ def test_prompt_asks_for_repair_first_and_judging_by_meaning(rig: Rig) -> None:
     assert "must still be 20-60 seconds long" in user
     assert "The sentences in <before> have numbers 0 and below" in user
     assert "must include at least one of the clip's own sentences" in user
-    assert "has no punctuation at that boundary" in user
-    assert "not by punctuation or capitalisation" in user
+    assert "Still judge the start and end by meaning, using the before and after context" in user
+
+
+# --- end kinds and clean boundaries (Brief 10) ---------------------------------------------------
+
+
+def _edit(
+    segments: list[TranscriptSegment], n: int, *, stop: str = ".", gap: float | None = None
+) -> None:
+    """Change how sentence n ends: its closing mark and, when `gap` is given, the silence after
+    it (the last word's end moves; the next sentence keeps its times)."""
+    seg = segments[n]
+    words = list(seg.words)
+    last = words[-1]
+    end = last.end if gap is None else round(segments[n + 1].words[0].start - gap, 3)
+    words[-1] = last.model_copy(update={"word": last.word.rstrip(".?!") + stop, "end": end})
+    segments[n] = seg.model_copy(
+        update={"words": words, "text": seg.text.rstrip(".?!") + stop, "end": end}
+    )
+
+
+def weak_transcript() -> list[TranscriptSegment]:
+    """make_segments() with every kind of sentence end. Sentence index (and what it is):
+
+    0 ".", 1 ".", 2 "edge" (full stop, only 0.1 s of silence), 3 ".", 4 ".", 5 "pause" (no full
+    stop, 0.55 s of silence), 6 "edge" (the next two segments, 30 words), 7 "?", 8 ".", 9 ".",
+    10 "!" (the end of the recording). Times: sentence n starts at 9.0 * n up to 5, sentence 6
+    starts at 54.0, sentence 7 at 72.0, and so on. Sentences 3 and 7 are start=no.
+    """
+    segments = make_segments()
+    _edit(segments, 2, gap=0.1)
+    _edit(segments, 5, stop="", gap=0.55)  # 45 words without a stop: split at the pause
+    _edit(segments, 6, stop="")
+    _edit(segments, 7, gap=0.1)
+    _edit(segments, 8, stop="?")
+    _edit(segments, 11, stop="!")
+    return segments
+
+
+MARKED = re.compile(r"^(-?\d+) \[\d+\.\d\d-\d+\.\d\d start=(ok|no) end=(\S+)\] ")
+
+
+def _marks(user: str) -> dict[int, tuple[str, str]]:
+    found = {}
+    for line in user.splitlines():
+        match = MARKED.match(line)
+        if match:
+            found[int(match.group(1))] = (match.group(2), match.group(3))
+    return found
+
+
+def test_the_start_and_end_marks_reach_the_prompt(rig: Rig) -> None:
+    rig.set_transcript(weak_transcript())
+    rig.candidates((5, 8))  # before: sentences 1-4 (-3..0); clip 5-8 (1..4); after 9-10 (5, 6)
+    rig.script(answer(batch(clip("c01"))))
+    rig.run()
+    user = rig.user_text()
+    assert _marks(user) == {
+        -3: ("ok", "."),
+        -2: ("ok", "edge"),
+        -1: ("no", "."),  # the sentence before it ends on an edge
+        0: ("ok", "."),
+        1: ("ok", "pause"),
+        2: ("ok", "edge"),  # a pause end before it, so a clip may start here
+        3: ("no", "?"),
+        4: ("ok", "."),
+        5: ("ok", "."),
+        6: ("ok", "!"),
+    }
+    # the marks sit inside our own bracket, before the text
+    assert re.search(r"^1 \[\d+\.\d\d-\d+\.\d\d start=ok end=pause\] alpha5x0 ", user, re.M)
+    head = next(line for line in user.splitlines() if line.startswith("<candidate "))
+    assert re.fullmatch(r'<candidate id="c01" seconds="[\d.]+" sentences="4">', head)
+    assert "segment_edge" not in user
+
+
+def test_the_prompt_explains_the_marks_and_what_is_not_applied(rig: Rig) -> None:
+    rig.candidates((0, 2))
+    rig.script(answer(batch(clip("c01"))))
+    rig.run()
+    user = " ".join(rig.user_text().split())
+    assert "start=ok or start=no says whether a clip may start at that sentence" in user
+    assert ". ? ! = a real sentence end with a pause after it" in user
+    assert "pause = no punctuation but a clear pause" in user
+    assert "edge = weak: the speaker runs straight on" in user
+    assert "may start only at a sentence marked start=ok" in user
+    assert "may end only on a sentence whose end is not edge" in user
+    assert "Prefer ending on a real end (. ? !) over pause" in user
+    assert "starts at start=no or ends on end=edge is ignored and the clip is lost" in user
+    assert "an allowed boundary can still be mid-thought" in user
+    assert "A repair you only describe in the reason is not applied" in user
+    assert "put that range in keep_sentences" in user
+    assert re.search(r"\{\w+\}", user) is None
+
+
+@pytest.mark.parametrize(
+    ("span", "keep", "where"),
+    [
+        ((2, 5), (2, 4), "start"),  # sentences 3-5: sentence 3 follows an edge
+        ((0, 4), (1, 3), "end"),  # sentences 0-2: sentence 2 ends on an edge
+        ((2, 7), (2, 5), "start and end"),  # sentences 3-6: both
+        ((1, 4), (1, 2), "end"),  # also 18 s, under the minimum: the boundary wins over length
+    ],
+)
+def test_an_adjustment_on_a_weak_boundary_is_ignored_and_the_clip_is_dropped(
+    rig: Rig, span: tuple[int, int], keep: tuple[int, int], where: str
+) -> None:
+    rig.set_transcript(weak_transcript())
+    rig.candidates(span)
+    rig.script(answer(batch(clip("c01", score=9, keep=keep))))
+    out = rig.run()
+    (only,) = out.clips
+    assert only.dropped_by == "adjust_ignored" and only.kept is False and only.rank is None
+    assert only.trimmed is False and only.kept_sentences is None
+    assert (only.start, only.end) == (only.candidate_start, only.candidate_end)
+    note = (
+        f"adjustment to sentences {keep[0]}-{keep[1]} ignored: "
+        f"it would {where} where there is no pause"
+    )
+    assert only.notes[0] == note
+    assert re.fullmatch(r"[\d\- a-z]+", note.replace(":", ""))  # numbers and plain words only
+    summary = out.summary
+    assert summary.adjusts_on_weak_boundary == 1 and summary.adjust_ignored == 1
+    assert (summary.trims_ignored, summary.trims_out_of_range) == (0, 0)
+    assert out.warnings == ["c01: kept by the model but its adjustment was ignored: not kept"]
+
+
+def test_an_adjustment_that_ends_on_a_pause_end_is_accepted(rig: Rig) -> None:
+    rig.set_transcript(weak_transcript())
+    rig.candidates((2, 6))  # sentences 2-6; the candidate itself ends on an edge
+    rig.script(answer(batch(clip("c01", keep=(1, 4)))))  # sentences 2-5: ends on the pause
+    out = rig.run()
+    (only,) = out.clips
+    assert only.kept is True and only.dropped_by is None and only.trimmed is True
+    assert only.start == pytest.approx(17.9)
+    assert only.end < only.candidate_end
+    assert out.summary.adjusts_on_weak_boundary == 0
+    assert "trimmed to sentences 1-4 of 5" in only.notes
+
+
+def test_the_log_counts_the_boundary_ignores_and_names_the_cut(
+    rig: Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    rig.set_transcript(weak_transcript())
+    rig.candidates((2, 5))
+    rig.script(answer(batch(clip("c01", keep=(2, 4)))))
+    with caplog.at_level(logging.INFO):
+        rig.run()
+    assert "1 ignored" in caplog.text
+    assert "cut=./pause gaps=0.2/0.55" in caplog.text
+
+
+def test_the_final_cut_is_recorded_for_every_kind_of_clip(rig: Rig) -> None:
+    rig.set_transcript(weak_transcript())
+    rig.candidates((0, 2), (4, 5), (2, 6), (8, 10))
+    rig.script(
+        answer(batch(clip("c01"), clip("c02"), clip("c03", keep=(1, 4)), clip("c04"))),
+    )
+    by_id = {c.id: c for c in rig.run().clips}
+
+    def cut(clip_id: str) -> tuple[Any, Any, Any, Any]:
+        c = by_id[clip_id]
+        return (c.start_boundary, c.end_boundary, c.start_gap, c.end_gap)
+
+    # the first sentence of the recording: "start", no gap; ends on an edge with 0.1 s
+    assert cut("c01") == ("start", "edge", None, pytest.approx(0.1))
+    assert cut("c02") == (".", "pause", pytest.approx(0.2), pytest.approx(0.55))
+    # adjusted: the applied range (sentences 2-5), not the candidate's own (2-6)
+    assert cut("c03") == (".", "pause", pytest.approx(0.2), pytest.approx(0.55))
+    # the last sentence of the recording: nothing after it
+    assert cut("c04") == ("?", "!", pytest.approx(0.2), None)
+    assert by_id["c03"].kept_sentences is not None
+
+
+def test_final_cut_helper_on_the_weak_transcript() -> None:
+    index = build_index(weak_transcript(), 40)
+    assert [s.end for s in index.sentences] == [
+        ".",
+        ".",
+        "edge",
+        ".",
+        ".",
+        "pause",
+        "edge",
+        "?",
+        ".",
+        ".",
+        "!",
+    ]
+    assert final_cut(index, 0, 10) == CutInfo("start", "!", None, None)
+    middle = final_cut(index, 6, 7)
+    assert (middle.start_boundary, middle.end_boundary) == ("pause", "?")
+    assert middle.start_gap == pytest.approx(0.55) and middle.end_gap == pytest.approx(0.2)
+    assert round(middle.start_gap or 0, 3) == middle.start_gap  # rounded to 3 decimals
 
 
 # --- request settings ----------------------------------------------------------------------------
@@ -804,15 +1001,17 @@ def test_long_hook_and_reason_are_noted_not_failed(rig: Rig) -> None:
 # --- adjustment outcomes in scored.json ---------------------------------------------------------
 
 
-def test_a_trim_on_a_flagged_start_maps_to_times_and_is_recorded(rig: Rig) -> None:
-    rig.candidates((2, 6), notes={1: [EDGE_START_NOTE]})  # five sentences, 17.9 - 62.9
+def test_a_trim_maps_to_times_and_is_recorded(rig: Rig) -> None:
+    rig.candidates((2, 6))  # five sentences, 17.9 - 62.9
     rig.script(answer(batch(clip("c01", keep=(2, 4)))))
     out = rig.run()
     (only,) = out.clips
     assert (only.start, only.end) == (26.9, 53.9)  # local 2..4 are global 3..5
     assert (only.candidate_start, only.candidate_end) == (17.9, 62.9)
     assert only.trimmed is True and only.kept is True and only.rank == 1
-    assert only.start_at_segment_edge is True and only.end_at_segment_edge is False
+    # the old segment-edge flags are no longer set; the cut is recorded instead (global 3..5)
+    assert (only.start_at_segment_edge, only.end_at_segment_edge) == (False, False)
+    assert (only.start_boundary, only.end_boundary) == (".", ".")
     assert only.sentences == 5
     assert (only.kept_sentences.first, only.kept_sentences.last) == (2, 4)  # type: ignore[union-attr]
     summary = out.summary
@@ -820,12 +1019,14 @@ def test_a_trim_on_a_flagged_start_maps_to_times_and_is_recorded(rig: Rig) -> No
     assert (summary.trims_ignored, summary.trims_out_of_range) == (0, 0)
 
 
-def test_untrimmed_clips_carry_the_flags_and_no_kept_sentences(rig: Rig) -> None:
+def test_untrimmed_clips_carry_the_cut_and_no_kept_sentences(rig: Rig) -> None:
     rig.candidates((0, 2), notes={1: [EDGE_END_NOTE]})
     rig.script(answer(batch(clip("c01"))))
     (only,) = rig.run().clips
     assert only.kept_sentences is None and only.sentences == 3
-    assert (only.start_at_segment_edge, only.end_at_segment_edge) == (False, True)
+    # was (False, True): the snap note is no longer read; the end kind comes from the index
+    assert (only.start_at_segment_edge, only.end_at_segment_edge) == (False, False)
+    assert (only.start_boundary, only.end_boundary) == ("start", ".")
 
 
 def test_a_kept_clip_whose_trim_was_ignored_for_length_is_not_kept(rig: Rig) -> None:
@@ -977,6 +1178,23 @@ def test_a_scored_json_from_brief_5_still_loads(rig: Rig) -> None:
         del data["summary"][key]
     old = ScoredFile.model_validate(data)
     assert old.clips[0].sentences == 0 and old.summary.trims_applied == 0
+
+
+def test_a_scored_json_from_before_brief_10_still_loads(rig: Rig) -> None:
+    rig.candidates((0, 2))
+    rig.script(answer(batch(clip("c01"))))
+    rig.run()
+    data = json.loads((rig.run_dir / "scored.json").read_text(encoding="utf-8"))
+    for key in ("start_boundary", "end_boundary", "start_gap", "end_gap"):
+        assert key in data["clips"][0]
+        del data["clips"][0][key]
+    assert "adjusts_on_weak_boundary" in data["summary"]
+    del data["summary"]["adjusts_on_weak_boundary"]
+    old = ScoredFile.model_validate(data)
+    clip_ = old.clips[0]
+    assert (clip_.start_boundary, clip_.end_boundary) == (None, None)
+    assert (clip_.start_gap, clip_.end_gap) == (None, None)
+    assert old.summary.adjusts_on_weak_boundary == 0
 
 
 def test_a_scored_json_from_brief_8_with_trim_ignored_still_loads(rig: Rig) -> None:

@@ -167,6 +167,23 @@ def _transcript_text(transcript: Transcript, clip: ScoredClip) -> str:
     return " ".join(w.text for w in words)
 
 
+def _cut_line(label: str, kind: str, gap: float | None) -> str:
+    gap_text = f" (gap {gap:.2f} s)" if gap is not None else ""
+    return f'<span class="badge">{_esc(label)}: {_esc(kind)}{_esc(gap_text)}</span>'
+
+
+def _cut_badges(clip: ScoredClip) -> str:
+    """How the clip is cut (Brief 10); nothing for clips from older files."""
+    badges = ""
+    if clip.start_boundary == "start":
+        badges += '<span class="badge">starts at the start of the recording</span>'
+    elif clip.start_boundary is not None:
+        badges += _cut_line("starts after", clip.start_boundary, clip.start_gap)
+    if clip.end_boundary is not None:
+        badges += _cut_line("ends on", clip.end_boundary, clip.end_gap)
+    return badges
+
+
 def _card(clip: ScoredClip, problem: str | None, text: str) -> str:
     badges = ""
     if clip.trimmed:
@@ -177,6 +194,7 @@ def _card(clip: ScoredClip, problem: str | None, text: str) -> str:
         badges += '<span class="badge">starts at segment edge</span>'
     if clip.end_at_segment_edge:
         badges += '<span class="badge">ends at segment edge</span>'
+    badges += _cut_badges(clip)
     if problem is None:
         player = (
             f'<video controls preload="metadata" width="360" '

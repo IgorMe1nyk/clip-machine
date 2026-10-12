@@ -236,6 +236,45 @@ def test_badges_title_hook_reason_and_transcript(ctx: RunContext) -> None:
     assert "<details><summary>Transcript</summary>" in card
 
 
+def test_cut_badges_show_kind_and_gap_for_a_new_clip(ctx: RunContext) -> None:
+    clip = kept(
+        "c01",
+        1,
+        10.0,
+        30.0,
+        start_boundary="?",
+        end_boundary="pause",
+        start_gap=0.42,
+        end_gap=0.38,
+    )
+    card = cards(build(ctx, [clip]))[0]
+    assert "starts after: ? (gap 0.42 s)" in card
+    assert "ends on: pause (gap 0.38 s)" in card
+
+
+def test_cut_badges_leave_out_a_missing_gap_and_escape_the_kind(ctx: RunContext) -> None:
+    clip = kept(
+        "c01",
+        1,
+        10.0,
+        30.0,
+        start_boundary="start",
+        end_boundary="<b>",
+        start_gap=None,
+        end_gap=None,
+    )
+    card = cards(build(ctx, [clip]))[0]
+    assert "starts at the start of the recording</span>" in card and "starts after" not in card
+    assert "ends on: &lt;b&gt;</span>" in card
+    assert "<b>" not in card.split("ends on")[1].split("</span>")[0]
+    assert "gap" not in card
+
+
+def test_an_old_clip_shows_no_cut_badges(ctx: RunContext) -> None:
+    card = cards(build(ctx, [kept("c01", 1, 10.0, 30.0)]))[0]
+    assert "starts after" not in card and "ends on" not in card and "gap" not in card
+
+
 def test_summary_counts_cost_and_time(ctx: RunContext) -> None:
     put_costs(ctx.run_dir, 0.0234)
     clips = [

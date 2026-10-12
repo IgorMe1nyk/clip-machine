@@ -19,6 +19,7 @@ reason is logged.
 """
 
 import logging
+import math
 import re
 from collections import Counter
 from collections.abc import Callable
@@ -56,7 +57,6 @@ from clipmachine.utils.snapping import (
     SentenceIndex,
     build_index,
     dedupe,
-    edge_flags,
     locate,
     span_times,
     words_text,
@@ -82,12 +82,21 @@ class Located:
     candidate: Candidate
     first: int
     last: int
-    start_at_segment_edge: bool = False  # from the candidate's snap notes
-    end_at_segment_edge: bool = False
 
     @property
     def count(self) -> int:
         return self.last - self.first + 1
+
+
+@dataclass(frozen=True)
+class CutInfo:
+    """How the final clip is cut. Kinds are the sentence index's end kinds, or "start" for the
+    beginning of the recording; gaps are seconds of silence, None where there is no neighbour."""
+
+    start_boundary: str | None = None  # end kind of the sentence before the clip's first
+    end_boundary: str | None = None  # end kind of the clip's last sentence
+    start_gap: float | None = None  # previous word's end to the clip's first word
+    end_gap: float | None = None  # clip's last word to the next word
 
 
 @dataclass(frozen=True)
@@ -96,7 +105,9 @@ class Adjust:
     end: float
     trimmed: bool  # a sentence of the candidate was removed
     note: str | None
-    ignored: Literal["range", "length"] | None = None  # why the model's keep_sentences was not used
+    # why the model's keep_sentences was not used: outside the shown numbers, outside the length
+    # limits, or a start or end where a clean cut is not possible
+    ignored: Literal["range", "length", "boundary"] | None = None
     keep: KeepSentences | None = None  # the range that was applied, when changed
     extended_start: int = 0  # sentences added before the candidate's first
     extended_end: int = 0  # sentences added after the candidate's last
@@ -112,8 +123,7 @@ class Draft:
     adjust: Adjust
     notes: list[str]
     sentences: int = 0  # sentences in the candidate
-    start_at_segment_edge: bool = False
-    end_at_segment_edge: bool = False
+    cut: CutInfo = CutInfo()  # how the final clip is cut
 
 
 def _remove_outputs(run_dir: Path, *, strict: bool) -> None:
@@ -152,8 +162,7 @@ def locate_all(
             a, b = span
             text = words_text(index, index.sentences[a].first, index.sentences[b].last)
             if text == candidate.text:
-                start_edge, end_edge = edge_flags(candidate.snap_notes)
-                found.append(Located(candidate, a, b, start_edge, end_edge))
+                found.append(Located(candidate, a, b))
                 continue
         raise RunError(
             f"{CANDIDATES_JSON} does not match transcript.json (candidate {candidate.id}): "
@@ -181,16 +190,23 @@ def context_sentences(
 
 
 def _numbered(index: SentenceIndex, i: int, number: int) -> str:
+    """`number [start-end start=ok|no end=kind] text`: the marks are ours and sit inside our own
+    bracket, before the untrusted text. start=ok means a clip may start at this sentence; end is
+    how the sentence ends (., ?, !, pause or edge)."""
     sentence = index.sentences[i]
     start = index.words[sentence.first].start
     end = index.words[sentence.last].end
-    return f"{number} [{start:.2f}-{end:.2f}] {_sentence_text(index, i)}"
+    mark = "ok" if index.cut_before(i) else "no"
+    return (
+        f"{number} [{start:.2f}-{end:.2f} start={mark} end={sentence.end}] "
+        f"{_sentence_text(index, i)}"
+    )
 
 
 def candidate_block(located: Located, index: SentenceIndex, before: int, after: int) -> str:
     """One <candidate> element: context before, the clip's sentences, context after, all numbered
-    continuously with [start-end] seconds: the context before is ... -1, 0, the clip is 1..n,
-    the context after is n+1... keep_sentences may use any of these numbers.
+    continuously with [start-end start=ok|no end=kind]: the context before is ... -1, 0, the clip
+    is 1..n, the context after is n+1... keep_sentences may use any of these numbers.
 
     All text is data: made single-line, and anything that looks like a candidate tag is removed.
     """
@@ -198,10 +214,7 @@ def candidate_block(located: Located, index: SentenceIndex, before: int, after: 
     earlier, later = context_sentences(index, located, before, after)
     n = located.count
     lines = [
-        f'<candidate id="{candidate.id}" seconds="{candidate.duration:.1f}" '
-        f'sentences="{n}" '
-        f'start_at_segment_edge="{str(located.start_at_segment_edge).lower()}" '
-        f'end_at_segment_edge="{str(located.end_at_segment_edge).lower()}">',
+        f'<candidate id="{candidate.id}" seconds="{candidate.duration:.1f}" sentences="{n}">',
         "<before>",
         *(_numbered(index, i, number) for number, i in enumerate(earlier, start=1 - len(earlier))),
         *([] if earlier else ["- (none: the recording starts here)"]),
@@ -271,8 +284,10 @@ def resolve_adjust(
     first and last use the numbers the model was shown: the clip is 1..n, the context before it
     is ... -1, 0 and the context after it is n+1.... The new times come from those sentences'
     word times plus the same mid-gap cut times snapping uses. A range outside the shown numbers,
-    one that contains none of the clip's own sentences, or one that lands outside the clip length is
-    ignored and noted: the model never supplies a time.
+    one that contains none of the clip's own sentences, one that would start where a clip may not
+    start (a weak end before it) or end on a weak end, or one that lands outside the clip length
+    is ignored and noted: the model never supplies a time. The boundary check comes before the
+    length check.
     """
     candidate = located.candidate
     whole = Adjust(candidate.start, candidate.end, False, None)
@@ -293,10 +308,22 @@ def resolve_adjust(
         return Adjust(candidate.start, candidate.end, False, note, ignored="range")
     if keep.first == 1 and keep.last == n:
         return whole
+    a, b = located.first + keep.first - 1, located.first + keep.last - 1
+    bad_start, bad_end = not index.cut_before(a), not index.cut_after(b)
+    if bad_start or bad_end:
+        where = "start and end" if bad_start and bad_end else "start" if bad_start else "end"
+        return Adjust(
+            candidate.start,
+            candidate.end,
+            False,
+            f"adjustment to sentences {keep.first}-{keep.last} ignored: "
+            f"it would {where} where there is no pause",
+            ignored="boundary",
+        )
     start, end = span_times(
         index,
-        located.first + keep.first - 1,
-        located.first + keep.last - 1,
+        a,
+        b,
         start_pad=start_pad,
         end_pad=end_pad,
         duration=duration,
@@ -336,6 +363,17 @@ def resolve_adjust(
         False,
         f"adjustment to sentences {keep.first}-{keep.last} ignored: {reason}",
         ignored="length",
+    )
+
+
+def final_cut(index: SentenceIndex, first: int, last: int) -> CutInfo:
+    """How a clip made of sentences first..last (indices into index.sentences) is cut."""
+    end_gap = index.sentences[last].gap
+    return CutInfo(
+        start_boundary=index.sentences[first - 1].end if first > 0 else "start",
+        end_boundary=index.sentences[last].end,
+        start_gap=round(index.sentences[first - 1].gap, 3) if first > 0 else None,
+        end_gap=None if math.isinf(end_gap) else round(end_gap, 3),
     )
 
 
@@ -492,6 +530,10 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
             notes.append(f"hook_line is {_words(clip.hook_line)} words (over {MAX_HOOK_WORDS})")
         if _words(clip.reason) > MAX_REASON_WORDS:
             notes.append(f"reason is {_words(clip.reason)} words (over {MAX_REASON_WORDS})")
+        if adjust.keep is not None:
+            first, last = item.first + adjust.keep.first - 1, item.first + adjust.keep.last - 1
+        else:
+            first, last = item.first, item.last
         drafts.append(
             Draft(
                 position,
@@ -500,8 +542,7 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
                 adjust,
                 notes,
                 sentences=item.count,
-                start_at_segment_edge=item.start_at_segment_edge,
-                end_at_segment_edge=item.end_at_segment_edge,
+                cut=final_cut(index, first, last),
             )
         )
 
@@ -542,8 +583,10 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
                 candidate_end=draft.candidate.end,
                 trimmed=draft.adjust.trimmed,
                 notes=notes,
-                start_at_segment_edge=draft.start_at_segment_edge,
-                end_at_segment_edge=draft.end_at_segment_edge,
+                start_boundary=draft.cut.start_boundary,
+                end_boundary=draft.cut.end_boundary,
+                start_gap=draft.cut.start_gap,
+                end_gap=draft.cut.end_gap,
                 sentences=draft.sentences,
                 kept_sentences=draft.adjust.keep,
                 extended_start=draft.adjust.extended_start,
@@ -571,6 +614,7 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
         trims_applied=sum(1 for d in drafts if d.adjust.trimmed),
         trims_ignored=sum(1 for d in drafts if d.adjust.ignored == "length"),
         trims_out_of_range=sum(1 for d in drafts if d.adjust.ignored == "range"),
+        adjusts_on_weak_boundary=sum(1 for d in drafts if d.adjust.ignored == "boundary"),
         reject_reasons=reasons,
         model=app.models.score,
         effort=cfg.effort,
@@ -592,7 +636,9 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
             f"score: {entry.id} rank={entry.rank} kept={entry.kept} score={entry.score} "
             f"{entry.verdict} {entry.reject_reason} dropped_by={entry.dropped_by} "
             f"{entry.start:.2f}-{entry.end:.2f} s trimmed={entry.trimmed} "
-            f"extended={entry.extended_start}/{entry.extended_end}"
+            f"extended={entry.extended_start}/{entry.extended_end} "
+            f"cut={entry.start_boundary}/{entry.end_boundary} "
+            f"gaps={entry.start_gap}/{entry.end_gap}"
         )
     ours = (
         summary.dropped_min_score
@@ -600,7 +646,7 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
         + summary.adjust_ignored
         + summary.dropped_overlap
     )
-    ignored = summary.trims_ignored + summary.trims_out_of_range
+    ignored = summary.trims_ignored + summary.trims_out_of_range + summary.adjusts_on_weak_boundary
     log.info(
         f"score: {summary.kept} kept of {summary.candidates} ({summary.rejected} rejected, "
         f"{ours} dropped by our rules ({summary.dropped_overlap} overlaps), "

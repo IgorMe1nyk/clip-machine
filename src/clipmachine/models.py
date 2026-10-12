@@ -674,6 +674,11 @@ class ScoredClip(StrictModel):
     # added in Brief 9: sentences added before the clip's first / after its last
     extended_start: int = 0
     extended_end: int = 0
+    # added in Brief 10: how the clip's start and end are cut; None in older files
+    start_boundary: str | None = None  # end kind of the sentence before the clip, or "start"
+    end_boundary: str | None = None  # end kind of the clip's last sentence
+    start_gap: float | None = None  # seconds of silence before the clip's first word
+    end_gap: float | None = None  # seconds of silence after its last word
 
 
 class ScoredSummary(StrictModel):
@@ -690,6 +695,7 @@ class ScoredSummary(StrictModel):
     trims_applied: int = 0  # same number as trimmed
     trims_ignored: int = 0  # outside clip.min_seconds..max_seconds
     trims_out_of_range: int = 0  # sentence numbers outside the candidate
+    adjusts_on_weak_boundary: int = 0  # Brief 10: adjustment would start or end at a weak edge
     reject_reasons: dict[str, int]  # the model's reasons only; every reason is present
     model: str
     effort: str
