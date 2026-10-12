@@ -251,7 +251,15 @@ class SpeakerConfig(StrictModel):
     # read on every sample).
     detect_every: int = Field(default=1, ge=1, le=10)
     window_seconds: float = Field(default=0.5, gt=0)  # the speaker is chosen per window
-    min_shot_seconds: float = Field(default=1.5, gt=0)  # no shot is shorter than this
+    # "mix": per window, mouth against loudness where every main face has a readable mouth, else
+    # pixel motion (D-019). "mouth": the older rule, the variance of mouth openness.
+    signal: Literal["mix", "mouth"] = "mix"
+    min_shot_seconds: float = Field(default=1.5, gt=0)  # signal "mouth": no shot is shorter
+    # signal "mix": the shortest stretch of a new speaker that gets a cut, in windows decided by
+    # sync ...
+    min_turn_seconds: float = Field(default=1.0, gt=0)
+    # ... and in windows decided by pixel motion (a noisier signal)
+    min_turn_motion_seconds: float = Field(default=1.5, gt=0)
     # A challenger's mouth-movement variance must beat the speaker's by this factor ...
     switch_ratio: float = Field(default=1.5, ge=1)
     confirm_windows: int = Field(default=2, ge=1)  # ... for this many windows in a row
@@ -271,6 +279,12 @@ class SpeakerConfig(StrictModel):
                 f"min_shot_seconds ({self.min_shot_seconds}) must not be less than "
                 f"window_seconds ({self.window_seconds})"
             )
+        for name in ("min_turn_seconds", "min_turn_motion_seconds"):
+            if getattr(self, name) < self.window_seconds:
+                raise ValueError(
+                    f"{name} ({getattr(self, name)}) must not be less than "
+                    f"window_seconds ({self.window_seconds})"
+                )
         return self
 
 
@@ -833,9 +847,14 @@ class TrackSummary(StrictModel):
     cuts: int = 0  # shot cuts found in the source's edit
     faces_per_sample: float = 0.0
     mouth_read_pct: float = 0.0  # % of face samples whose mouth could be read
+    # speech windows decided by each signal (signal "mix"); unscored: nobody scored
+    sync_windows: int = 0
+    motion_windows: int = 0
+    unscored_windows: int = 0
 
 
-TRACK_SCHEMA_VERSION = 2  # 2: cuts_exact. load_valid_track recomputes files of any other version
+# 2: cuts_exact. 3: the mix signal. load_valid_track recomputes files of any other version
+TRACK_SCHEMA_VERSION = 3
 
 
 class TrackFile(StrictModel):

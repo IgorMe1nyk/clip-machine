@@ -151,6 +151,8 @@ def _cmd_track(args: argparse.Namespace, root: Path) -> int:
             f"faces {result.faces_seen}, {result.faces_per_sample:.2f} per sample, "
             f"cuts {result.cuts}, switches {result.switches}, "
             f"face time {result.face_time_pct:.0f}%, mouth read {result.mouth_read_pct:.0f}%, "
+            f"windows sync {result.sync_windows}, motion {result.motion_windows}, "
+            f"unscored {result.unscored_windows}, "
             f"{result.analysis_seconds:.1f} s"
         )
     return EXIT_OK

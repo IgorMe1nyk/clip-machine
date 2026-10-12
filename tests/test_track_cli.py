@@ -19,6 +19,7 @@ from track_fakes import write_model
 def make_run(project: Path, *, preview_config: bool = False) -> Path:
     ctx = make_ctx(project)
     write_inputs(ctx.run_dir)
+    ctx.config.app.speaker.signal = "mouth"  # the shared two-person scenario has equal motion
     if preview_config:
         ctx.config.app.speaker.debug_preview = True
     dump_resolved(ctx.config, ctx.run_dir / RESOLVED_CONFIG)
@@ -54,7 +55,7 @@ def test_track_writes_a_track_file_per_kept_clip_and_prints_one_line_each(
     assert len(lines) == 2
     shape = (
         r"{id}: ok, faces 2, 2\.00 per sample, cuts 0, switches 1, face time 100%, "
-        r"mouth read 100%, \d+\.\d s"
+        r"mouth read 100%, windows sync 0, motion \d+, unscored \d+, \d+\.\d s"
     )
     assert re.fullmatch(shape.format(id="c01"), lines[0])
     assert re.fullmatch(shape.format(id="c02"), lines[1])

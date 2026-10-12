@@ -67,7 +67,7 @@ def make_plan(tmp_path: Path, **changes: object) -> TrackPlan:
         target_width=1080,
         target_height=1920,
         segments=segments(),
-        settings=SpeakerConfig(),
+        settings=SpeakerConfig(signal="mouth"),  # the tests below pin the mouth-variance rule
         model_path=tmp_path / "face_landmarker.task",
         model_sha256="b" * 64,
         mediapipe_version="1.1.0",
@@ -622,7 +622,7 @@ def test_asking_for_a_preview_does_not_invalidate_a_track(
 ) -> None:
     plan = make_plan(tmp_path)
     saved_track(plan, monkeypatch)
-    assert load(plan, settings=SpeakerConfig(debug_preview=True)) is not None
+    assert load(plan, settings=plan.settings.model_copy(update={"debug_preview": True})) is not None
 
 
 @pytest.mark.parametrize(
@@ -631,8 +631,8 @@ def test_asking_for_a_preview_does_not_invalidate_a_track(
         {"start": 11.0},
         {"end": 31.0},
         {"source_sha256": "c" * 64},
-        {"settings": SpeakerConfig(smoothing=0.5)},
-        {"settings": SpeakerConfig(sample_fps=5)},
+        {"settings": SpeakerConfig(signal="mouth", smoothing=0.5)},
+        {"settings": SpeakerConfig(signal="mouth", sample_fps=5)},
         {"mediapipe_version": "1.0.0"},
         {"mediapipe_version": None},
         {"model_sha256": "d" * 64},
@@ -655,7 +655,7 @@ def test_a_schema_1_track_file_parses_but_is_not_valid(
 ) -> None:
     plan = make_plan(tmp_path)
     data = saved_track(plan, monkeypatch).model_dump(mode="json")
-    assert data["schema_version"] == TRACK_SCHEMA_VERSION == 2
+    assert data["schema_version"] == TRACK_SCHEMA_VERSION == 3
     data["schema_version"] = 1
     del data["cuts_exact"]
     write_json_atomic(tracking.track_path(plan.clips_dir, "c01"), data)
@@ -800,7 +800,10 @@ def test_boxes_are_detected_on_every_nth_sample_and_reused_in_between(
     fakes = track_fakes.install(monkeypatch, one_talker)
 
     track = analyse_clip(
-        make_plan(tmp_path, settings=SpeakerConfig(detect_every=3)), "c01", 10.0, 10.9
+        make_plan(tmp_path, settings=SpeakerConfig(signal="mouth", detect_every=3)),
+        "c01",
+        10.0,
+        10.9,
     )
 
     assert fakes.detected == [0, 3, 6]
@@ -815,7 +818,10 @@ def test_boxes_are_never_reused_across_a_cut(
     fakes = track_fakes.install(monkeypatch, one_talker, track_fakes.cut_at(1.0, levels=(0, 120)))
 
     track = analyse_clip(
-        make_plan(tmp_path, settings=SpeakerConfig(detect_every=3)), "c01", 10.0, 11.5
+        make_plan(tmp_path, settings=SpeakerConfig(signal="mouth", detect_every=3)),
+        "c01",
+        10.0,
+        11.5,
     )
 
     assert track.cuts == [1.0]
@@ -869,7 +875,168 @@ def test_detect_every_does_not_change_a_still_scene(
     track_fakes.install(monkeypatch, track_fakes.two_people(switch_at=10.0))
     base = analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0)
     every3 = analyse_clip(
-        make_plan(tmp_path, settings=SpeakerConfig(detect_every=3)), "c01", 10.0, 30.0
+        make_plan(tmp_path, settings=SpeakerConfig(signal="mouth", detect_every=3)),
+        "c01",
+        10.0,
+        30.0,
     )
     assert every3.shots == base.shots
     assert every3.samples == base.samples
+
+
+# --- Brief 8.2: the mix signal ------------------------------------------------------------
+
+
+def mix_plan(tmp_path: Path, audio: Path | None) -> TrackPlan:
+    return make_plan(tmp_path, settings=SpeakerConfig(signal="mix"), audio=audio)
+
+
+def spy_follow(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """Record what analyse_clip hands to follow_segments."""
+    seen: dict[str, object] = {}
+    real = camera.follow_segments
+
+    def spy(*args: object, **kwargs: object) -> camera.Followed:
+        seen["args"] = args
+        seen["loudness"] = args[8] if len(args) > 8 else kwargs.get("loudness")
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(tracking.camera, "follow_segments", spy)
+    return seen
+
+
+def test_the_loudness_of_the_clip_reaches_the_camera_one_value_per_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    track_fakes.install(monkeypatch, track_fakes.two_people())
+    seen = spy_follow(monkeypatch)
+    calls: list[tuple[Path, float, float]] = []
+    envelope = [float(i % 7) for i in range(3000)]
+
+    def fake_envelope(path: Path, start: float, end: float) -> list[float]:
+        calls.append((path, start, end))
+        return envelope
+
+    monkeypatch.setattr(tracking.audio, "loudness_envelope", fake_envelope)
+    audio_file = tmp_path / "audio.wav"
+
+    track = analyse_clip(mix_plan(tmp_path, audio_file), "c01", 10.0, 30.0)
+
+    assert calls == [(audio_file, 10.0, 31.0)]  # the clip plus a second, read once
+    loudness = seen["loudness"]
+    assert isinstance(loudness, list) and len(loudness) == track.summary.samples == 200
+    expected = [
+        tracking.audio.envelope_at(envelope, round(k / 10, 3) + camera.SYNC_LAG_SECONDS)
+        for k in range(200)
+    ]
+    assert loudness == expected
+
+
+def test_the_mix_signal_runs_on_motion_without_an_audio_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    track_fakes.install(monkeypatch, track_fakes.two_people())
+    seen = spy_follow(monkeypatch)
+
+    def no_envelope(path: Path, start: float, end: float) -> list[float]:
+        raise AssertionError("no audio file, so nothing to read")
+
+    monkeypatch.setattr(tracking.audio, "loudness_envelope", no_envelope)
+
+    track = analyse_clip(mix_plan(tmp_path, None), "c01", 10.0, 30.0)
+
+    assert seen["loudness"] is None
+    summary = track.summary
+    assert summary.sync_windows == 0 and summary.motion_windows > 0
+
+
+def test_the_mouth_signal_does_not_read_the_audio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    track_fakes.install(monkeypatch, track_fakes.two_people())
+    seen = spy_follow(monkeypatch)
+
+    def no_envelope(path: Path, start: float, end: float) -> list[float]:
+        raise AssertionError("signal mouth does not read the audio")
+
+    monkeypatch.setattr(tracking.audio, "loudness_envelope", no_envelope)
+
+    track = analyse_clip(make_plan(tmp_path, audio=tmp_path / "audio.wav"), "c01", 10.0, 30.0)
+
+    assert seen["loudness"] is None
+    summary = track.summary
+    assert (summary.sync_windows, summary.motion_windows, summary.unscored_windows) == (0, 0, 0)
+
+
+def test_the_window_counts_land_in_track_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    track_fakes.install(monkeypatch, track_fakes.two_people())
+    plan = mix_plan(tmp_path, None)
+
+    track, reused = tracking.track_for_clip(plan, "c01", 10.0, 30.0)
+
+    assert reused is False
+    saved = json.loads(tracking.track_path(plan.clips_dir, "c01").read_text(encoding="utf-8"))
+    assert saved["schema_version"] == TRACK_SCHEMA_VERSION == 3
+    summary = saved["summary"]
+    assert summary["motion_windows"] == track.summary.motion_windows > 0
+    assert summary["sync_windows"] == 0 and summary["unscored_windows"] == 0
+    assert saved["settings"]["signal"] == "mix"
+
+
+def test_a_schema_2_track_file_is_recomputed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = make_plan(tmp_path)
+    data = saved_track(plan, monkeypatch).model_dump(mode="json")
+    data["schema_version"] = 2
+    write_json_atomic(tracking.track_path(plan.clips_dir, "c01"), data)
+
+    assert load(plan) is None
+
+
+def test_a_track_made_with_another_signal_is_not_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = make_plan(tmp_path)  # signal mouth
+    saved_track(plan, monkeypatch)
+    assert load(plan, settings=plan.settings.model_copy(update={"signal": "mix"})) is None
+
+
+def test_the_summary_of_an_old_track_file_has_no_window_counts() -> None:
+    from clipmachine.models import TrackSummary
+
+    old = TrackSummary.model_validate(
+        {
+            "faces_seen": 1,
+            "switches": 0,
+            "face_time_pct": 100.0,
+            "samples": 10,
+            "analysis_seconds": 1,
+        }
+    )
+    assert (old.sync_windows, old.motion_windows, old.unscored_windows) == (0, 0, 0)
+
+
+def test_build_plan_finds_the_audio_file_or_warns(
+    project: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    app = make_ctx(project).config.app
+    run_dir = project / "runs" / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    track_fakes.write_model(project)
+    args = {"video": video(), "source": run_dir / "source.mp4", "source_sha256": "a" * 64}
+
+    with caplog.at_level("WARNING", logger="clipmachine"):
+        missing = tracking.build_plan(run_dir, project, app, segments=[], **args)  # type: ignore[arg-type]
+    assert missing.audio is None
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and "audio.wav" in warnings[0] and "motion" in warnings[0]
+    assert str(run_dir) not in warnings[0]
+
+    (run_dir / "audio.wav").write_bytes(b"not read here")
+    caplog.clear()
+    found = tracking.build_plan(run_dir, project, app, segments=[], **args)  # type: ignore[arg-type]
+    assert found.audio == run_dir / "audio.wav"
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]

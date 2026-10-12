@@ -10,6 +10,8 @@ from clipmachine.utils.camera import (
     FALLBACK_FACES_TOO_SMALL,
     FALLBACK_NO_FACE,
     FALLBACK_SOURCE_NOT_WIDER,
+    SIGNAL_MOTION,
+    SIGNAL_SYNC,
     FaceSample,
     Followed,
     Shot,
@@ -22,10 +24,13 @@ from clipmachine.utils.camera import (
     find_cuts,
     follow_segments,
     link_tracks,
+    motion_score,
     signature_distance,
     speech_windows,
     split_at_cuts,
     summarise,
+    sync_score,
+    window_scores,
 )
 
 FPS = 10
@@ -37,8 +42,9 @@ def face(t: float, cx: float, cy: float = 0.5, h: float = 0.3, mouth: float = 0.
     return FaceSample(t=t, cx=cx, cy=cy, w=h / 2, h=h, mouth=mouth)
 
 
-def cfg(**changes: float) -> SpeakerConfig:
-    return SpeakerConfig(**changes)  # type: ignore[arg-type]
+def cfg(**changes: float | str) -> SpeakerConfig:
+    """Settings for the older tests, which exercise the mouth-variance rule: signal "mouth"."""
+    return SpeakerConfig(**{"signal": "mouth", **changes})  # type: ignore[arg-type]
 
 
 def time_of(k: int) -> float:
@@ -650,3 +656,299 @@ def test_the_link_gap_at_10_fps_is_still_three_samples() -> None:
 
 def test_face_sample_motion_defaults_to_none() -> None:
     assert face(0.0, 0.5).motion is None
+
+
+# --- Brief 8.2: the mix signal -------------------------------------------------------------
+
+
+def test_sync_score_is_high_for_a_mouth_that_follows_the_sound() -> None:
+    loud = [0.0, 10.0] * 5
+    mouth: list[float | None] = [0.0, 0.4] * 5
+    score = sync_score(mouth, loud)
+    assert score == pytest.approx(0.2)  # covariance 1.0 / loudness spread 5.0
+
+
+def test_sync_score_is_zero_for_a_mouth_that_moves_regardless_or_against() -> None:
+    loud = [0.0, 10.0] * 4
+    unrelated: list[float | None] = [0.0, 0.0, 0.4, 0.4] * 2  # zero covariance with the loudness
+    against: list[float | None] = [0.4, 0.0] * 4
+    assert sync_score(unrelated, loud) == pytest.approx(0.0, abs=1e-12)
+    assert sync_score(against, loud) == 0.0
+
+
+def test_sync_score_needs_enough_readable_mouths() -> None:
+    loud = [0.0, 10.0] * 5
+    assert sync_score([0.0, 0.4, 0.0], [0.0, 10.0, 0.0]) is None  # fewer than 4 samples
+    mouth: list[float | None] = [0.0, 0.4, None, None, 0.0, 0.4, None, None, None, None]
+    assert sync_score(mouth, loud) is None  # 4 of 10 is under 60%
+    mouth = [0.0, 0.4, None, None, 0.0, 0.4, 0.0, 0.4, None, None]
+    assert sync_score(mouth, loud) is not None  # 6 of 10
+
+
+def test_sync_score_is_zero_for_a_flat_mouth_or_flat_sound() -> None:
+    assert sync_score([0.2] * 8, [0.0, 10.0] * 4) == 0.0
+    assert sync_score([0.0, 0.4] * 4, [5.0] * 8) == 0.0
+
+
+def test_sync_score_rejects_sequences_of_different_length() -> None:
+    with pytest.raises(ValueError, match="same length"):
+        sync_score([0.0, 0.4, 0.0, 0.4], [0.0, 1.0, 0.0])
+
+
+def test_motion_score_is_the_mean_of_the_readable_values() -> None:
+    assert motion_score([1.0, None, 3.0]) == pytest.approx(2.0)
+    assert motion_score([0.5]) == pytest.approx(0.5)
+
+
+def test_motion_score_needs_enough_readable_values() -> None:
+    assert motion_score([1.0, None, None]) is None
+    assert motion_score([1.0, 2.0, None, None, None]) is None  # 2 of 5 is under 60%
+    assert motion_score([]) is None
+
+
+def px(t: float, cx: float, mouth: float | None, motion: float | None) -> FaceSample:
+    return FaceSample(t=t, cx=cx, cy=0.5, w=0.15, h=0.3, mouth=mouth, motion=motion)
+
+
+MIX_SAMPLES = 40  # four seconds at 10 fps: eight windows
+MIX_TIMES = [time_of(k) for k in range(MIX_SAMPLES)]
+MIX_LOUD = [10.0 if k % 2 == 0 else 0.0 for k in range(MIX_SAMPLES)]
+
+
+def make_tracks(
+    a_mouth: Callable[[int], float | None],
+    b_mouth: Callable[[int], float | None],
+    a_motion: float | None = 0.1,
+    b_motion: float | None = 0.1,
+) -> list[Track]:
+    frames = [
+        [px(MIX_TIMES[k], 0.25, a_mouth(k), a_motion), px(MIX_TIMES[k], 0.75, b_mouth(k), b_motion)]
+        for k in range(MIX_SAMPLES)
+    ]
+    return link_tracks(frames, 0.12)
+
+
+def follows_sound(k: int) -> float:
+    return 0.4 if k % 2 == 0 else 0.0
+
+
+def ignores_sound(k: int) -> float:
+    return 0.4 if k % 4 in (2, 3) else 0.0  # period four against the sound's period two
+
+
+def no_mouth(k: int) -> None:
+    return None
+
+
+def test_window_scores_use_sync_when_every_main_mouth_is_readable() -> None:
+    tracks = make_tracks(follows_sound, ignores_sound)
+    scores, kinds = window_scores(tracks, MIX_LOUD, MIX_TIMES, WINDOW, 8)
+    assert kinds == [SIGNAL_SYNC] * 8
+    assert all(a > b for a, b in zip(scores[0], scores[1], strict=True))
+    assert all(b < a / 2 for a, b in zip(scores[0], scores[1], strict=True))
+
+
+def test_window_scores_use_motion_when_a_main_mouth_is_never_readable() -> None:
+    tracks = make_tracks(follows_sound, no_mouth, a_motion=0.1, b_motion=0.5)
+    scores, kinds = window_scores(tracks, MIX_LOUD, MIX_TIMES, WINDOW, 8)
+    assert kinds == [SIGNAL_MOTION] * 8
+    assert all(b > a > 0 for a, b in zip(scores[0], scores[1], strict=True))
+
+
+def test_window_scores_use_motion_without_audio() -> None:
+    tracks = make_tracks(follows_sound, ignores_sound, a_motion=0.5, b_motion=0.1)
+    scores, kinds = window_scores(tracks, None, MIX_TIMES, WINDOW, 8)
+    assert kinds == [SIGNAL_MOTION] * 8
+    assert all(a > b for a, b in zip(scores[0], scores[1], strict=True))
+
+
+def test_window_scores_have_no_signal_where_nobody_scores() -> None:
+    tracks = make_tracks(no_mouth, no_mouth, a_motion=None, b_motion=None)
+    scores, kinds = window_scores(tracks, MIX_LOUD, MIX_TIMES, WINDOW, 8)
+    assert kinds == [None] * 8
+    assert scores == {0: [0.0] * 8, 1: [0.0] * 8}
+
+
+def test_a_mouth_that_moves_more_but_not_with_the_sound_loses_to_one_that_follows_it() -> None:
+    """A laugh: B's mouth moves a lot, but not with the speech."""
+
+    def a_mouth(k: int) -> float:
+        return 0.2 if k % 2 == 0 else 0.0
+
+    def b_mouth(k: int) -> float:
+        return 0.5 if k % 4 in (2, 3) else 0.0
+
+    tracks = make_tracks(a_mouth, b_mouth)
+    scores, kinds = window_scores(tracks, MIX_LOUD, MIX_TIMES, WINDOW, 8)
+    assert kinds == [SIGNAL_SYNC] * 8
+    assert all(a > b for a, b in zip(scores[0], scores[1], strict=True))
+
+    # the older rule goes by the size of the movement, and picks the laugh
+    speech = [True] * 8
+    assert set(choose_speakers(tracks, speech, WINDOW, cfg())) == {1}
+    assert set(choose_speakers(tracks, speech, WINDOW, cfg(), scores)) == {0}
+
+
+def two_tracks() -> list[Track]:
+    return link_tracks([[face(time_of(k), 0.25), face(time_of(k), 0.75)] for k in range(40)], 0.12)
+
+
+def test_choose_speakers_with_scores_backdates_a_switch_to_the_turn_start() -> None:
+    scores = {0: [2.0, 2, 2, 0.5, 0.5, 2, 2, 2], 1: [0.0, 0, 0, 2, 2, 0, 0, 0]}
+    choice = choose_speakers(two_tracks(), [True] * 8, WINDOW, cfg(), scores)
+    assert choice == [0, 0, 0, 1, 1, 0, 0, 0]  # B from its first leading window, A from its
+
+
+def test_choose_speakers_with_scores_does_not_switch_while_one_track_keeps_leading() -> None:
+    scores = {0: [2.0] * 8, 1: [1.0] * 8}  # B is never 1.5 times better
+    assert choose_speakers(two_tracks(), [True] * 8, WINDOW, cfg(), scores) == [0] * 8
+    one_window = {0: [2.0, 2, 2, 2, 0.5, 2, 2, 2], 1: [0.0, 0, 0, 0, 2, 0, 0, 0]}
+    assert choose_speakers(two_tracks(), [True] * 8, WINDOW, cfg(), one_window) == [0] * 8
+
+
+def test_choose_speakers_without_scores_is_the_mouth_variance() -> None:
+    frames = two_people(8, a_talks=lambda w: w < 4, b_talks=lambda w: w >= 4)
+    tracks = link_tracks(frames, 0.12)
+    speech = [True] * 8
+    plain = choose_speakers(tracks, speech, WINDOW, cfg())
+    by_hand = {
+        t.id: [
+            _variance([s for _, s in t.points if int(s.t / WINDOW + 1e-9) == w]) for w in range(8)
+        ]
+        for t in tracks
+    }
+    assert choose_speakers(tracks, speech, WINDOW, cfg(), by_hand) == plain
+    assert plain == [0, 0, 0, 0, 1, 1, 1, 1]
+
+
+VISIT: list[int | None] = [0, 0, 0, 0, 1, 1, 0, 0, 0, 0]  # a one second visit of track 1
+
+
+def test_build_shots_minimums_keep_a_visit_that_is_long_enough() -> None:
+    shots = build_shots(VISIT, WINDOW, 9.0, 5.0, minimums=[1.0] * 10)
+    assert shots == [Shot(0.0, 2.0, 0), Shot(2.0, 3.0, 1), Shot(3.0, 5.0, 0)]
+
+
+def test_build_shots_minimums_merge_a_visit_that_is_too_short() -> None:
+    assert build_shots(VISIT, WINDOW, 0.5, 5.0, minimums=[1.5] * 10) == [Shot(0.0, 5.0, 0)]
+
+
+def test_build_shots_minimums_take_the_largest_of_the_windows_a_shot_covers() -> None:
+    mixed = [1.0, 1.0, 1.0, 1.0, 1.0, 1.5, 1.0, 1.0, 1.0, 1.0]  # one window of the visit is noisy
+    assert build_shots(VISIT, WINDOW, 0.5, 5.0, minimums=mixed) == [Shot(0.0, 5.0, 0)]
+    elsewhere = [1.5, 1.5, 1.5, 1.5, 1.0, 1.0, 1.5, 1.5, 1.5, 1.5]  # only the long shots are noisy
+    assert len(build_shots(VISIT, WINDOW, 0.5, 5.0, minimums=elsewhere)) == 3
+
+
+def test_build_shots_without_minimums_is_unchanged() -> None:
+    assert len(build_shots(VISIT, WINDOW, 1.0, 5.0)) == 3
+    assert build_shots(VISIT, WINDOW, 1.0, 5.0) == build_shots(
+        VISIT, WINDOW, 1.0, 5.0, minimums=None
+    )
+    assert build_shots(VISIT, WINDOW, 1.5, 5.0) == [Shot(0.0, 5.0, 0)]
+
+
+def test_build_shots_minimums_must_cover_every_window() -> None:
+    with pytest.raises(ValueError, match="one value per window"):
+        build_shots([0, 0, 1], WINDOW, 1.0, minimums=[1.0, 1.0])
+
+
+def mix_cfg(**changes: float | str) -> SpeakerConfig:
+    return SpeakerConfig(**{"signal": "mix", **changes})  # type: ignore[arg-type]
+
+
+def follow_mix(
+    frames: list[list[FaceSample]],
+    cuts: list[int] | None = None,
+    words: list[tuple[float, float]] | None = None,
+    loudness: list[float] | None = None,
+    config: SpeakerConfig | None = None,
+) -> Followed:
+    return follow_segments(
+        frames,
+        clip_times(len(frames)),
+        words or [],
+        cuts or [],
+        len(frames) / FPS,
+        1000,
+        200,
+        config or mix_cfg(),
+        loudness,
+    )
+
+
+def hidden_mouth_frames(count: int = 80) -> list[list[FaceSample]]:
+    """A talks for 2 s, B (whose mouth is never readable) for 3 s, then A again. A's mouth keeps
+    moving throughout; each speaker moves more in the pixels round the mouth."""
+    frames = []
+    for k in range(count):
+        t = time_of(k)
+        b_speaks = 20 <= k < 50
+        frames.append(
+            [
+                px(t, 0.25, talking(k), 0.1 if b_speaks else 1.0),
+                px(t, 0.75, None, 1.0 if b_speaks else 0.1),
+            ]
+        )
+    return frames
+
+
+def test_mix_follows_a_speaker_whose_mouth_is_never_readable_by_pixel_motion() -> None:
+    done = follow_mix(hidden_mouth_frames(), words=[(0.0, 8.0)])
+    assert done.shots == [Shot(0.0, 2.0, 0), Shot(2.0, 5.0, 1), Shot(5.0, 8.0, 0)]
+    assert done.switches == 2
+    assert (done.sync_windows, done.motion_windows, done.unscored_windows) == (0, 16, 0)
+    assert set(done.crop_xs[:20]) == {150} and set(done.crop_xs[20:50]) == {650}
+
+
+def test_the_mouth_rule_never_shows_that_speaker() -> None:
+    done = follow_segments(
+        hidden_mouth_frames(), clip_times(80), [(0.0, 8.0)], [], 8.0, 1000, 200, cfg()
+    )
+    assert done.shots == [Shot(0.0, 8.0, 0)]
+    assert (done.sync_windows, done.motion_windows, done.unscored_windows) == (0, 0, 0)
+
+
+def test_mix_falls_back_to_motion_when_audio_cannot_score_a_main_face() -> None:
+    loudness = [10.0 if k % 2 == 0 else 0.0 for k in range(80)]
+    done = follow_mix(hidden_mouth_frames(), words=[(0.0, 8.0)], loudness=loudness)
+    assert [s.track for s in done.shots] == [0, 1, 0]
+    assert (done.sync_windows, done.motion_windows) == (0, 16)
+
+
+def test_mix_counts_speech_windows_decided_by_each_signal() -> None:
+    frames = [
+        [px(time_of(k), 0.25, follows_sound(k), None), px(time_of(k), 0.75, 0.05, None)]
+        for k in range(20)
+    ]
+    loudness = [10.0 if k % 2 == 0 else 0.0 for k in range(20)]
+    done = follow_mix(frames, words=[(0.0, 1.0)], loudness=loudness)  # windows 0 and 1 have speech
+    assert (done.sync_windows, done.motion_windows, done.unscored_windows) == (2, 0, 0)
+
+    blank = [
+        [px(time_of(k), 0.25, None, None), px(time_of(k), 0.75, None, None)] for k in range(20)
+    ]
+    nothing = follow_mix(blank, words=[(0.0, 1.0)], loudness=loudness)
+    assert (nothing.sync_windows, nothing.motion_windows, nothing.unscored_windows) == (0, 0, 2)
+    assert nothing.shots == [Shot(0.0, 2.0, 0)]  # the fallback: the first of two equal faces
+
+
+def test_mix_without_audio_counts_motion_windows() -> None:
+    frames = [[px(time_of(k), 0.25, 0.0, 0.3)] for k in range(20)]
+    done = follow_mix(frames, words=[(0.0, 1.0)])
+    assert (done.sync_windows, done.motion_windows, done.unscored_windows) == (0, 2, 0)
+
+
+def test_mix_carries_nothing_across_a_cut() -> None:
+    loudness = [10.0 if k % 2 == 0 else 0.0 for k in range(80)]
+    done = follow_mix(hidden_mouth_frames(), cuts=[40], words=[(0.0, 8.0)], loudness=loudness)
+    assert all(max(t.by_frame) < 40 or min(t.by_frame) >= 40 for t in done.tracks)
+    assert any(s.start == 4.0 for s in done.shots)
+    assert_gap_free(done.shots, 8.0)
+    assert done.motion_windows == 16  # eight windows in each shot
+    inside = sum(
+        1
+        for a, b in zip(done.shots, done.shots[1:], strict=False)
+        if a.track != b.track and a.end != 4.0
+    )
+    assert done.switches == inside

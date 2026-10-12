@@ -40,6 +40,7 @@ from clipmachine.models import (
 )
 from clipmachine.runs import RunError, write_json_atomic
 from clipmachine.stages.candidates import _load_transcript
+from clipmachine.stages.fetch import AUDIO_FILE
 from clipmachine.stages.render import (
     CLIP_ID_RE,
     CLIPS_DIR,
@@ -49,7 +50,7 @@ from clipmachine.stages.render import (
     _load_scored,
 )
 from clipmachine.stages.score import SCORED_JSON
-from clipmachine.utils import camera, faces, ffmpeg
+from clipmachine.utils import audio, camera, faces, ffmpeg
 from clipmachine.utils.captions import clip_words
 from clipmachine.utils.crop import center_crop, display_size
 
@@ -94,6 +95,7 @@ class TrackPlan:
     detector_path: Path  # the YuNet face detector
     detector_sha256: str
     opencv_version: str | None
+    audio: Path | None = None  # the run's audio file; None: pixel motion alone is used
 
 
 @dataclass(frozen=True)
@@ -109,6 +111,9 @@ class ClipTrackResult:
     cuts: int
     faces_per_sample: float
     mouth_read_pct: float
+    sync_windows: int = 0
+    motion_windows: int = 0
+    unscored_windows: int = 0
 
 
 @dataclass(frozen=True)
@@ -412,8 +417,12 @@ def analyse_clip(
     cut_exact = [_exact_cut_time(plan, start, times[k - 1], times[k]) for k in cut_samples]
 
     words = [(w.start, w.end) for w in clip_words(plan.segments, start, end)]
+    loudness: list[float] | None = None
+    if cfg.signal == "mix" and plan.audio is not None:
+        envelope = audio.loudness_envelope(plan.audio, start, end + 1.0)
+        loudness = [audio.envelope_at(envelope, t + camera.SYNC_LAG_SECONDS) for t in times]
     followed = camera.follow_segments(
-        frames, times, words, cut_samples, duration, source_w, box.w, cfg
+        frames, times, words, cut_samples, duration, source_w, box.w, cfg, loudness
     )
     tracks = followed.tracks
     reason = camera.fallback_reason(frames, cfg, source_w, box.w, detected.largest_heights)
@@ -487,6 +496,9 @@ def analyse_clip(
             cuts=len(cut_times),
             faces_per_sample=summary.faces_per_sample,
             mouth_read_pct=summary.mouth_read_pct,
+            sync_windows=followed.sync_windows,
+            motion_windows=followed.motion_windows,
+            unscored_windows=followed.unscored_windows,
         ),
         cuts=[round(t, 3) for t in cut_times],
         cuts_exact=cut_exact,
@@ -553,6 +565,10 @@ def build_plan(
     detector = faces.ensure_model(faces.model_dir(root, faces.DETECTOR), spec=faces.DETECTOR)
     clips_dir = run_dir / CLIPS_DIR
     clips_dir.mkdir(exist_ok=True)
+    audio_file = run_dir / AUDIO_FILE
+    audio_path: Path | None = audio_file if audio_file.is_file() else None
+    if audio_path is None and app.speaker.signal == "mix":
+        log.warning(f"{AUDIO_FILE} is missing from the run folder; pixel motion alone will be used")
     return TrackPlan(
         clips_dir=clips_dir,
         source=source,
@@ -568,6 +584,7 @@ def build_plan(
         detector_path=detector,
         detector_sha256=faces.file_sha256(detector),
         opencv_version=faces.opencv_version(),
+        audio=audio_path,
     )
 
 
@@ -664,6 +681,9 @@ def run_track(
                 cuts=track.summary.cuts,
                 faces_per_sample=track.summary.faces_per_sample,
                 mouth_read_pct=track.summary.mouth_read_pct,
+                sync_windows=track.summary.sync_windows,
+                motion_windows=track.summary.motion_windows,
+                unscored_windows=track.summary.unscored_windows,
             )
         )
     return results

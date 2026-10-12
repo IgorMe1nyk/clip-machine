@@ -661,6 +661,8 @@ def speaker_ctx(
     ctx = make_ctx(project)
     write_inputs(ctx.run_dir)
     ctx.config.app.video.crop = "speaker"
+    # these tests pin the mouth-variance rule; the mix signal has its own tests
+    ctx.config.app.speaker = ctx.config.app.speaker.model_copy(update={"signal": "mouth"})
     if models:
         track_fakes.write_model(project)
     return ctx, track_fakes.install(monkeypatch, scenario, look)
@@ -758,7 +760,7 @@ def test_a_missing_or_stale_track_is_analysed_again_and_saved(
     assert fakes.opened == opened + (2 if change == "settings" else 1)
     clips = ctx.run_dir / "clips"
     track = TrackFile.model_validate_json((clips / "c01.track.json").read_text(encoding="utf-8"))
-    assert (track.clip_start, track.clip_end, track.schema_version) == (10.0, 30.0, 2)
+    assert (track.clip_start, track.clip_end, track.schema_version) == (10.0, 30.0, 3)
     assert track.crop_w == 202
     data = read_json(clips / "c01.json")
     assert data["track_sha256"] == file_hash(clips / "c01.track.json")  # rendered from the new one

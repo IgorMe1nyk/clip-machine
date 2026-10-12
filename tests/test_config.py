@@ -617,3 +617,56 @@ def test_invalid_snap_settings_are_rejected(project: Path, key: str, value: floa
     _default(project, lambda d: d["snap"].update({key: value}))
     with pytest.raises(ConfigError, match=key):
         load_app_config(project)
+
+
+# --- Brief 8.2: the mix signal -------------------------------------------------------------------
+
+
+def test_brief_8_2_speaker_defaults() -> None:
+    cfg = SpeakerConfig()
+    assert (cfg.signal, cfg.min_turn_seconds, cfg.min_turn_motion_seconds) == ("mix", 1.0, 1.5)
+    assert cfg.min_shot_seconds == 1.5  # still there, for signal "mouth"
+
+
+def test_default_yaml_has_the_mix_keys(project: Path) -> None:
+    speaker = load_app_config(project).speaker
+    assert (speaker.signal, speaker.min_turn_seconds, speaker.min_turn_motion_seconds) == (
+        "mix",
+        1.0,
+        1.5,
+    )
+
+
+@pytest.mark.parametrize(
+    ("update", "expected"),
+    [
+        ({"signal": "loudness"}, "speaker.signal"),
+        ({"min_turn_seconds": 0}, "speaker.min_turn_seconds"),
+        ({"min_turn_motion_seconds": 0}, "speaker.min_turn_motion_seconds"),
+        ({"min_turn_seconds": 0.25}, "min_turn_seconds"),  # below window_seconds
+        ({"min_turn_motion_seconds": 0.25}, "min_turn_motion_seconds"),
+    ],
+)
+def test_invalid_mix_settings_are_rejected(
+    project: Path, update: dict[str, Any], expected: str
+) -> None:
+    _default(project, lambda d: d["speaker"].update(update))
+    with pytest.raises(ConfigError, match=expected):
+        load_app_config(project)
+
+
+def test_a_speaker_section_from_before_brief_8_2_still_loads(project: Path, tmp_path: Path) -> None:
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "example-client"), target)
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    for key in ("signal", "min_turn_seconds", "min_turn_motion_seconds"):
+        del data["config"]["speaker"][key]
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    speaker = load_resolved_file(target).app.speaker
+
+    assert (speaker.signal, speaker.min_turn_seconds, speaker.min_turn_motion_seconds) == (
+        "mix",
+        1.0,
+        1.5,
+    )

@@ -70,7 +70,10 @@ speaker:                     # speaker-following crop analysis: clipmachine trac
   max_faces: 4               # faces looked for in each frame (1-8)
   detect_every: 1            # face boxes are detected on every Nth sample and reused in between (1-10)
   window_seconds: 0.5        # the speaker is chosen per window of this length
-  min_shot_seconds: 1.5      # no shot is shorter than this (no flicker); at least window_seconds
+  signal: mix                # mix = mouth against loudness, else pixel motion (D-019); mouth = the older mouth-variance rule
+  min_shot_seconds: 1.5      # signal mouth: no shot is shorter than this (no flicker); at least window_seconds
+  min_turn_seconds: 1.0      # signal mix: shortest stretch of a new speaker that gets a cut (windows decided by sync); at least window_seconds
+  min_turn_motion_seconds: 1.5   # the same in windows decided by pixel motion (noisier); at least window_seconds
   switch_ratio: 1.5          # a challenger's mouth movement must exceed the speaker's by this factor
   confirm_windows: 2         # ... in this many windows in a row before the camera cuts
   dead_zone: 0.08            # fraction of the crop width: smaller face movements do not move the crop

@@ -20,7 +20,8 @@ start fresh in each segment, and a cut is never counted as a speaker switch.
 
 import math
 import statistics
-from collections.abc import Sequence
+from bisect import bisect_left
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
 from clipmachine.models import SpeakerConfig
@@ -29,6 +30,14 @@ MAX_LINK_GAP = 3  # samples a face may vanish and still be re-linked to its trac
 MAX_LINK_GAP_SECONDS = 0.3  # the same gap in time: follow_segments scales it to the sample rate
 SMALL_FACE_MAJORITY = 0.8  # share of face samples that must be small for "faces_too_small"
 MIN_VARIANCE = 1e-9  # mouth-movement variance below this counts as no movement
+SYNC_LAG_SECONDS = 0.067  # the sound is taken this long after the picture: the measured peak
+SYNC_MARGIN_SECONDS = 0.25  # sync looks this far either side of the window
+SYNC_MIN_SHARE = 0.6  # share of a span's samples that need a readable mouth for a sync score
+SYNC_MIN_SAMPLES = 4  # and at least this many
+MOTION_MIN_SHARE = 0.6  # share of a window's samples that need a motion reading
+MAIN_TRACK_SHARE = 0.2  # a track in at least this share of all samples is a main face
+SIGNAL_SYNC = "sync"  # the window was decided by mouth against loudness
+SIGNAL_MOTION = "motion"  # the window was decided by pixel movement
 
 FALLBACK_NO_FACE = "no_face"
 FALLBACK_FACES_TOO_SMALL = "faces_too_small"
@@ -185,13 +194,111 @@ def _mean_cx(track: Track) -> float:
     return statistics.fmean(s.cx for s in track.by_frame.values())
 
 
+def sync_score(mouths: Sequence[float | None], loudness: Sequence[float]) -> float | None:
+    """How well a mouth follows the loudness: covariance divided by the loudness spread, which is
+    the correlation times the mouth's own spread. A mouth that moves with the sound scores high;
+    one that moves against it or regardless of it scores about 0.
+
+    The two sequences are parallel. Only positions with a readable mouth count. None when too few
+    are readable; 0.0 when the mouth or the loudness does not vary.
+    """
+    if len(mouths) != len(loudness):
+        raise ValueError("mouths and loudness must have the same length")
+    pairs = [(m, v) for m, v in zip(mouths, loudness, strict=True) if m is not None]
+    if len(pairs) < max(SYNC_MIN_SAMPLES, SYNC_MIN_SHARE * len(mouths)):
+        return None
+    usable_mouths = [m for m, _ in pairs]
+    usable_loudness = [v for _, v in pairs]
+    if statistics.pstdev(usable_mouths) < 1e-12:
+        return 0.0
+    spread = statistics.pstdev(usable_loudness)
+    if spread < 1e-9:
+        return 0.0
+    mean_m = statistics.fmean(usable_mouths)
+    mean_v = statistics.fmean(usable_loudness)
+    covariance = statistics.fmean((m - mean_m) * (v - mean_v) for m, v in pairs)
+    return max(0.0, covariance) / spread
+
+
+def motion_score(motions: Sequence[float | None]) -> float | None:
+    """The mean of the readable motion values; None when too few of them are readable."""
+    readable = [m for m in motions if m is not None]
+    if not motions or len(readable) < MOTION_MIN_SHARE * len(motions):
+        return None
+    return statistics.fmean(readable)
+
+
+def window_scores(
+    tracks: Sequence[Track],
+    loudness: Sequence[float] | None,
+    times: Sequence[float],
+    window: float,
+    count: int,
+) -> tuple[dict[int, list[float]], list[str | None]]:
+    """A score per track and window, and which signal decided each window.
+
+    `times[k]` is the time of sample k (the keys of Track.by_frame) and `loudness[k]` the loudness
+    for it, already shifted by the lag (None: no audio). A window uses sync (mouth against
+    loudness, over the window plus SYNC_MARGIN_SECONDS either side) when there is audio and every
+    main track (present in MAIN_TRACK_SHARE of all samples) has a sync score there; otherwise it
+    uses pixel motion. A track that cannot be scored in a window scores 0.0. The signal of a window
+    where nobody scores above MIN_VARIANCE is None.
+    """
+    scores: dict[int, list[float]] = {t.id: [0.0] * count for t in tracks}
+    kinds: list[str | None] = [None] * count
+    if count <= 0:
+        return scores, kinds
+    inside: list[list[int]] = [[] for _ in range(count)]
+    for k, moment in enumerate(times):
+        inside[window_index(moment, window, count)].append(k)
+    main = [t for t in tracks if times and len(t.by_frame) >= MAIN_TRACK_SHARE * len(times)]
+
+    def sync(track: Track, span: range) -> float | None:
+        assert loudness is not None
+        mouths = [s.mouth if (s := track.by_frame.get(k)) is not None else None for k in span]
+        return sync_score(mouths, [loudness[k] for k in span])
+
+    for w in range(count):
+        span = range(
+            bisect_left(times, w * window - SYNC_MARGIN_SECONDS),
+            bisect_left(times, (w + 1) * window + SYNC_MARGIN_SECONDS),
+        )
+        values: dict[int, float] | None = None
+        kind = SIGNAL_MOTION
+        if loudness is not None and main:
+            main_scores = {t.id: sync(t, span) for t in main}
+            if all(v is not None for v in main_scores.values()):
+                values = {
+                    t.id: (main_scores[t.id] if t.id in main_scores else sync(t, span)) or 0.0
+                    for t in tracks
+                }
+                kind = SIGNAL_SYNC
+        if values is None:
+            values = {}
+            for t in tracks:
+                motions = [
+                    s.motion if (s := t.by_frame.get(k)) is not None else None for k in inside[w]
+                ]
+                values[t.id] = motion_score(motions) or 0.0
+        for track_id, value in values.items():
+            scores[track_id][w] = value
+        if any(v > MIN_VARIANCE for v in values.values()):
+            kinds[w] = kind
+    return scores, kinds
+
+
 def choose_speakers(
-    tracks: Sequence[Track], speech: Sequence[bool], window: float, cfg: SpeakerConfig
+    tracks: Sequence[Track],
+    speech: Sequence[bool],
+    window: float,
+    cfg: SpeakerConfig,
+    scores: Mapping[int, Sequence[float]] | None = None,
 ) -> list[int | None]:
     """The track to show in each window.
 
-    The speaker is the track with the highest variance of mouth openness inside the window, and
-    only windows with speech count; a silent window keeps the current choice.
+    The speaker is the track with the highest variance of mouth openness inside the window (or,
+    when `scores` gives a value per track and window, the highest score), and only windows with
+    speech count; a silent window keeps the current choice.
 
     Hysteresis: the first speech window in which anyone moves their mouth picks its leader at
     once, and the windows before it get the same choice. After that a challenger must have
@@ -212,6 +319,9 @@ def choose_speakers(
     per_window = {t.id: _window_values(t, window, count) for t in tracks}
 
     def variance(track_id: int, w: int) -> float:
+        if scores is not None:
+            values = scores.get(track_id, ())
+            return values[w] if w < len(values) else 0.0
         return _variance(per_window[track_id].get(w, []))
 
     def best_present(w: int) -> int | None:
@@ -284,13 +394,29 @@ def build_shots(
     window: float,
     min_shot_seconds: float,
     duration: float | None = None,
+    minimums: Sequence[float] | None = None,
 ) -> list[Shot]:
     """Runs of one choice, with every shot shorter than min_shot_seconds merged into a neighbour
     (the longer one; the earlier on a tie) so the camera never flickers. The last shot ends at
     `duration` when given, else at the end of the last window. A whole clip shorter than the
-    minimum stays one shot."""
+    minimum stays one shot.
+
+    With `minimums` (one per window) a shot must instead be at least as long as the largest
+    minimum among the windows that start inside it, and min_shot_seconds is ignored.
+    """
     if not choice_per_window:
         return []
+    if minimums is not None and len(minimums) != len(choice_per_window):
+        raise ValueError("minimums must have one value per window")
+
+    def required(shot: Shot) -> float:
+        if minimums is None:
+            return min_shot_seconds
+        found = [
+            m for i, m in enumerate(minimums) if shot.start - 1e-9 <= i * window < shot.end - 1e-9
+        ]
+        return max(found, default=min_shot_seconds)
+
     shots: list[Shot] = []
     for i, track in enumerate(choice_per_window):
         if shots and shots[-1].track == track:
@@ -302,7 +428,7 @@ def build_shots(
         shots[-1] = Shot(last.start, min(max(duration, last.start), last.end), last.track)
 
     while len(shots) > 1:
-        short = [i for i, s in enumerate(shots) if s.end - s.start < min_shot_seconds - 1e-9]
+        short = [i for i, s in enumerate(shots) if s.end - s.start < required(s) - 1e-9]
         if not short:
             break
         index = min(short, key=lambda i: (shots[i].end - shots[i].start, i))
@@ -445,6 +571,10 @@ class Followed:
     shots: list[Shot]
     crop_xs: list[int]
     switches: int
+    # speech windows decided by each signal, summed over segments (signal "mix" only)
+    sync_windows: int = 0
+    motion_windows: int = 0
+    unscored_windows: int = 0
 
 
 def follow_segments(
@@ -456,6 +586,7 @@ def follow_segments(
     frame_w_px: int,
     crop_w_px: int,
     cfg: SpeakerConfig,
+    loudness: Sequence[float] | None = None,
 ) -> Followed:
     """Follow the speaker in each camera shot on its own and join the results.
 
@@ -466,12 +597,16 @@ def follow_segments(
     applies inside a segment only. Results are shifted back: shots to clip seconds, track ids
     unique across the clip, Track.by_frame keyed by clip-wide sample index (holding the original
     FaceSamples) and crop xs in sample order.
+
+    `loudness` is one value per sample (aligned with `times`, already shifted by the lag), used by
+    the "mix" signal; None means no audio, so pixel motion decides alone.
     """
     max_gap = max(1, round(MAX_LINK_GAP_SECONDS * cfg.sample_fps))
     tracks: list[Track] = []
     shots: list[Shot] = []
     crop_xs: list[int] = []
     switches = 0
+    sync_windows = motion_windows = unscored_windows = 0
     for a, b in split_at_cuts(len(frames), cuts):
         start = times[a]
         end = times[b] if b < len(times) else duration
@@ -491,8 +626,30 @@ def follow_segments(
         speech = speech_windows(
             local_words, length, cfg.window_seconds, cfg.min_speech_words_per_window
         )
-        choice = choose_speakers(local_tracks, speech, cfg.window_seconds, cfg)
-        local_shots = build_shots(choice, cfg.window_seconds, cfg.min_shot_seconds, length)
+        if cfg.signal == "mix":
+            scores, kinds = window_scores(
+                local_tracks,
+                loudness[a:b] if loudness is not None else None,
+                local_times,
+                cfg.window_seconds,
+                len(speech),
+            )
+            choice = choose_speakers(local_tracks, speech, cfg.window_seconds, cfg, scores)
+            minimums = [
+                cfg.min_turn_motion_seconds if kind == SIGNAL_MOTION else cfg.min_turn_seconds
+                for kind in kinds
+            ]
+            local_shots = build_shots(
+                choice, cfg.window_seconds, cfg.min_shot_seconds, length, minimums=minimums
+            )
+            for spoken, kind in zip(speech, kinds, strict=True):
+                if spoken:
+                    sync_windows += kind == SIGNAL_SYNC
+                    motion_windows += kind == SIGNAL_MOTION
+                    unscored_windows += kind is None
+        else:
+            choice = choose_speakers(local_tracks, speech, cfg.window_seconds, cfg)
+            local_shots = build_shots(choice, cfg.window_seconds, cfg.min_shot_seconds, length)
         crop_xs += camera_path(local_shots, local_tracks, frame_w_px, crop_w_px, local_times, cfg)
         switches += sum(
             1 for x, y in zip(local_shots, local_shots[1:], strict=False) if x.track != y.track
@@ -510,7 +667,15 @@ def follow_segments(
         for shot in local_shots:
             track = None if shot.track is None else offset + shot.track
             shots.append(Shot(shot.start + start, shot.end + start, track))
-    return Followed(tracks=tracks, shots=shots, crop_xs=crop_xs, switches=switches)
+    return Followed(
+        tracks=tracks,
+        shots=shots,
+        crop_xs=crop_xs,
+        switches=switches,
+        sync_windows=sync_windows,
+        motion_windows=motion_windows,
+        unscored_windows=unscored_windows,
+    )
 
 
 # --- fallback and summary -----------------------------------------------------------------
