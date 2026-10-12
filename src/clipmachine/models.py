@@ -925,6 +925,16 @@ class TrackSample(StrictModel):
     crop_x: int  # left edge of the crop in source pixels (upright frame); even
 
 
+class TrackFace(StrictModel):
+    """One face in one analysed sample: centre and size as 0..1 of the analysed frame."""
+
+    t: float  # seconds from the clip start: the sample's time
+    cx: float
+    cy: float
+    w: float
+    h: float
+
+
 class TrackSummary(StrictModel):
     faces_seen: int  # tracks found
     switches: int  # shot changes
@@ -940,8 +950,9 @@ class TrackSummary(StrictModel):
     unscored_windows: int = 0
 
 
-# 2: cuts_exact. 3: the mix signal. load_valid_track recomputes files of any other version
-TRACK_SCHEMA_VERSION = 3
+# 2: cuts_exact. 3: the mix signal. 4: faces. load_valid_track recomputes files of any other
+# version
+TRACK_SCHEMA_VERSION = 4
 
 
 class TrackFile(StrictModel):
@@ -969,6 +980,9 @@ class TrackFile(StrictModel):
     # camera shot starts. Found from the source's own frames, so it can differ from the sample time
     # by up to a few frames. Empty in files written before schema 2.
     cuts_exact: list[float] = []
+    # Every kept face of every sample (also when the track fell back to the centre crop), for
+    # overlays that must not cover a face. Numbers only. Empty in files written before schema 4.
+    faces: list[TrackFace] = []
 
 
 CostStatus = Literal["ok", "refused", "failed", "unconfirmed"]

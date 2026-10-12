@@ -29,6 +29,7 @@ from clipmachine.models import (
     TRACK_SCHEMA_VERSION,
     AppConfig,
     SpeakerConfig,
+    TrackFace,
     TrackFile,
     TrackFrame,
     TrackSample,
@@ -466,6 +467,17 @@ def analyse_clip(
                 face_cx=face_cx,
             )
         )
+    track_faces = [
+        TrackFace(
+            t=times[k],
+            cx=round(face.cx, 4),
+            cy=round(face.cy, 4),
+            w=round(face.w, 4),
+            h=round(face.h, 4),
+        )
+        for k, sample in enumerate(frames)
+        for face in sample
+    ]
     seconds = round(time.perf_counter() - started, 2)
     return TrackFile(
         clip_id=clip_id,
@@ -502,6 +514,7 @@ def analyse_clip(
         ),
         cuts=[round(t, 3) for t in cut_times],
         cuts_exact=cut_exact,
+        faces=track_faces,
     )
 
 

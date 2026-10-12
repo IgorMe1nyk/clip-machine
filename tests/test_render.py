@@ -21,6 +21,7 @@ from clipmachine.config import (
 )
 from clipmachine.context import RunContext
 from clipmachine.models import (
+    TRACK_SCHEMA_VERSION,
     AudioStreamInfo,
     FetchMeta,
     MediaInfo,
@@ -767,7 +768,11 @@ def test_a_missing_or_stale_track_is_analysed_again_and_saved(
     assert fakes.opened == opened + (2 if change == "settings" else 1)
     clips = ctx.run_dir / "clips"
     track = TrackFile.model_validate_json((clips / "c01.track.json").read_text(encoding="utf-8"))
-    assert (track.clip_start, track.clip_end, track.schema_version) == (10.0, 30.0, 3)
+    assert (track.clip_start, track.clip_end, track.schema_version) == (
+        10.0,
+        30.0,
+        TRACK_SCHEMA_VERSION,
+    )
     assert track.crop_w == 202
     data = read_json(clips / "c01.json")
     assert data["track_sha256"] == file_hash(clips / "c01.track.json")  # rendered from the new one

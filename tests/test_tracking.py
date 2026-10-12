@@ -655,7 +655,7 @@ def test_a_schema_1_track_file_parses_but_is_not_valid(
 ) -> None:
     plan = make_plan(tmp_path)
     data = saved_track(plan, monkeypatch).model_dump(mode="json")
-    assert data["schema_version"] == TRACK_SCHEMA_VERSION == 3
+    assert data["schema_version"] == TRACK_SCHEMA_VERSION
     data["schema_version"] = 1
     del data["cuts_exact"]
     write_json_atomic(tracking.track_path(plan.clips_dir, "c01"), data)
@@ -978,7 +978,7 @@ def test_the_window_counts_land_in_track_json(
 
     assert reused is False
     saved = json.loads(tracking.track_path(plan.clips_dir, "c01").read_text(encoding="utf-8"))
-    assert saved["schema_version"] == TRACK_SCHEMA_VERSION == 3
+    assert saved["schema_version"] == TRACK_SCHEMA_VERSION
     summary = saved["summary"]
     assert summary["motion_windows"] == track.summary.motion_windows > 0
     assert summary["sync_windows"] == 0 and summary["unscored_windows"] == 0
@@ -1042,3 +1042,71 @@ def test_build_plan_finds_the_audio_file_or_warns(
     found = tracking.build_plan(run_dir, project, app, segments=[], **args)  # type: ignore[arg-type]
     assert found.audio == run_dir / "audio.wav"
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+# --- faces in track.json (schema 4) ---------------------------------------------------------
+
+
+def test_the_track_lists_every_face_of_every_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    track_fakes.install(monkeypatch, track_fakes.two_people(size=0.3))
+
+    track = analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0)
+
+    assert TRACK_SCHEMA_VERSION == 4
+    assert len(track.faces) == 2 * track.summary.samples == 400
+    first_sample = [f for f in track.faces if f.t == 0.0]
+    assert [(f.cx, f.cy, f.w, f.h) for f in first_sample] == [
+        (0.25, 0.5, 0.15, 0.3),
+        (0.75, 0.5, 0.15, 0.3),
+    ]
+    assert track.faces[-1].t == 19.9 and track.faces[-2].t == 19.9
+    assert [f.t for f in track.faces] == sorted(f.t for f in track.faces)
+    assert {s.t for s in track.samples} == {f.t for f in track.faces}  # the sample's own time
+
+
+def test_faces_are_listed_for_the_whole_clip_even_when_the_track_falls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def one_small(t: float) -> list[track_fakes.RawFace]:
+        return [track_fakes.RawFace(0.5, 0.5, 0.3, 0.3, 0.0)]  # tall enough to be kept
+
+    track_fakes.install(monkeypatch, one_small)
+    track = analyse_clip(make_plan(tmp_path, video=video(640, 360)), "c01", 10.0, 30.0)
+    assert len(track.faces) == track.summary.samples == 200
+    track_fakes.install(monkeypatch, track_fakes.nobody)
+    assert analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0).faces == []
+
+
+def test_faces_below_the_minimum_height_are_not_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    track_fakes.install(monkeypatch, track_fakes.two_people(size=0.04))  # under min_face_height
+    track = analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0)
+    assert track.fallback_reason is not None and track.faces == []
+
+
+def test_face_numbers_are_rounded_to_four_decimals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def odd(t: float) -> list[track_fakes.RawFace]:
+        return [track_fakes.RawFace(0.123456789, 0.5, 0.2, 0.3, 0.0)]
+
+    track_fakes.install(monkeypatch, odd)
+    track = analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0)
+    assert {f.cx for f in track.faces} == {0.1235}
+
+
+def test_a_schema_3_track_file_is_recomputed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = make_plan(tmp_path)
+    data = saved_track(plan, monkeypatch).model_dump(mode="json")
+    data["schema_version"] = 3
+    del data["faces"]
+    write_json_atomic(tracking.track_path(plan.clips_dir, "c01"), data)
+
+    path = tracking.track_path(plan.clips_dir, "c01")
+    assert TrackFile.model_validate_json(path.read_text(encoding="utf-8")).faces == []  # parses
+    assert load(plan) is None  # but is analysed again
