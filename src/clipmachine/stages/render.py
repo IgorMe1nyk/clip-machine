@@ -38,7 +38,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import ValidationError
 
@@ -121,6 +121,34 @@ class Plan:
     metrics: FontMetrics | None = None
     karaoke: KaraokeSettings | None = None
     safe: Rect | None = None
+
+
+class ClipLike(Protocol):
+    """What the speaker crop and the captions need of a clip: a scored clip, or a campaign
+    moment with its final times."""
+
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def start(self) -> float: ...
+
+    @property
+    def end(self) -> float: ...
+
+    @property
+    def hook_line(self) -> str: ...
+
+
+@dataclass(frozen=True)
+class HookSpec:
+    """How the hook is drawn: how long, the fade, the base font size and the rectangles it must
+    stay clear of. The render stage builds one from the settings."""
+
+    seconds: float
+    fade_ms: int
+    font_size: int
+    avoid: tuple[Rect, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -308,7 +336,7 @@ def _source_fps(video: VideoStreamInfo) -> float:
     return DEFAULT_PATH_FPS
 
 
-def _speaker_crop(plan: Plan, clip: ScoredClip) -> SpeakerCrop:
+def _speaker_crop(plan: Plan, clip: ClipLike) -> SpeakerCrop:
     """The clip's track (reused or analysed) turned into a crop; writes clips/<id>.crop.cmd when
     the crop moves."""
     from clipmachine import tracking  # tracking imports this module
@@ -330,7 +358,7 @@ def _speaker_crop(plan: Plan, clip: ScoredClip) -> SpeakerCrop:
 
 
 def _crop_from_track(
-    plan: Plan, clip: ScoredClip, track: TrackFile, reused: bool, out_dir: Path
+    plan: Plan, clip: ClipLike, track: TrackFile, reused: bool, out_dir: Path
 ) -> SpeakerCrop:
     """The crop a clip's track gives; the sendcmd file (if the crop moves) goes in `out_dir`."""
     from clipmachine import tracking  # tracking imports this module
@@ -369,6 +397,8 @@ class Captions:
     hook_moved: bool = False
     outside_safe_zone: int = 0
     notes: tuple[str, ...] = ()
+    caption_boxes: tuple[Rect, ...] = ()  # one per caption line (box_karaoke)
+    hook_band: Rect | None = None  # the box behind the hook, when it is shown
 
 
 def _legacy_captions(plan: Plan, words: list[CaptionWord], duration: float) -> Captions:
@@ -388,13 +418,37 @@ def _legacy_captions(plan: Plan, words: list[CaptionWord], duration: float) -> C
     return Captions(text, len(events), len(groups), max((len(g) for g in groups), default=0))
 
 
+def _face_boxes(plan: Plan, chosen: SpeakerCrop | None, until: float) -> list[Rect] | None:
+    """The faces of the clip's track up to `until` seconds, in output pixels; None in centre-crop
+    mode, which has no track."""
+    if chosen is None:
+        return None
+    settings = plan.settings
+    source_w, source_h = display_size(plan.video.width, plan.video.height, plan.video.rotation)
+    return face_rects(
+        chosen.track.faces,
+        chosen.track.samples,
+        source_w=source_w,
+        source_h=source_h,
+        crop_w=plan.crop.w,
+        crop_h=plan.crop.h,
+        crop_y=plan.crop.y,
+        out_w=settings.width,
+        out_h=settings.height,
+        until=until,
+    )
+
+
 def _karaoke_captions(
     plan: Plan,
-    clip: ScoredClip,
+    clip: ClipLike,
     words: list[CaptionWord],
     chosen: SpeakerCrop | None,
     duration: float,
+    hook: HookSpec | None = None,
 ) -> Captions:
+    """`hook` is how the hook is drawn; None builds it from the settings, and then the hook is
+    shown only when hook.enabled. A given spec always shows the hook."""
     settings = plan.settings
     karaoke, metrics, safe = plan.karaoke, plan.metrics, plan.safe
     assert karaoke is not None and metrics is not None and safe is not None
@@ -409,42 +463,32 @@ def _karaoke_captions(
     boxes = list(built.boxes)
     notes = list(built.notes)
     hook_events: list[AssEvent] = []
+    hook_band: Rect | None = None
     shown = moved = False
-    if settings.hook_enabled:
-        face_boxes: list[Rect] | None = None  # centre-crop mode has no track: faces unknown
-        if chosen is not None:
-            source_w, source_h = display_size(
-                plan.video.width, plan.video.height, plan.video.rotation
-            )
-            face_boxes = face_rects(
-                chosen.track.faces,
-                chosen.track.samples,
-                source_w=source_w,
-                source_h=source_h,
-                crop_w=plan.crop.w,
-                crop_h=plan.crop.h,
-                crop_y=plan.crop.y,
-                out_w=settings.width,
-                out_h=settings.height,
-                until=min(settings.hook_seconds, duration),
-            )
-        hook = build_hook(
+    if hook is None and settings.hook_enabled:
+        hook = HookSpec(settings.hook_seconds, settings.hook_fade_ms, settings.hook_font_size)
+    if hook is not None:
+        # centre-crop mode has no track: faces unknown
+        face_boxes = _face_boxes(plan, chosen, min(hook.seconds, duration))
+        result = build_hook(
             clip.hook_line,
             karaoke,
             metrics,
             safe,
             face_boxes,
-            seconds=settings.hook_seconds,
-            fade_ms=settings.hook_fade_ms,
+            seconds=hook.seconds,
+            fade_ms=hook.fade_ms,
             line_gap_em=settings.line_gap_em,
             clip_seconds=duration,
-            font_size=settings.hook_font_size,
+            font_size=hook.font_size,
+            avoid=hook.avoid,
         )
-        hook_events = hook.events
-        shown, moved = hook.shown, hook.moved
-        notes.extend(hook.notes)
-        if hook.band is not None:
-            boxes.append(hook.band)
+        hook_events = result.events
+        shown, moved = result.shown, result.moved
+        notes.extend(result.notes)
+        hook_band = result.band
+        if result.band is not None:
+            boxes.append(result.band)
     text = build_ass_v2(
         built.events,
         hook_events,
@@ -462,6 +506,8 @@ def _karaoke_captions(
         moved,
         outside_count(boxes, safe),
         tuple(notes),
+        caption_boxes=tuple(built.boxes),
+        hook_band=hook_band,
     )
 
 
@@ -606,8 +652,9 @@ class Inputs:
     track_plan: "TrackPlan | None"
 
 
-def _load_inputs(run_dir: Path, root: Path, app: AppConfig) -> Inputs:
-    # Preflight: a missing font is an error, never a silent fallback.
+def _load_font(root: Path, app: AppConfig) -> tuple[Path, FontMetrics | None]:
+    """The font folder and, for box_karaoke, the font's metrics. A missing font is an error,
+    never a silent fallback."""
     fonts_dir = root / FONTS_DIR
     if not (fonts_dir / app.captions.font_file).is_file():
         raise RunError(
@@ -623,8 +670,10 @@ def _load_inputs(run_dir: Path, root: Path, app: AppConfig) -> Inputs:
             raise RunError(
                 f"caption font {app.captions.font_file} (captions.font_file) cannot be used: {exc}"
             ) from exc
+    return fonts_dir, metrics
 
-    scored = _load_scored(run_dir)
+
+def _load_source(run_dir: Path) -> tuple[FetchMeta, VideoStreamInfo, Path]:
     meta = _load_meta(run_dir)
     video = meta.media.video
     if video is None:
@@ -632,6 +681,41 @@ def _load_inputs(run_dir: Path, root: Path, app: AppConfig) -> Inputs:
     source = run_dir / meta.source_file
     if not source.is_file():
         raise RunError(f"source video not found in the run folder: {meta.source_file}")
+    return meta, video, source
+
+
+def _load_speaker(
+    run_dir: Path,
+    root: Path,
+    app: AppConfig,
+    meta: FetchMeta,
+    video: VideoStreamInfo,
+    source: Path,
+) -> tuple[list[TranscriptSegment], "TrackPlan"]:
+    """The transcript and the track plan; checks both model files before anything is rendered."""
+    from clipmachine import tracking  # tracking imports this module
+    from clipmachine.utils import faces
+
+    segments = _load_transcript(run_dir).segments
+    try:
+        track_plan = tracking.build_plan(
+            run_dir,
+            root,
+            app,
+            video=video,
+            source=source,
+            source_sha256=meta.sha256,
+            segments=segments,
+        )
+    except faces.FacesError as exc:
+        raise RunError(str(exc)) from exc
+    return segments, track_plan
+
+
+def _load_inputs(run_dir: Path, root: Path, app: AppConfig) -> Inputs:
+    fonts_dir, metrics = _load_font(root, app)
+    scored = _load_scored(run_dir)
+    meta, video, source = _load_source(run_dir)
 
     kept = sorted((c for c in scored.clips if c.kept), key=lambda c: c.rank or 0)
     if any(not CLIP_ID_RE.fullmatch(c.id) for c in kept):
@@ -641,23 +725,20 @@ def _load_inputs(run_dir: Path, root: Path, app: AppConfig) -> Inputs:
     track_plan: TrackPlan | None = None
     segments: list[TranscriptSegment] | None = None
     if app.video.crop == "speaker" and kept:
-        from clipmachine import tracking  # tracking imports this module
-        from clipmachine.utils import faces
-
-        segments = _load_transcript(run_dir).segments
-        try:
-            track_plan = tracking.build_plan(
-                run_dir,
-                root,
-                app,
-                video=video,
-                source=source,
-                source_sha256=meta.sha256,
-                segments=segments,
-            )
-        except faces.FacesError as exc:
-            raise RunError(str(exc)) from exc
+        segments, track_plan = _load_speaker(run_dir, root, app, meta, video, source)
     return Inputs(fonts_dir, metrics, kept, video, source, segments, track_plan)
+
+
+def load_source_inputs(run_dir: Path, root: Path, app: AppConfig) -> Inputs:
+    """Everything _load_inputs reads except scored.json (campaign mode has no scored clips):
+    `kept` is empty, and in speaker mode the transcript and the track plan are always loaded."""
+    fonts_dir, metrics = _load_font(root, app)
+    meta, video, source = _load_source(run_dir)
+    track_plan: TrackPlan | None = None
+    segments: list[TranscriptSegment] | None = None
+    if app.video.crop == "speaker":
+        segments, track_plan = _load_speaker(run_dir, root, app, meta, video, source)
+    return Inputs(fonts_dir, metrics, [], video, source, segments, track_plan)
 
 
 def _make_plan(run_dir: Path, clips_dir: Path, app: AppConfig, inputs: Inputs) -> Plan:

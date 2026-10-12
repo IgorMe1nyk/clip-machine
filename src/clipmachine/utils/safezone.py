@@ -107,31 +107,57 @@ def face_rects(
     return found
 
 
+def hook_base_top(band_w: float, band_h: float, safe: Rect, fixed: Sequence[Rect]) -> float:
+    """The top of the hook band before faces are looked at: the top of the safe area, moved down
+    to just under the lowest `fixed` rectangle (HOOK_FACE_GAP_PX below) while the band overlaps
+    one. With no fixed rectangles it is `safe.y1`."""
+    centre = (safe.x1 + safe.x2) / 2
+    top = safe.y1
+    for _ in range(len(fixed) + 1):
+        band = Rect(centre - band_w / 2, top, centre + band_w / 2, top + band_h)
+        hits = [rect for rect in fixed if rect.intersects(band)]
+        if not hits:
+            break
+        top = float(math.ceil(max(rect.y2 for rect in hits) + HOOK_FACE_GAP_PX))
+    return top
+
+
 def place_hook(
-    band_w: float, band_h: float, safe: Rect, faces: Sequence[Rect], lowest_bottom: float
+    band_w: float,
+    band_h: float,
+    safe: Rect,
+    faces: Sequence[Rect],
+    lowest_bottom: float,
+    fixed: Sequence[Rect] = (),
 ) -> tuple[float, bool, bool]:
     """Where the hook band goes: (top, moved, over_face).
 
-    Centred on the safe area, starting at its top. While the band overlaps faces it moves down to
-    just under the lowest of them (HOOK_FACE_GAP_PX below). If the moved band would end below
-    `lowest_bottom` (the caption box minus a gap), or no free place is found, the band stays at
-    the top of the safe area and `over_face` is True.
+    `fixed` are rectangles the hook must not cover (the campaign watermark). The band is centred
+    on the safe area and starts at the base position: the top of the safe area, moved down under
+    the fixed rectangles it overlaps (hook_base_top). From there, while the band overlaps faces
+    or fixed rectangles it moves down to just under the lowest of them (HOOK_FACE_GAP_PX below).
+    If the moved band would end below `lowest_bottom` (the caption box minus a gap), or no free
+    place is found, the band stays at the base position and `over_face` is True. `moved` means
+    moved down for an obstacle after the base position. With no fixed rectangles the base
+    position is the top of the safe area.
     """
     # TODO(Brief 8.3): stacked shots place the hook over the top half's headroom
     centre = (safe.x1 + safe.x2) / 2
-    top = safe.y1
+    base = hook_base_top(band_w, band_h, safe, fixed)
+    obstacles = [*faces, *fixed]
+    top = base
     free = False
-    for _ in range(len(faces) + 1):
+    for _ in range(len(obstacles) + 1):
         band = Rect(centre - band_w / 2, top, centre + band_w / 2, top + band_h)
-        hits = [face for face in faces if face.intersects(band)]
+        hits = [item for item in obstacles if item.intersects(band)]
         if not hits:
             free = True
             break
-        top = float(math.ceil(max(face.y2 for face in hits) + HOOK_FACE_GAP_PX))
+        top = float(math.ceil(max(item.y2 for item in hits) + HOOK_FACE_GAP_PX))
     if not free:
-        return safe.y1, False, True
-    if top == safe.y1:
+        return base, False, True
+    if top == base:
         return top, False, False
     if top + band_h > lowest_bottom:
-        return safe.y1, False, True
+        return base, False, True
     return top, True, False

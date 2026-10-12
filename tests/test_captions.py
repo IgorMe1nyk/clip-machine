@@ -987,3 +987,89 @@ def test_the_hook_band_is_always_inside_the_safe_area_and_above_the_caption(
             assert result.band.y2 <= top_of_caption - 12
             assert not result.band.intersects(normal)
             assert len(hook_text_events(result)) <= 2
+
+
+# --- hook that avoids a rectangle (Brief 11: the campaign watermark) ------------------------------
+
+MARK = Rect(0, 280, 1080, 400)  # across the top of the safe area
+
+
+def band_top(result: HookResult) -> float:
+    assert result.band is not None
+    return result.band.y1
+
+
+def text_tops(result: HookResult) -> list[int]:
+    return [int(re.search(r"pos\(504,(\d+)\)", e.text).group(1)) for e in hook_text_events(result)]  # type: ignore[union-attr]
+
+
+def test_the_hook_goes_below_an_avoided_rectangle(metrics: FontMetrics) -> None:
+    result = build_hook(
+        "alpha beta gamma delta omega sigma",
+        SETTINGS,
+        metrics,
+        SAFE,
+        [],
+        seconds=2.0,
+        fade_ms=150,
+        line_gap_em=0.35,
+        clip_seconds=30.0,
+        avoid=[MARK],
+    )
+    assert band_top(result) == 412.0 and not result.moved
+    assert result.notes == ["hook_moved_for_overlay"]
+    assert all(top >= 412 for top in text_tops(result)) and len(text_tops(result)) == 2
+    assert result.band is not None and result.band.inside(SAFE)
+
+
+def test_an_avoided_rectangle_also_works_when_faces_are_unknown(metrics: FontMetrics) -> None:
+    result = build_hook(
+        "synthetic hook line",
+        SETTINGS,
+        metrics,
+        SAFE,
+        None,
+        seconds=2.0,
+        fade_ms=150,
+        line_gap_em=0.35,
+        clip_seconds=30.0,
+        avoid=[MARK],
+    )
+    assert band_top(result) == 412.0
+    assert result.notes == ["hook_faces_unknown", "hook_moved_for_overlay"]
+    assert text_tops(result)[0] >= 412
+
+
+def test_faces_below_the_avoided_rectangle_still_move_the_hook(metrics: FontMetrics) -> None:
+    result = build_hook(
+        "synthetic hook line",
+        SETTINGS,
+        metrics,
+        SAFE,
+        [Rect(400, 420, 600, 520)],
+        seconds=2.0,
+        fade_ms=150,
+        line_gap_em=0.35,
+        clip_seconds=30.0,
+        avoid=[MARK],
+    )
+    assert result.moved and band_top(result) == 532.0
+    assert result.notes == ["hook_moved_for_faces", "hook_moved_for_overlay"]
+
+
+def test_without_an_avoided_rectangle_the_events_are_unchanged(metrics: FontMetrics) -> None:
+    plain = hook(metrics, "synthetic hook line", [])
+    elsewhere = build_hook(
+        "synthetic hook line",
+        SETTINGS,
+        metrics,
+        SAFE,
+        [],
+        seconds=2.0,
+        fade_ms=150,
+        line_gap_em=0.35,
+        clip_seconds=30.0,
+        avoid=[Rect(0, 1500, 100, 1600)],
+    )
+    assert elsewhere.events == plain.events and elsewhere.notes == plain.notes == []
+    assert band_top(plain) == 290.0

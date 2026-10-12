@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 from clipmachine.models import HEX_COLOR_RE, CaptionsConfig, TranscriptSegment
 from clipmachine.utils.fontmetrics import FontMetrics
-from clipmachine.utils.safezone import Rect, caption_anchor, place_hook
+from clipmachine.utils.safezone import Rect, caption_anchor, hook_base_top, place_hook
 
 GAP_FILL_SECONDS = 0.5  # a silence shorter than this keeps the previous caption on screen
 MIN_EVENT_SECONDS = 0.1  # shortest time the last word of a clip stays up
@@ -699,12 +699,14 @@ def build_hook(
     line_gap_em: float,
     clip_seconds: float,
     font_size: int | None = None,
+    avoid: Sequence[Rect] = (),
 ) -> HookResult:
     """The hook as white text on a dark band at the top of the safe area, from 0 to `seconds`
     with a fade-out. At most two lines; `font_size` is the base size (None: the caption size), the
     size goes down to 70 % of it and then words are dropped (an ellipsis on the last one) until it
     fits the safe width. The band moves below any face in `faces` (output-frame rectangles);
-    `faces=None` means nothing is known about faces.
+    `faces=None` means nothing is known about faces. `avoid` are rectangles the band must not
+    cover (the campaign watermark): the band starts under them (note hook_moved_for_overlay).
 
     `text` is untrusted: `clean_word` removes `{ } \\` and turns newlines into spaces.
     """
@@ -757,16 +759,19 @@ def build_hook(
     centre = (safe.x1 + safe.x2) / 2
 
     moved = False
+    base_top = hook_base_top(band_w, band_h, safe, avoid)
+    lowest_bottom = caption_top(settings, metrics, safe) - HOOK_CAPTION_GAP_PX
     if faces is None:
-        top = safe.y1
+        top = place_hook(band_w, band_h, safe, (), lowest_bottom, fixed=avoid)[0]
         notes.append("hook_faces_unknown")
     else:
-        lowest_bottom = caption_top(settings, metrics, safe) - HOOK_CAPTION_GAP_PX
-        top, moved, over_face = place_hook(band_w, band_h, safe, faces, lowest_bottom)
+        top, moved, over_face = place_hook(band_w, band_h, safe, faces, lowest_bottom, fixed=avoid)
         if moved:
             notes.append("hook_moved_for_faces")
         if over_face:
             notes.append("hook_over_face")
+    if base_top != safe.y1:
+        notes.append("hook_moved_for_overlay")
 
     end = min(seconds, clip_seconds)
     fade = min(fade_ms, int(end * 1000))
