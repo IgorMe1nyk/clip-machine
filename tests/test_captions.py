@@ -8,6 +8,7 @@ from clipmachine.models import CaptionsConfig, TranscriptSegment, TranscriptWord
 from clipmachine.utils.captions import (
     AssEvent,
     CaptionWord,
+    HookResult,
     KaraokeLines,
     KaraokeResult,
     KaraokeSettings,
@@ -16,7 +17,9 @@ from clipmachine.utils.captions import (
     build_ass,
     build_ass_v2,
     build_events,
+    build_hook,
     build_karaoke,
+    caption_top,
     clean_word,
     clip_words,
     fmt_num,
@@ -736,3 +739,197 @@ def test_settings_come_from_the_captions_config() -> None:
     settings = KaraokeSettings.from_config(config)
     assert (settings.font_size, settings.max_words, settings.max_width_px) == (80, 4, 760)
     assert settings.text_limit_px == 724.0
+
+
+# --- hook overlay (Brief R1); synthetic hook text -----------------------------------------------
+
+HOOK_LIMIT = 768 - 2 * 18  # the safe width minus the padding on both sides
+
+
+def hook(
+    metrics: FontMetrics,
+    text: str,
+    faces: list[Rect] | None = None,
+    *,
+    seconds: float = 2.0,
+    clip: float = 30.0,
+    fade_ms: int = 150,
+) -> HookResult:
+    return build_hook(
+        text,
+        SETTINGS,
+        metrics,
+        SAFE,
+        faces,
+        seconds=seconds,
+        fade_ms=fade_ms,
+        line_gap_em=0.35,
+        clip_seconds=clip,
+    )
+
+
+def hook_text_events(result: HookResult) -> list[AssEvent]:
+    return [e for e in result.events if e.style == "Hook"]
+
+
+def hook_size(event: AssEvent) -> int:
+    match = re.search(r"\\fs(\d+)\}", event.text)
+    return int(match.group(1)) if match else SETTINGS.font_size
+
+
+def test_the_hook_is_shown_from_zero_to_the_configured_seconds_with_a_fade(
+    metrics: FontMetrics,
+) -> None:
+    result = hook(metrics, "synthetic hook line", [])
+    assert result.shown and not result.moved and result.band is not None
+    box, text = result.events
+    assert (box.layer, box.style, text.layer, text.style) == (2, "Box", 3, "Hook")
+    assert [(e.start, e.end) for e in result.events] == [(0.0, 2.0), (0.0, 2.0)]
+    assert box.text.startswith("{\\pos(0,0)\\fad(0,150)\\p1}")
+    assert re.match(r"\{\\pos\(504,\d+\)\\fad\(0,150\)\}synthetic", text.text)
+    assert result.notes == []
+
+
+def test_a_clip_shorter_than_the_hook_time_ends_the_hook_with_the_clip(
+    metrics: FontMetrics,
+) -> None:
+    result = hook(metrics, "synthetic hook", [], clip=1.2)
+    assert {e.end for e in result.events} == {1.2}
+    tiny = hook(metrics, "synthetic hook", [], clip=0.1)
+    assert {e.end for e in tiny.events} == {0.1}
+    assert "\\fad(0,100)" in tiny.events[1].text  # the fade cannot be longer than the hook
+    assert "\\fad" not in hook(metrics, "synthetic hook", [], fade_ms=0).events[1].text
+
+
+@pytest.mark.parametrize("text", ["", "   ", "{}", "\\", "\n\t"])
+def test_a_blank_hook_is_skipped_with_a_note(metrics: FontMetrics, text: str) -> None:
+    result = hook(metrics, text, [])
+    assert (result.events, result.shown, result.moved, result.band) == ([], False, False, None)
+    assert result.notes == ["hook_missing"]
+
+
+HOOK_TAGS = [
+    re.compile(r"\{\\pos\(0,0\)(?:\\fad\(0,\d+\))?\\p1\}[mlb0-9 ]+\{\\p0\}"),
+    re.compile(r"\{\\pos\(\d+,\d+\)(?:\\fad\(0,\d+\))?(?:\\fs\d+)?\}"),
+    re.compile(r"\{\\fsp\d+(?:\.\d{1,2})?\}"),
+    re.compile(r"\{\\fsp\d+(?:\.\d{1,2})?\\k\d+\}"),
+]
+
+
+def test_a_hostile_hook_cannot_add_tags_or_lines(metrics: FontMetrics) -> None:
+    text = "{\\an8}big\nsecond\\Nline {\\p1}x}{ y\r\nz \\"
+    result = hook(metrics, text, [])
+    assert result.shown
+    ass = build_ass_v2(
+        [], result.events, font="Montserrat", settings=SETTINGS, width=1080, height=1920
+    )
+    assert "\r" not in ass
+    texts = dialogue_texts(ass)
+    assert len(texts) == len(result.events)
+    for body in texts:
+        for pattern in HOOK_TAGS:
+            body = pattern.sub("", body)
+        assert not any(c in body for c in "{}\\\n\r")
+    shown = "".join(texts[1:])  # the words survive, minus the characters ASS would read as tags
+    assert all(part in shown for part in ("an8big", "secondNline", "p1x"))
+
+
+def test_a_short_hook_is_one_line_and_a_long_one_two_with_the_pitch_between(
+    metrics: FontMetrics,
+) -> None:
+    one = hook(metrics, "alpha beta", [])
+    assert len(hook_text_events(one)) == 1
+    two = hook(metrics, "alpha beta gamma delta omega sigma", [])
+    first, second = hook_text_events(two)
+    assert two.notes == []  # fits at full size
+    pitch = metrics.cap_px(64) + metrics.descent_px(64) + 0.35 * 64
+    gap = int(re.search(r"pos\(504,(\d+)\)", second.text).group(1)) - int(  # type: ignore[union-attr]
+        re.search(r"pos\(504,(\d+)\)", first.text).group(1)  # type: ignore[union-attr]
+    )
+    assert abs(gap - pitch) <= 1  # integer anchors
+    band = two.band
+    assert band is not None
+    height = 18 + metrics.cap_px(64) + pitch + metrics.descent_px(64) + 18
+    assert band.y2 - band.y1 == pytest.approx(height)
+    # the visible gap between the lines (descent to the next cap top) is the configured 0.35 em
+    assert pitch - metrics.cap_px(64) - metrics.descent_px(64) == pytest.approx(0.35 * 64)
+    assert (band.x1 + band.x2) / 2 == 504
+
+
+def test_a_hook_too_wide_for_one_line_at_full_size_is_shrunk(metrics: FontMetrics) -> None:
+    count = next(n for n in range(1, 80) if metrics.text_width("m" * n, 64, 1.0) > HOOK_LIMIT)
+    result = hook(metrics, "m" * count, [])
+    assert result.notes == ["hook_shrunk", "hook_faces_unknown"][:1]
+    (event,) = hook_text_events(result)
+    assert hook_size(event) == 57 and "\\fs57}" in event.text
+    assert result.band is not None and result.band.inside(SAFE)
+
+
+def test_a_60_word_hook_is_truncated_to_two_lines_inside_the_safe_area(
+    metrics: FontMetrics,
+) -> None:
+    text = " ".join(f"word{i}" for i in range(60))
+    result = hook(metrics, text, [])
+    events = hook_text_events(result)
+    assert 1 <= len(events) <= 2
+    assert "hook_truncated" in result.notes
+    assert events[-1].text.endswith("\u2026")
+    assert result.band is not None and result.band.inside(SAFE)
+    assert result.band.x2 - result.band.x1 <= 768
+
+
+def test_a_400_character_word_is_cut_to_fit(metrics: FontMetrics) -> None:
+    result = hook(metrics, "w" * 400, [])
+    (event,) = hook_text_events(result)
+    assert "hook_truncated" in result.notes
+    assert event.text.endswith("\u2026") and len(event.text) < 100
+    assert hook_size(event) == 44  # floor(64 * 0.7)
+    assert result.band is not None and result.band.inside(SAFE)
+    assert result.band.x2 - result.band.x1 <= 768 + 1e-6
+
+
+def test_the_hook_moves_below_a_face_that_overlaps_it(metrics: FontMetrics) -> None:
+    result = hook(metrics, "synthetic hook line", [Rect(400, 250, 600, 500.4)])
+    assert result.moved and result.band is not None
+    assert result.band.y1 == 513  # ceil(500.4 + 12)
+    assert result.notes == ["hook_moved_for_faces"]
+    assert result.band.inside(SAFE) and result.band.y2 <= caption_top(SETTINGS, metrics, SAFE) - 12
+    assert "pos(504," in hook_text_events(result)[0].text
+
+
+@pytest.mark.parametrize("face", [Rect(0, 300, 100, 600), Rect(400, 800, 600, 1000)])
+def test_a_face_beside_or_below_the_hook_does_not_move_it(metrics: FontMetrics, face: Rect) -> None:
+    result = hook(metrics, "synthetic hook line", [face])
+    assert not result.moved and result.band is not None and result.band.y1 == 290
+    assert result.notes == []
+
+
+def test_a_face_that_leaves_no_room_keeps_the_hook_at_the_top(metrics: FontMetrics) -> None:
+    result = hook(metrics, "synthetic hook line", [Rect(0, 250, 1080, 1180)])
+    assert not result.moved and result.band is not None and result.band.y1 == 290
+    assert result.notes == ["hook_over_face"]
+
+
+def test_without_face_data_the_hook_is_at_the_top_and_says_so(metrics: FontMetrics) -> None:
+    result = hook(metrics, "synthetic hook line", None)
+    assert result.band is not None and result.band.y1 == 290 and not result.moved
+    assert result.notes == ["hook_faces_unknown"]
+
+
+def test_the_hook_band_is_always_inside_the_safe_area_and_above_the_caption(
+    metrics: FontMetrics,
+) -> None:
+    top_of_caption = caption_top(SETTINGS, metrics, SAFE)
+    (normal,) = [
+        r for r in karaoke(metrics, seq(["alpha", "beta"])).boxes
+    ]  # a real caption box at the same size
+    assert normal.y1 == pytest.approx(top_of_caption)
+    texts = ["alpha", "alpha beta gamma delta omega sigma", "m" * 30, "word " * 70, "x" * 500]
+    for text in texts:
+        for faces in (None, [], [Rect(300, 200, 700, 700)], [Rect(0, 0, 1080, 1900)]):
+            result = hook(metrics, text, faces)
+            assert result.band is not None
+            assert result.band.inside(SAFE)
+            assert result.band.y2 <= top_of_caption - 12
+            assert not result.band.intersects(normal)
+            assert len(hook_text_events(result)) <= 2

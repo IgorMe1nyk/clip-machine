@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 from clipmachine.models import HEX_COLOR_RE, CaptionsConfig, TranscriptSegment
 from clipmachine.utils.fontmetrics import FontMetrics
-from clipmachine.utils.safezone import Rect, caption_anchor
+from clipmachine.utils.safezone import Rect, caption_anchor, place_hook
 
 GAP_FILL_SECONDS = 0.5  # a silence shorter than this keeps the previous caption on screen
 MIN_EVENT_SECONDS = 0.1  # shortest time the last word of a clip stays up
@@ -641,3 +641,157 @@ def build_ass_v2(
         for e in (*events, *extra_events)
     )
     return "\n".join(lines) + "\n"
+
+
+# --- hook overlay (Brief R1) -------------------------------------------------------------------
+
+HOOK_CAPTION_GAP_PX = 12  # least gap between the hook band and the caption box below it
+HOOK_SIZE_FRACTIONS = (1.0, 0.9, 0.8, 0.7)  # font sizes tried, as fractions of the caption size
+HOOK_MAX_LINES = 2
+LAYER_HOOK_BOX = 2
+LAYER_HOOK_TEXT = 3
+
+
+@dataclass(frozen=True)
+class HookResult:
+    events: list[AssEvent]
+    shown: bool
+    moved: bool  # moved down to clear a face
+    band: Rect | None  # the box behind the text, to check against the safe area
+    notes: list[str]  # reason codes only, never text
+
+
+def caption_top(settings: KaraokeSettings, metrics: FontMetrics, safe: Rect) -> float:
+    """The top edge of a normal caption box at the settings' font size."""
+    blank = KaraokeLine((), 0.0, 0.0, settings.font_size, 0.0)
+    return place_line(blank, settings, metrics, safe).box.y1
+
+
+def _hook_layout(
+    words: Sequence[str], size: int, limit: float, settings: KaraokeSettings, metrics: FontMetrics
+) -> list[list[str]] | None:
+    """The words on one line if they fit the limit, else on two with the narrowest wider line;
+    None when no such layout fits."""
+
+    def width(part: Sequence[str]) -> float:
+        return spaced_width(metrics, part, size, settings.word_gap_em, settings.letter_spacing_px)
+
+    if width(words) <= limit:
+        return [list(words)]
+    best: tuple[float, list[list[str]]] | None = None
+    for cut in range(1, len(words)):
+        first, second = words[:cut], words[cut:]
+        widest = max(width(first), width(second))
+        if widest <= limit and (best is None or widest < best[0]):
+            best = (widest, [list(first), list(second)])
+    return None if best is None else best[1]
+
+
+def build_hook(
+    text: str,
+    settings: KaraokeSettings,
+    metrics: FontMetrics,
+    safe: Rect,
+    faces: Sequence[Rect] | None,
+    *,
+    seconds: float,
+    fade_ms: int,
+    line_gap_em: float,
+    clip_seconds: float,
+) -> HookResult:
+    """The hook as white text on a dark band at the top of the safe area, from 0 to `seconds`
+    with a fade-out. At most two lines; the font size goes down to 70 % and then words are
+    dropped (an ellipsis on the last one) until it fits the safe width. The band moves below any
+    face in `faces` (output-frame rectangles); `faces=None` means nothing is known about faces.
+
+    `text` is untrusted: `clean_word` removes `{ } \\` and turns newlines into spaces.
+    """
+    cleaned = clean_word(text)
+    if not cleaned:
+        return HookResult([], False, False, None, ["hook_missing"])
+    notes: list[str] = []
+    words = cleaned.split(" ")
+    pad = settings.box_padding_px
+    limit = (safe.x2 - safe.x1) - 2 * pad
+    sizes = [math.floor(settings.font_size * f) for f in HOOK_SIZE_FRACTIONS]
+
+    layout: list[list[str]] | None = None
+    size = sizes[0]
+    for size in sizes:
+        layout = _hook_layout(words, size, limit, settings, metrics)
+        if layout is not None:
+            break
+    if layout is not None and size < settings.font_size:
+        notes.append("hook_shrunk")
+    if layout is None:
+        notes.append("hook_truncated")
+        mark = ELLIPSIS if metrics.has_glyph(ELLIPSIS) else "..."
+        for keep in range(len(words) - 1, 0, -1):
+            cut = [*words[: keep - 1], words[keep - 1] + mark]
+            layout = _hook_layout(cut, size, limit, settings, metrics)
+            if layout is not None:
+                break
+        if layout is None:  # a single word that is too wide alone: cut its characters
+            body = words[0]
+            while (
+                body and metrics.text_width(body + mark, size, settings.letter_spacing_px) > limit
+            ):
+                body = body[:-1]
+            layout = [[body + mark]]
+        if size < settings.font_size and "hook_shrunk" not in notes:
+            notes.append("hook_shrunk")
+
+    cap = metrics.cap_px(size)
+    descent = metrics.descent_px(size)
+    pitch = cap + descent + line_gap_em * size
+    count = len(layout)
+    band_h = pad + cap + (count - 1) * pitch + descent + pad
+    widest = max(
+        spaced_width(metrics, line, size, settings.word_gap_em, settings.letter_spacing_px)
+        for line in layout
+    )
+    band_w = widest + 2 * pad
+    centre = (safe.x1 + safe.x2) / 2
+
+    moved = False
+    if faces is None:
+        top = safe.y1
+        notes.append("hook_faces_unknown")
+    else:
+        lowest_bottom = caption_top(settings, metrics, safe) - HOOK_CAPTION_GAP_PX
+        top, moved, over_face = place_hook(band_w, band_h, safe, faces, lowest_bottom)
+        if moved:
+            notes.append("hook_moved_for_faces")
+        if over_face:
+            notes.append("hook_over_face")
+
+    end = min(seconds, clip_seconds)
+    fade = min(fade_ms, int(end * 1000))
+    fad = f"\\fad(0,{fade})" if fade > 0 else ""
+    size_tag = f"\\fs{size}" if size != settings.font_size else ""
+    space_fsp = space_spacing_px(metrics, size, settings.word_gap_em, settings.letter_spacing_px)
+    band = Rect(centre - band_w / 2, top, centre + band_w / 2, top + band_h)
+    events = [
+        AssEvent(
+            LAYER_HOOK_BOX,
+            0.0,
+            end,
+            BOX_STYLE,
+            f"{{\\pos(0,0){fad}\\p1}}{rounded_box(band)}{{\\p0}}",
+        )
+    ]
+    ascent = metrics.ascent_px(size)
+    for index, line in enumerate(layout):
+        baseline = top + pad + cap + index * pitch
+        y = round(baseline - ascent + size / 2)
+        body = spaced_text(line, space_fsp, settings.letter_spacing_px)
+        events.append(
+            AssEvent(
+                LAYER_HOOK_TEXT,
+                0.0,
+                end,
+                HOOK_STYLE,
+                f"{{\\pos({round(centre)},{y}){fad}{size_tag}}}{body}",
+            )
+        )
+    return HookResult(events, True, moved, band, notes)
