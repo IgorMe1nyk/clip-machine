@@ -2,7 +2,7 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
-## 2026-10-11 — Brief 10: real sentence boundaries and clean cut edges (built; real run not done yet)
+## 2026-10-11 — Brief 10: real sentence boundaries and clean cut edges (built; real runs done on T3 and T1)
 
 **Why:** Igor rated the seven finished T3 clips: c09 and c15 usable, c07 needs camera fixes, and
 c05, c11, c12, c13 fail on cut points. Those four are exactly the kept clips with a boundary on a
@@ -75,8 +75,62 @@ with a 0.00 s gap.
   now overlap by exactly 50%), the over-the-maximum extension (it now needs more than 90 s) and a
   config check that used 70 s as "over the maximum".
 
+**Real runs** (fresh run folders `runs/2026-10-11_t3-2` and `runs/2026-10-11_t1-2`, client
+`general`; the older folders are the "before")
+
+| | T3 before | T3 after | T1 before | T1 after |
+|---|---|---|---|---|
+| Words in long unpunctuated runs | 45.3% | 4.8% | 26.9% | 8.8% |
+| Fallback edges (old rule) | 59 | 0 | 25 | 6 |
+| Clean cut points | 400 | 582 | 340 | 432 |
+| Transcribe time | 138 s | 152 s | 121 s | 142 s |
+| Candidates | 18 | 17 | 19 | 19 |
+| Kept | 7 | 8 | 8 | 8 |
+| Kept clips with a boundary on an edge or a gap under 0.15 s | 5 | 0 | 5 | 0 |
+| Cost | $0.051 (score only) | $0.0560 | $0.0505 (score only) | $0.0585 |
+
+- **Target met on both:** no kept clip starts or ends on an `edge` or on a gap under 0.15 s.
+  Smallest gap at a kept cut: 0.16 s on both videos. No transcript warnings (no stretch of 8 s
+  or more without words).
+- **T3** (17 candidates, 8 kept, 6 rejected, 2 outside the top 8, 1 `adjust_ignored`; 8
+  extensions and 4 trims applied; score call 15,155 input and 2,247 output tokens). Re-rendered
+  with `video.crop: speaker` (set in the new folder's `config.resolved.yaml`, `--from-stage
+  render`, local): all eight in speaker mode, no fallback.
+
+| Clip | Score | Length | Start: kind, gap | End: kind, gap | Adjustment |
+|---|---|---|---|---|---|
+| c05 | 8 | 20.3 s | `.` 2.00 s | `.` 0.68 s | trimmed, end +1 |
+| c06 | 8 | 35.1 s | `.` 0.38 s | `.` 2.15 s | trimmed, end +2 |
+| c09 | 8 | 44.7 s | `.` 1.50 s | `.` 0.60 s | start +1, end +1 |
+| c04 | 7 | 29.7 s | `.` 0.16 s | `?` 1.36 s | trimmed |
+| c12 | 7 | 58.5 s | `.` 0.56 s | `.` 0.30 s | end +1 |
+| c13 | 7 | 28.5 s | `.` 0.26 s | `.` 0.16 s | trimmed, end +1 |
+| c01 | 6 | 40.0 s | `?` 0.90 s | `.` 0.22 s | start +1 |
+| c02 | 6 | 43.6 s | `.` 0.18 s | `.` 0.20 s | start +1, end +1 |
+
+- **T1** (19 candidates, 8 kept, 10 rejected, 1 `adjust_ignored`; 6 extensions and 2 trims
+  applied; score call 16,250 input and 2,295 output tokens). Centre crop.
+
+| Clip | Score | Length | Start: kind, gap | End: kind, gap | Adjustment |
+|---|---|---|---|---|---|
+| c05 | 8 | 61.4 s | `?` 0.74 s | `.` 0.78 s | end +1 |
+| c06 | 8 | 48.2 s | `.` 0.24 s | `.` 0.24 s | end +1 |
+| c07 | 8 | 47.6 s | `.` 0.58 s | `?` 0.30 s | trimmed |
+| c12 | 8 | 54.6 s | `.` 0.22 s | `.` 0.50 s | start +1 |
+| c14 | 8 | 40.9 s | `.` 0.28 s | `.` 0.72 s | start +1, end +1 |
+| c04 | 7 | 42.6 s | `.` 0.16 s | `.` 0.30 s | start +1 |
+| c10 | 7 | 43.5 s | `.` 0.38 s | `.` 0.26 s | none |
+| c13 | 7 | 32.7 s | `?` 0.56 s | `.` 0.20 s | start +1, trimmed |
+
+- **One clip lost on each video to the weak-boundary check:** the judge kept T3 c11 and T1 c17
+  (both score 7) with an adjustment that ended where there is no pause; each was dropped as
+  `adjust_ignored`. Neither run ended with fewer than 8 kept clips.
+- One kept clip is over the old 60 s limit (T1 c05, 61.4 s).
+- Candidate ids are new in these runs, so c05 here is not the earlier c05.
+
 **Gaps and risks**
-- **No real run yet.** The end-to-end effect on kept clips, and the cost, are unmeasured.
+- **Nobody has listened to the new clips yet.** The numbers say the cuts sit on real sentence ends
+  with a gap; whether they sound right is Igor's re-rating.
 - The measurement is two videos, one prompt wording, one run each. Conditioning alone and the
   prompt alone each failed on one video; only the combination held on both.
 - The 0.15 s rule removes about a quarter of today's sentence-end boundaries. T3's c15 starts on
@@ -96,8 +150,7 @@ with a 0.00 s gap.
 - `edge_flags` and the two segment-edge notes in `utils/snapping.py` are now only read by tests
   and old files.
 
-**Next:** Igor approves the real runs (fresh run folders for T3 and T1, about $0.05–0.10 each),
-then re-rates the T3 clips.
+**Next:** Igor re-rates the eight T3 clips in `runs/2026-10-11_t3-2` (C1 especially).
 
 ## 2026-10-11 — Brief 8, Part B: moving-crop render (`video.crop: speaker`)
 
