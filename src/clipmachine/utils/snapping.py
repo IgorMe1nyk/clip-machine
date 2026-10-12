@@ -22,7 +22,8 @@ Units: SentenceIndex.units() merges the sentences between cuttable boundaries in
 can be cut before and after. snap() over an index of units can only start and end on a clean cut.
 
 Campaign mode uses the same cut times for moments a person chose: snap_near() moves a start and an
-end, each on its own, to the nearest clean cut within a limit (else keeps the given time).
+end, each on its own, to the nearest clean cut within a limit (else keeps the given time), and
+auto_end() picks the end nearest to a target length when no end was given.
 """
 
 import math
@@ -452,10 +453,17 @@ def snap(
 @dataclass(frozen=True)
 class NearSnap:
     start: float
-    end: float | None  # None when no end was given
+    end: float | None  # None when no end was given (the caller picks it with auto_end)
     start_moved: float | None  # seconds moved, signed; None: no clean edge close enough, kept
     end_moved: float | None
     notes: tuple[str, ...]  # seconds only, never text
+
+
+@dataclass(frozen=True)
+class AutoEnd:
+    end: float
+    target_end: float  # start + the target length
+    length: float  # end - start, rounded
 
 
 def _cut_times(
@@ -512,6 +520,31 @@ def snap_near(
         if abs(end_moved) >= 0.005:
             notes.append(f"end moved {end_moved:+.2f} s to a clean sentence edge")
     return NearSnap(new_start, new_end, start_moved, end_moved, tuple(notes))
+
+
+def auto_end(
+    units: SentenceIndex,
+    start: float,
+    *,
+    target: float,
+    min_length: float,
+    max_length: float,
+    end_pad: float,
+    start_pad: float,
+    duration: float,
+) -> AutoEnd | None:
+    """The clean end cut nearest to start + target among those that give a length from min_length
+    to max_length; a tie goes to the shorter. None when no cut fits. `start` is the final start."""
+    target_end = start + target
+    fits = [
+        end
+        for _, end in _cut_times(units, start_pad, end_pad, duration)
+        if end > start and min_length - EPSILON <= end - start <= max_length + EPSILON
+    ]
+    best = _nearest(fits, target_end, math.inf)
+    if best is None:
+        return None
+    return AutoEnd(best, target_end, round(best - start, ROUND))
 
 
 def dedupe(spans: Sequence[tuple[float, float]], max_overlap: float) -> list[int]:

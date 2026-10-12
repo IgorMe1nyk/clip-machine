@@ -13,11 +13,13 @@ from clipmachine.utils.snapping import (
     END_KEPT_NOTE,
     END_PAUSE,
     START_KEPT_NOTE,
+    AutoEnd,
     Dropped,
     NearSnap,
     Sentence,
     SentenceIndex,
     Snapped,
+    auto_end,
     build_index,
     dedupe,
     ends_sentence,
@@ -1038,7 +1040,7 @@ def test_a_moment_inside_an_uncuttable_stretch_is_dropped_when_the_stretch_is_to
     assert "longer than the 5 s maximum" in result.reason
 
 
-# --- snap_near (Brief 11, campaign mode) ----------------------------------------------------------
+# --- snap_near and auto_end (Brief 11, campaign mode) ---------------------------------------------
 
 NEAR_PADS = {"start_pad": 0.25, "end_pad": 0.5, "duration": 100.0}
 # Three sentences, each a unit; the cut times (mid-gap, capped at the pads) worked out by hand:
@@ -1163,3 +1165,84 @@ def test_a_limit_of_zero_only_moves_onto_an_exact_edge() -> None:
     assert (off.start, off.end) == (2.1, 4.1)
     assert off.start_moved is None and off.end_moved is None
     assert off.notes == (f"{START_KEPT_NOTE} 0 s", f"{END_KEPT_NOTE} 0 s")
+
+
+def auto(
+    items: list[tuple[str, float]],
+    start: float,
+    target: float,
+    *,
+    min_length: float = 1.0,
+    max_length: float = 100.0,
+    duration: float = 100.0,
+) -> AutoEnd | None:
+    return auto_end(
+        make_index(items).units(),
+        start,
+        target=target,
+        min_length=min_length,
+        max_length=max_length,
+        start_pad=0.25,
+        end_pad=0.5,
+        duration=duration,
+    )
+
+
+def test_auto_end_picks_the_end_nearest_to_the_target_before_or_after_it() -> None:
+    before = auto(THREE, 2.0, 3.0)  # target end 5.0: 4.0 is 1.0 away, 6.25 is 1.25 away
+    assert before == AutoEnd(end=4.0, target_end=5.0, length=2.0)
+    after = auto(THREE, 2.0, 3.5)  # target end 5.5: 4.0 is 1.5 away, 6.25 is 0.75 away
+    assert after == AutoEnd(end=6.25, target_end=5.5, length=4.25)
+
+
+def test_auto_end_skips_an_end_below_the_minimum_even_when_it_is_nearer() -> None:
+    result = auto(THREE, 2.0, 2.0, min_length=3.0)  # 4.0 would be the target, but is 2.0 long
+    assert result is not None and result.end == 6.25
+
+
+def test_auto_end_skips_an_end_above_the_maximum_even_when_it_is_nearer() -> None:
+    result = auto(THREE, 2.0, 4.25, max_length=3.0)  # 6.25 would be the target; it is 4.25 long
+    assert result is not None and result.end == 4.0
+
+
+def test_auto_end_length_limits_are_inclusive() -> None:
+    assert auto(THREE, 2.0, 2.0, min_length=2.0, max_length=2.0) == AutoEnd(4.0, 4.0, 2.0)
+
+
+def test_auto_end_tie_goes_to_the_earlier_end() -> None:
+    result = auto(THREE, 2.0, 3.125)  # target end 5.125 is 1.125 from 4.0 and from 6.25
+    assert result is not None and result.end == 4.0
+
+
+def test_auto_end_is_none_when_no_end_is_in_range() -> None:
+    assert auto(THREE, 2.0, 3.0, min_length=5.0, max_length=6.0) is None
+    assert auto(THREE, 2.0, 3.0, min_length=0.5, max_length=1.5) is None
+    assert auto(THREE, 100.0, 3.0) is None  # nothing ends after this start
+    assert (
+        auto_end(
+            build_index([]).units(),
+            0.0,
+            target=3.0,
+            min_length=1.0,
+            max_length=9.0,
+            start_pad=0.25,
+            end_pad=0.5,
+            duration=10.0,
+        )
+        is None
+    )
+
+
+def test_auto_end_never_uses_a_weak_boundary() -> None:
+    # b. ends at 1.25, exactly the target end, but it is not a cut: the nearest cut is 3.125
+    result = auto(WEAK, 0.0, 1.25, min_length=0.5)
+    assert result is not None and result.end == 3.125
+
+
+def test_auto_end_can_pick_the_last_sentence_and_its_cut_stays_inside_the_audio() -> None:
+    # f. ends at 5.75; with the audio ending at 5.8 the pause after it is 0.05 s, so the cut is
+    # 0.025 s after the word (never past the audio), not the 0.5 s cap
+    result = auto(THREE, 4.25, 2.0, min_length=1.0, max_length=3.0, duration=5.8)
+    assert result is not None
+    assert result.end == pytest.approx(5.775) and result.end <= 5.8
+    assert result.target_end == 6.25 and result.length == pytest.approx(1.525)
