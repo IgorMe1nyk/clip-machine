@@ -13,4 +13,4 @@ avoid:
   - intros and outros
   - small talk
   - inside jokes
-clip_length: { min: 20, max: 60 }
+clip_length: { min: 20, max: 90 }

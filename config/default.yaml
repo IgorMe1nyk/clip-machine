@@ -1,6 +1,6 @@
 clip:
   min_seconds: 20
-  max_seconds: 60
+  max_seconds: 90            # D-018: some complete thoughts need about 70 s
   keep_top: 8
   candidates_target: 20
 models:

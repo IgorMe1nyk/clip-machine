@@ -280,7 +280,7 @@ def test_the_prompt_has_every_candidate_the_rules_and_the_untrusted_marking(rig:
         assert f'<candidate id="{candidate_id}"' in user
     assert user.count("<candidates>") == 1 and user.count("</candidates>") == 1
     assert "niche: general interviews" in user
-    assert "Clip length: 20-60 seconds." in user
+    assert "Clip length: 20-90 seconds." in user
     assert "Judge each of the 3 candidates" in user
     assert re.search(r"\{\w+\}", user) is None  # every placeholder was filled
 
@@ -410,7 +410,7 @@ def test_prompt_asks_for_repair_first_and_judging_by_meaning(rig: Rig) -> None:
     assert "end it later, at the conclusion" in user
     assert "Reject only when no repair within the length limit fixes it." in user
     assert "describe the clip after the repair" in user
-    assert "must still be 20-60 seconds long" in user
+    assert "must still be 20-90 seconds long" in user
     assert "The sentences in <before> have numbers 0 and below" in user
     assert "must include at least one of the clip's own sentences" in user
     assert "Still judge the start and end by meaning, using the before and after context" in user
@@ -831,12 +831,14 @@ def test_trim_and_extend_at_once_is_recorded_as_both(rig: Rig) -> None:
 
 
 def test_an_extension_over_the_maximum_is_ignored_and_recorded(rig: Rig) -> None:
-    rig.candidates((3, 6))  # numbers shown: -2..7 (global sentences 0..9)
-    rig.script(answer(batch(clip("c01", score=9, keep=(-2, 7)))))  # 0.0-89.9 s
-    out = rig.run()
+    # with one more sentence of context after the clip, the numbers shown are -2..8 (global
+    # sentences 0..10): 0.0-98.9 s, over the 90 s maximum
+    rig.candidates((3, 6))
+    rig.script(answer(batch(clip("c01", score=9, keep=(-2, 8)))))
+    out = rig.run(extend_after=4)
     (only,) = out.clips
     assert (only.start, only.end) == (26.9, 62.9) and only.extended_start == 0
-    assert any("ignored: 89.9 s is over the 60 s maximum" in n for n in only.notes)
+    assert any("ignored: 98.9 s is over the 90 s maximum" in n for n in only.notes)
     assert only.dropped_by == "adjust_ignored" and only.kept is False
     assert (out.summary.trims_ignored, out.summary.adjust_ignored) == (1, 1)
 

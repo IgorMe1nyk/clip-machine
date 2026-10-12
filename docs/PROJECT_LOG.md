@@ -2,6 +2,103 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-11 — Brief 10: real sentence boundaries and clean cut edges (built; real run not done yet)
+
+**Why:** Igor rated the seven finished T3 clips: c09 and c15 usable, c07 needs camera fixes, and
+c05, c11, c12, c13 fail on cut points. Those four are exactly the kept clips with a boundary on a
+fallback edge (a Whisper segment edge used as a sentence end after 40+ unpunctuated words), each
+with a 0.00 s gap.
+
+**Measured before choosing** (T3 and T1 re-transcribed locally, 18 runs, outputs only in
+`runs/_scratch/b10/`; numbers only)
+
+| Setting | T3 long runs | T3 fallback edges | T3 lost stretches | T1 long runs | T1 fallback edges | T1 lost stretches |
+|---|---|---|---|---|---|---|
+| a: today (`small`, conditioning off) | 45.3% | 59 | 0 | 26.9% | 25 | 0 |
+| b: `initial_prompt` | 45.3% | 59 | 0 | 24.4% | 22 | 0 |
+| bh: prompt in every window | 10.9% | 5 | 6 | 7.2% | 4 | 0 |
+| c: conditioning on | 4.8% | 1 | 0 | 65.0% | 61 | 0 |
+| **bhc: both** | **4.8%** | **0** | 0 | **8.8%** | **6** | 0 |
+| d: `turbo` | 31.4% | 36 | 0 | 73.1% | 86 | 0 |
+| dh: `turbo` + prompt in every window | 13.5% | 0 | 1 | 5.4% | 1 | 0 |
+| dc: `turbo` + conditioning on | 6.3% | 3 | 0 | 5.1% | 4 | 0 |
+| dhc: `turbo` + both | 7.0% | 6 | 0 | 4.9% | 3 | 0 |
+
+- "Long runs" = share of words inside runs of more than 40 words with no sentence end. "Lost
+  stretches" = gaps of 8 s or more with no words that the baseline does not have.
+- Chosen: **bhc**, D-017. Run (a) reproduced the stored transcripts word for word.
+- Repetition loops (a 3–12 word phrase three or more times in a row): never more than the
+  baseline (T3: 3 today, 1–3 in the variants; T1: 0 everywhere). No 30 s window gained words.
+- Time for bhc: 182 s on T3 (145 s today), 154 s on T1.
+- Word gaps against `audio.wav`: a gap of 0.35 s or more has real silence nearby 79% of the time;
+  under 0.15 s, 5–10%. About a quarter of punctuated sentence ends have a gap under 0.15 s (T3
+  24.9%, T1 24.6%).
+- Whisper's word times show pauses almost only at punctuated ends, so pause splitting adds little
+  (8 pause boundaries on T3, 23 on T1 with the bhc transcript).
+- With bhc and the new rules: 582 clean cut points on T3 (about 14 a minute) and 432 on T1 (about
+  12 a minute); longest stretch with no clean cut point 31.0 s and 21.6 s.
+
+**Done** (6 commits plus this one, nothing pushed)
+- **Transcribe:** `transcribe.style_prompt` is sent to Whisper as `hotwords` (every window);
+  `condition_on_previous_text: true`. The stage warns, with counts only, when a transcript has
+  stretches of 8 s or more without words.
+- **Sentence index (`utils/snapping.py`):** every sentence carries how it ends (`.` `?` `!`
+  `pause` `edge`) and the gap after it. A run of more than 40 unpunctuated words is split at pauses
+  of `snap.min_pause_seconds` (0.35), then at its largest gap (an `edge`). A punctuated end with a
+  gap under `snap.min_cut_gap` (0.15) is an `edge`. Whisper segment edges are no longer used.
+- **Cut times:** the cut sits in the middle of the pause, at most 0.25 s before the first word
+  and 0.5 s after the last (was a fixed 0.2 s). `candidates.snap_padding_seconds` is accepted
+  but unused.
+- **Candidates:** snapping runs over the stretches between clean cut points, so a clip never
+  starts or ends on an `edge`. candidates.json records the snap settings.
+- **Score:** each numbered line shows `start=ok|no end=<kind>`; the prompt says where a clip may
+  start and end and that a repair only described in the reason is not applied. An adjustment that
+  would start or end on a weak boundary is ignored, so the clip is dropped as `adjust_ignored`
+  (`adjusts_on_weak_boundary` counts them). scored.json and the report show each clip's start and
+  end kind and gap. A candidates.json from before this brief is refused with a clear message.
+- **Render:** 0.08 s audio fade-in and fade-out (`render.audio_fade_seconds`); older outputs
+  re-render.
+- **Length:** `clip.max_seconds` 60 → 90 and the `general` client's `clip_length.max` 60 → 90
+  (D-018).
+- Built by a Sonnet 5.5 (Medium) subagent; each diff reviewed by the planner, who re-ran every
+  check separately. Tests: 1151 passed, 2 skipped (was 1051). ruff, format, mypy and pip-audit
+  clean.
+- **Pinned test values that changed, by reason** (each checked by hand, none regenerated):
+  mid-gap cut times (about 55 values: with the fixtures' 0.2 s gaps every start is 0.1 s later,
+  every end 0.1 s earlier and every length 0.2 s shorter; 0.15 s pads where the gap is 0.3 s);
+  segment-edge fallback replaced by pause and largest-gap splits (5 tests); the end of the
+  recording is never an edge (2); snapping over clean cut points (1); the judge's line format,
+  the removed segment-edge attributes and the prompt wording (5 tests and one shared pattern);
+  max 90 (9); the new no-words warning on a fixture with a 59.5 s gap (1); `padding` became
+  `start_pad` / `end_pad` and the four "padding limited" note checks went with the notes.
+  Three tests needed a new input to keep their intent: the overlap test (the old ranges
+  now overlap by exactly 50%), the over-the-maximum extension (it now needs more than 90 s) and a
+  config check that used 70 s as "over the maximum".
+
+**Gaps and risks**
+- **No real run yet.** The end-to-end effect on kept clips, and the cost, are unmeasured.
+- The measurement is two videos, one prompt wording, one run each. Conditioning alone and the
+  prompt alone each failed on one video; only the combination held on both.
+- The 0.15 s rule removes about a quarter of today's sentence-end boundaries. T3's c15 starts on
+  a 0.14 s gap and was rated usable, so the threshold may be slightly strict.
+- A "pause" is Whisper's estimate from word times, not measured silence: in the 0.15–0.35 s band
+  only about 28% have real silence nearby by a strict measure. The fades hide clicks, not a
+  clipped word.
+- The judge can still lose a clip by choosing a weak boundary (it is told, and the count is
+  recorded).
+
+**Parked**
+- Read pauses from `audio.wav` (loudness per 10 ms) instead of word gaps, and place the cut in
+  the quietest part of the gap. Dry run on T3: fewer punctuated ends pass (46–54%) but many more
+  unpunctuated pauses appear.
+- `turbo` + conditioning (dc) as the fallback setting if bhc disappoints on a new video.
+- The vocabulary brief can reuse `style_prompt` for client words.
+- `edge_flags` and the two segment-edge notes in `utils/snapping.py` are now only read by tests
+  and old files.
+
+**Next:** Igor approves the real runs (fresh run folders for T3 and T1, about $0.05–0.10 each),
+then re-rates the T3 clips.
+
 ## 2026-10-11 — Brief 8, Part B: moving-crop render (`video.crop: speaker`)
 
 **Before it:** Igor watched all six Brief 8.1 previews on T3 and passed the checkpoint (faces

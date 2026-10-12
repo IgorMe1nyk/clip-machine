@@ -373,7 +373,7 @@ def test_end_to_end_with_a_faked_client(rig: Rig) -> None:
     assert (second.start, second.end) == (71.9, 107.9)
     assert (second.block, second.type) == (2, "insight")
     assert out.model == "claude-haiku-5-5"
-    assert (out.clip_min_seconds, out.clip_max_seconds) == (20, 60)
+    assert (out.clip_min_seconds, out.clip_max_seconds) == (20, 90)
 
     # only the output and the cost log were added; costs.json has both calls
     assert rig.listing() == ["candidates.json", "costs.json", "transcript.json"]
@@ -392,7 +392,7 @@ def test_request_carries_the_prompt_the_rules_and_the_cheap_settings(rig: Rig) -
     assert request["output_config"]["format"]["type"] == "json_schema"
     assert "untrusted source" in request["system"]
     user = request["messages"][0]["content"]
-    assert "Clip length: 20-60 seconds." in user
+    assert "Clip length: 20-90 seconds." in user
     assert "This block covers 0.0-53.8 seconds" in user
     assert "up to 5 candidate moments" in user
     assert "niche: general interviews" in user
@@ -467,8 +467,8 @@ def test_a_clip_never_starts_or_ends_on_a_segment_edge(rig: Rig) -> None:
     segments = make_segments(12)
     # segments 1-3 and 5-7 have no full stop: each run of 60 unpunctuated words (segments 1-4 and
     # 5-8, all gaps 0.2 s, under min_pause) is split at its middle, which is an edge. Snapping runs
-    # over the stretches between clean cuts, so the moment grows to whole runs and is trimmed to
-    # the maximum length at a run boundary, never at an edge.
+    # over the stretches between clean cuts, so the moment grows to the two whole runs (72 s, within
+    # the 90 s maximum) and never stops at an edge.
     for n in (1, 2, 3, 5, 6, 7):
         words = [w.model_copy(update={"word": w.word.rstrip(".")}) for w in segments[n].words]
         segments[n] = segments[n].model_copy(update={"words": words})
@@ -478,10 +478,10 @@ def test_a_clip_never_starts_or_ends_on_a_segment_edge(rig: Rig) -> None:
     (only,) = out.candidates
     assert (out.summary.segment_edge_starts, out.summary.segment_edge_ends) == (0, 0)
     assert not any("segment edge" in n for n in only.snap_notes)
-    # the clip is segments 5-8 (45.0-80.8, cut 0.1 s into each 0.2 s gap): it starts after the
-    # full stop that ends segment 4 and ends at the full stop that ends segment 8
-    assert (only.start, only.end) == (44.9, 80.9)
-    assert only.text.startswith("alpha5x0") and only.text.endswith("w8x14.")
+    # the clip is segments 1-8 (9.0-80.8, cut 0.1 s into each 0.2 s gap): it starts after the
+    # full stop that ends segment 0 and ends at the full stop that ends segment 8
+    assert (only.start, only.end) == (8.9, 80.9)
+    assert only.text.startswith("alpha1x0") and only.text.endswith("w8x14.")
 
 
 def test_candidates_json_records_the_snap_settings(rig: Rig) -> None:

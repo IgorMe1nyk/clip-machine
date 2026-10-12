@@ -44,7 +44,7 @@ def test_client_without_clip_length_keeps_defaults(project: Path) -> None:
     )
     resolved = load_resolved(project, "example-client")
     assert resolved.app.clip.min_seconds == 20
-    assert resolved.app.clip.max_seconds == 60
+    assert resolved.app.clip.max_seconds == 90
 
 
 @pytest.mark.parametrize(
@@ -64,7 +64,7 @@ def test_client_without_clip_length_keeps_defaults(project: Path) -> None:
         (lambda d: d["captions"].update(highlight_color="#GGGGGG"), "highlight_color"),
         (lambda d: d["clip"].update(min_second=20), "min_second"),  # typo: unknown key
         (lambda d: d["candidates"].update(preferred_min_seconds=10), "preferred"),  # < min
-        (lambda d: d["candidates"].update(preferred_max_seconds=70), "preferred"),  # > max
+        (lambda d: d["candidates"].update(preferred_max_seconds=100), "preferred"),  # > max
         (
             lambda d: d["candidates"].update(preferred_min_seconds=50, preferred_max_seconds=50),
             "preferred",
@@ -234,7 +234,7 @@ def test_client_clip_length_must_be_ordered(project: Path) -> None:
 
 
 def test_client_override_replaces_both_bounds(project: Path) -> None:
-    # a client range that is entirely outside the default 20-60 range still wins
+    # a client range that is entirely outside the default 20-90 range still wins
     edit_yaml(
         project / "clients" / "example-client" / "rules.yaml",
         lambda d: d.update(clip_length={"min": 10, "max": 20}),
@@ -329,7 +329,7 @@ def test_default_pricing_and_limits_match_the_brief(project: Path) -> None:
 def test_general_client_loads_with_its_clip_length(project: Path) -> None:
     resolved = load_resolved(project, "general")
     assert resolved.rules.niche == "general interviews"
-    assert (resolved.app.clip.min_seconds, resolved.app.clip.max_seconds) == (20, 60)
+    assert (resolved.app.clip.min_seconds, resolved.app.clip.max_seconds) == (20, 90)
     assert "sponsor reads" in resolved.rules.avoid
 
 
