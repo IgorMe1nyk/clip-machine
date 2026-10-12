@@ -2,7 +2,7 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
-## 2026-10-12 — Brief R1: captions v2 (karaoke box), hook overlay, safe zones (built; real run and Igor's ratings pending)
+## 2026-10-12 — Brief R1: captions v2 (karaoke box), hook overlay, safe zones (built; real run done; Igor's ratings pending)
 
 **Why:** make clips more watchable at $0: captions that read at a glance and do not feel cramped,
 the hook line on screen at the start, and nothing under the TikTok, Reels and Shorts buttons.
@@ -42,10 +42,28 @@ first (2026-10-12): normal shots only, with a `TODO(Brief 8.3)` where stacked sh
   writes some) was dropped from karaoke captions (fixed with tests).
 - Tests: 1413 passed, 2 skipped. ruff, format, mypy and pip-audit clean.
 
+**Real run** (`runs/2026-10-12_t3`, render and report only, `captions.font_size: 96` in that run's
+config at Igor's request; `default.yaml` stays at 64 until he has seen it on a phone)
+- 6 clips rendered in 221 s wall time; per-clip render times add up to 217 s (226 s before R1).
+  130 s of that is the one-time track analysis for schema 4.
+- Caption lines per clip: 35 to 80; at most 4 words on a line. At size 96 many lines hold one
+  word (14 to 26 lines per clip).
+- Nothing outside the safe margins in any clip (0 of 6). Caption boxes span x 124–884 and
+  y 1141–1236; the widest is 760 px.
+- **Hook: shown in 6 of 6, moved below a face in 6 of 6.** In these close-up crops the face
+  starts at y 260–440, so a band at the top of the safe area (y 290) always touches it; the band
+  lands at y 749–1051, between the face and the captions. The same happens at sizes 80 and 64.
+- Hook text at size 96: shrunk in 4 of 6 and cut short with an ellipsis in 2 of 6 (hooks of 8 and
+  11 words). At 80 and 64 none would be cut.
+- Safe-zone preview of one clip rendered in 13 s into `runs/_scratch/safe-zones/`; the run
+  folder's files were identical before and after (hashes).
+- No real frame was looked at by Claude: placement was checked from the numbers in the `.ass`
+  files and the clip json. The pictures are Igor's to judge.
+
 **Not done**
 - Stacked-shot caption and hook placement, and their tests: moved to Brief 8.3.
 - Font weight 500–600: only Montserrat Bold (700) is installed.
-- The real run on `runs/2026-10-12_t3`, the per-clip numbers, render time, and Igor's ratings.
+- Igor's ratings of the real run (3 clips on a phone, then all clips under the MVP rubric).
 
 **Cost:** $0. No API calls, no new dependency.
 
