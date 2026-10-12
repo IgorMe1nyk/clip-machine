@@ -148,6 +148,7 @@ WHISPER_MODELS = (
     "turbo",
 )
 LANGUAGE_CODE_RE = re.compile(r"[a-z]{2,3}")
+STYLE_PROMPT_MAX_CHARS = 300
 
 
 class TranscribeConfig(StrictModel):
@@ -162,9 +163,20 @@ class TranscribeConfig(StrictModel):
     condition_on_previous_text: bool = False
     batch_size: int = Field(default=0, ge=0)  # 0 = normal transcribe; >0 = batched pipeline
     cpu_threads: int = Field(default=0, ge=0)  # 0 = library default
+    # Short punctuated sample sent to Whisper with every window; None = no prompt.
+    style_prompt: str | None = None
 
     @model_validator(mode="after")
     def _check_values(self) -> "TranscribeConfig":
+        if self.style_prompt is not None:
+            if not self.style_prompt.strip():
+                raise ValueError("style_prompt must be null or a non-empty sentence")
+            if len(self.style_prompt) > STYLE_PROMPT_MAX_CHARS:
+                raise ValueError(
+                    f"style_prompt must be at most {STYLE_PROMPT_MAX_CHARS} characters"
+                )
+            if any(ord(ch) < 32 or ord(ch) == 127 for ch in self.style_prompt):
+                raise ValueError("style_prompt must be one line without control characters")
         if self.model not in WHISPER_MODELS:
             raise ValueError(
                 f"model must be one of: {', '.join(WHISPER_MODELS)}; got {self.model!r}"

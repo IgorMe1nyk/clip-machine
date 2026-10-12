@@ -31,6 +31,7 @@ TEMP_PATTERNS = (f".{TRANSCRIPT_JSON}.*.tmp", f".{TRANSCRIPT_TXT}.*.tmp")
 PROGRESS_INTERVAL_SECONDS = 60.0
 END_SLACK_SECONDS = 1.0  # a time may exceed the audio duration by this much
 WORD_OVERLAP_SECONDS = 0.05  # a word may start this much before the previous one ended
+LONG_GAP_SECONDS = 8.0  # a stretch this long between two words is reported in the warnings
 MOST = 0.5  # more than this share of words out of range fails the stage
 CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]+")
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -133,6 +134,23 @@ def validate_segments(
     return cleaned, warnings
 
 
+def long_gaps(segments: list[RawSegment]) -> tuple[int, float]:
+    """How many gaps between one word's end and the next word's start are LONG_GAP_SECONDS or
+    more, and the longest gap in seconds (0.0 when there are none). Words are walked in order."""
+    count = 0
+    longest = 0.0
+    previous_end: float | None = None
+    for segment in segments:
+        for word in segment.words:
+            if previous_end is not None:
+                gap = word.start - previous_end
+                if gap >= LONG_GAP_SECONDS:
+                    count += 1
+                    longest = max(longest, gap)
+            previous_end = word.end
+    return count, longest
+
+
 # --- output formats ----------------------------------------------------------------------------
 
 
@@ -224,6 +242,12 @@ def _transcribe(ctx: RunContext, run_dir: Path) -> None:
         loaded.close()
 
     cleaned, warnings = validate_segments(raw, duration)
+    gap_count, gap_longest = long_gaps(cleaned)
+    if gap_count:
+        warnings.append(
+            f"{gap_count} stretch(es) of {LONG_GAP_SECONDS:g} s or more without words "
+            f"(longest {gap_longest:.1f} s)"
+        )
     segments = [_to_model(s) for s in cleaned]
     transcript = Transcript(
         model=cfg.model,

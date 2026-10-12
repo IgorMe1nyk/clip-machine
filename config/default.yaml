@@ -40,16 +40,17 @@ score:
   repair_attempts: 1         # 0 or 1: extra call when the answer is invalid
   extend_before: 4           # 0-10; sentences before a clip the judge may extend into
   extend_after: 3            # 0-10; sentences after a clip the judge may extend into
-transcribe:                  # defaults chosen in D-011 from the Brief 3 benchmark (setting B)
+transcribe:                  # model and device from D-011; prompt in every window plus conditioning from D-017
   model: small               # tiny base small medium large-v3 turbo distil-large-v3 ...
   device: auto               # auto / cpu / cuda
   compute_type: auto         # auto (cuda: int8_float16, cpu: int8) / float16 / int8_float16 / int8 / float32
   language: null             # null = auto-detect, or an ISO code such as en
   beam_size: 5
   vad_filter: true
-  condition_on_previous_text: false   # false reduces repetition loops on long audio
+  condition_on_previous_text: true    # D-017: with style_prompt in every window, keeps sentence punctuation
   batch_size: 0              # 0 = normal; >0 = batched pipeline (needs vad_filter)
   cpu_threads: 0             # 0 = library default
+  style_prompt: "Okay. So, here's what happened, and why it matters. Does that make sense? Yes, it does. Let's keep going."   # sent to Whisper with every window to keep sentence punctuation; null = off
 video:                       # the render stage's output size
   width: 1080
   height: 1920

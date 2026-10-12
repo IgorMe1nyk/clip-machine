@@ -331,6 +331,10 @@ def transcribe(
         "condition_on_previous_text": cfg.condition_on_previous_text,
         "word_timestamps": True,
     }
+    if cfg.style_prompt is not None:
+        # hotwords is put in front of every window; initial_prompt only reaches the first one
+        # when conditioning is off
+        options["hotwords"] = cfg.style_prompt
     try:
         if cfg.batch_size > 0:
             pipeline = new_batched_pipeline(loaded.model)

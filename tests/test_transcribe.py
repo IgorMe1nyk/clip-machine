@@ -18,7 +18,7 @@ from clipmachine.context import RunContext
 from clipmachine.models import TranscribeConfig, Transcript
 from clipmachine.runs import RunError
 from clipmachine.stages import transcribe
-from clipmachine.stages.transcribe import validate_segments
+from clipmachine.stages.transcribe import long_gaps, validate_segments
 from clipmachine.utils import whisper
 from clipmachine.utils.whisper import RawSegment, RawWord, WhisperError
 
@@ -377,7 +377,8 @@ def test_success_writes_both_outputs(env: Env, project: Path, run_dir: Path) -> 
     assert data["language_probability"] == 0.9877
     assert data["audio_duration_seconds"] == 70.0
     assert data["realtime_factor"] >= 0
-    assert data["warnings"] == []
+    # the fixture's words are 59.5 s apart (2.5 s to 62.0 s)
+    assert data["warnings"] == ["1 stretch(es) of 8 s or more without words (longest 59.5 s)"]
     first = data["segments"][0]
     assert list(first) == ["id", "start", "end", "text", "avg_logprob", "no_speech_prob", "words"]
     assert first["words"][1] == {"start": 0.9, "end": 2.5, "word": "there.", "probability": 0.9}
@@ -675,3 +676,114 @@ def test_audio_duration_comes_from_the_wav_header(tmp_path: Path) -> None:
     path = tmp_path / "a.wav"
     write_wav(path, 12.5)
     assert transcribe.audio_duration_seconds(path) == pytest.approx(12.5)
+
+
+# --- style prompt, conditioning and long gaps (Brief 10) ---------------------------------------
+
+PROMPT = "Okay. So, here's what happened. Does that make sense? Yes, it does."
+
+
+def test_style_prompt_is_sent_as_hotwords_in_the_normal_path(
+    env: Env, project: Path, run_dir: Path
+) -> None:
+    transcribe.run(make_ctx(project, run_dir, style_prompt=PROMPT))
+    (call,) = env.model.calls
+    assert call["hotwords"] == PROMPT
+    assert "initial_prompt" not in call
+
+
+def test_style_prompt_is_sent_as_hotwords_in_the_batched_path(
+    env: Env, project: Path, run_dir: Path
+) -> None:
+    transcribe.run(make_ctx(project, run_dir, style_prompt=PROMPT, batch_size=8))
+    (call,) = env.model.calls
+    assert call["batch_size"] == 8
+    assert call["hotwords"] == PROMPT
+
+
+@pytest.mark.parametrize("batch_size", [0, 8])
+def test_no_style_prompt_means_no_hotwords_key(
+    env: Env, project: Path, run_dir: Path, batch_size: int
+) -> None:
+    transcribe.run(make_ctx(project, run_dir, batch_size=batch_size))
+    (call,) = env.model.calls
+    assert "hotwords" not in call
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    ["", "   ", "x" * 301, "two\nlines", "carriage\rreturn", "tab\there", "nul\x00byte"],
+)
+def test_bad_style_prompts_are_rejected(prompt: str) -> None:
+    with pytest.raises(ValueError, match="style_prompt"):
+        TranscribeConfig(style_prompt=prompt)
+
+
+def test_style_prompt_of_300_characters_is_allowed() -> None:
+    assert TranscribeConfig(style_prompt="x" * 300).style_prompt == "x" * 300
+
+
+def test_style_prompt_defaults_to_none() -> None:
+    assert TranscribeConfig().style_prompt is None
+
+
+def test_transcript_settings_from_before_style_prompt_still_load(
+    env: Env, project: Path, run_dir: Path
+) -> None:
+    transcribe.run(make_ctx(project, run_dir))
+    path = run_dir / "transcript.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["settings"]["style_prompt"]
+    transcript = Transcript.model_validate(data)
+    assert transcript.settings.style_prompt is None
+
+
+def test_default_yaml_turns_conditioning_on_and_has_a_style_prompt(project: Path) -> None:
+    cfg = load_resolved(project, "example-client").app.transcribe
+    assert cfg.condition_on_previous_text is True
+    assert cfg.style_prompt is not None and cfg.style_prompt.strip()
+    assert len(cfg.style_prompt) <= 300
+
+
+def test_long_gaps_counts_gaps_between_words_across_segments() -> None:
+    segments = [
+        raw(0, 0.0, 3.0, [(0.0, 1.0), (10.0, 11.0)]),  # 9.0 s gap inside a segment
+        raw(1, 12.0, 30.0, [(12.0, 13.0), (30.0, 31.0)]),  # 1.0 s, then 17.0 s
+    ]
+    count, longest = long_gaps(segments)
+    assert count == 2
+    assert longest == 17.0
+
+
+def test_a_gap_of_exactly_the_limit_counts() -> None:
+    assert long_gaps([raw(0, 0.0, 9.0, [(0.0, 1.0), (9.0, 10.0)])]) == (1, 8.0)
+
+
+def test_a_gap_just_under_the_limit_does_not_count() -> None:
+    assert long_gaps([raw(0, 0.0, 9.0, [(0.0, 1.0), (8.5, 9.0)])]) == (0, 0.0)
+
+
+def test_long_gaps_without_words_is_zero() -> None:
+    assert long_gaps([]) == (0, 0.0)
+    assert long_gaps([raw(0, 0.0, 1.0, [])]) == (0, 0.0)
+
+
+def test_long_gap_warning_has_counts_and_seconds_only(
+    env: Env, project: Path, run_dir: Path
+) -> None:
+    env.model.segments = [
+        seg(0, 0.0, 1.0, "aa", [(0.0, 1.0, "aa")]),
+        seg(1, 5.0, 6.0, "bb", [(5.0, 6.0, "bb")]),  # 4 s: no warning
+        seg(2, 16.5, 17.0, "cc", [(16.5, 17.0, "cc")]),  # 10.5 s
+    ]
+    write_wav(run_dir / "audio.wav", 20.0)
+    transcribe.run(make_ctx(project, run_dir))
+    data = json.loads((run_dir / "transcript.json").read_text(encoding="utf-8"))
+    assert data["warnings"] == ["1 stretch(es) of 8 s or more without words (longest 10.5 s)"]
+
+
+def test_no_long_gap_warning_when_there_are_none(env: Env, project: Path, run_dir: Path) -> None:
+    env.model.segments = [seg(0, 0.0, 1.0, "aa"), seg(1, 2.0, 3.0, "bb")]
+    transcribe.run(make_ctx(project, run_dir))
+    data = json.loads((run_dir / "transcript.json").read_text(encoding="utf-8"))
+    assert data["warnings"] == []
