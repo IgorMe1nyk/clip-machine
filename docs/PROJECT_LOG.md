@@ -2,6 +2,29 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-11 — MVP walking-skeleton finish line met on private validation (6 usable of 8); public samples pending permissioned content (D-012)
+
+**Igor's ratings** (the eight clips in `runs/2026-10-11_t3-2`, speaker crop)
+- **Usable: 6** (c05, c06, c12, c13, c01, c02). **Needs edit: 2** (c09, c04). **Reject: 0.**
+- Both needs-edit clips fail **C6**: the camera switches late in fast back-and-forth and misses
+  short replies.
+- **No complaints on start or end cuts** (C1). The four cut-point failures of the earlier T3 run
+  do not come back.
+
+**Against the finish line (MVP.md section 1)**
+- Quality: 6 usable, against the 3 required.
+- Measured: row 1 of `docs/EVAL.md` (17 candidates, 8 kept, 6 / 2 / 0, $0.0560, 7 min 58 s as the
+  sum of the stage times in run.json).
+- Safe stop: everything is committed (nothing pushed); 1151 tests pass, 2 skipped.
+- Differences from the wording of the finish line: the video is 41 minutes, not 10–15; the client
+  is `general`; and the rated clips needed one manual step, since the one-command run finished
+  with the centre crop and the speaker crop was set in the run folder and re-rendered.
+- The video is third-party and private (D-012), so none of these clips can be shown. Public
+  samples need permissioned content.
+
+**Next:** Igor chooses the next brief (both needs-edit clips point at camera switching, the
+parked Brief 8.2) and finds permissioned content for public samples.
+
 ## 2026-10-11 — Brief 10: real sentence boundaries and clean cut edges (built; real runs done on T3 and T1)
 
 **Why:** Igor rated the seven finished T3 clips: c09 and c15 usable, c07 needs camera fixes, and
@@ -150,7 +173,7 @@ with a 0.00 s gap.
 - `edge_flags` and the two segment-edge notes in `utils/snapping.py` are now only read by tests
   and old files.
 
-**Next:** Igor re-rates the eight T3 clips in `runs/2026-10-11_t3-2` (C1 especially).
+**Next:** done, see the entry above: Igor re-rated the eight T3 clips in `runs/2026-10-11_t3-2`.
 
 ## 2026-10-11 — Brief 8, Part B: moving-crop render (`video.crop: speaker`)
 
