@@ -186,6 +186,7 @@ def _settings(ctx: RunContext) -> RenderedSettings:
         words_per_line=app.captions.words_per_line,
         highlight_color=app.captions.highlight_color,
         caption_offset_seconds=app.captions.offset_seconds,
+        audio_fade_seconds=app.render.audio_fade_seconds,
     )
 
 
@@ -342,6 +343,7 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
         crf=settings.crf,
         preset=settings.preset,
         audio_bitrate=settings.audio_bitrate,
+        audio_fade=settings.audio_fade_seconds,
     )
     try:
         ffmpeg.render_clip(args, plan.run_dir, duration)

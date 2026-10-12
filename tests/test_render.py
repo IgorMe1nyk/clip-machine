@@ -18,6 +18,7 @@ from clipmachine.models import (
     AudioStreamInfo,
     FetchMeta,
     MediaInfo,
+    RenderedClip,
     ScoreConfig,
     ScoredClip,
     ScoredFile,
@@ -575,6 +576,67 @@ def test_json_from_before_the_offset_existed_is_still_valid_at_zero(
     render.run(resume(ctx))
 
     assert fake.ids == ["c01", "c02"]
+
+
+# --- audio fade (Brief 10) ------------------------------------------------------------------
+
+
+def with_fade(ctx: RunContext, fade: float, *, resuming: bool = True) -> RunContext:
+    app = ctx.config.app.model_copy(
+        update={"render": ctx.config.app.render.model_copy(update={"audio_fade_seconds": fade})}
+    )
+    return RunContext(
+        run_dir=ctx.run_dir,
+        config=ResolvedConfig(app=app, client_name=ctx.config.client_name, rules=ctx.config.rules),
+        input_path=ctx.input_path,
+        project_root=ctx.project_root,
+        resuming=resuming,
+    )
+
+
+def test_fade_is_passed_to_ffmpeg_and_recorded(ctx: RunContext, fake: FakeFfmpeg) -> None:
+    render.run(with_fade(ctx, 0.1, resuming=False))
+
+    args = fake.calls[0][1]
+    assert args[args.index("-af") + 1] == "afade=t=in:st=0:d=0.100,afade=t=out:st=19.900:d=0.100"
+    data = json.loads((ctx.run_dir / "clips" / "c01.json").read_text(encoding="utf-8"))
+    assert data["settings"]["audio_fade_seconds"] == 0.1
+
+
+def test_default_fade_is_applied_and_zero_turns_it_off(ctx: RunContext, fake: FakeFfmpeg) -> None:
+    render.run(ctx)
+    assert "-af" in fake.calls[0][1]
+
+    render.run(with_fade(ctx, 0.0, resuming=False))
+    assert "-af" not in fake.calls[-1][1]
+
+
+def test_json_from_before_the_fade_existed_loads_as_zero_and_rerenders(
+    ctx: RunContext, fake: FakeFfmpeg
+) -> None:
+    render.run(ctx)
+    path = ctx.run_dir / "clips" / "c01.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["settings"]["audio_fade_seconds"]  # a file from before Brief 10
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert (
+        RenderedClip.model_validate_json(
+            path.read_text(encoding="utf-8")
+        ).settings.audio_fade_seconds
+        == 0.0
+    )
+
+    render.run(resume(ctx))  # the config now has a fade, so c01 is stale; c02 is untouched
+
+    assert fake.ids == ["c01", "c02", "c01"]
+
+
+def test_resume_rerenders_when_only_the_fade_changed(ctx: RunContext, fake: FakeFfmpeg) -> None:
+    render.run(ctx)
+
+    render.run(with_fade(ctx, 0.2))
+
+    assert fake.ids == ["c01", "c02", "c01", "c02"]
 
 
 # --- speaker crop --------------------------------------------------------------------------

@@ -381,9 +381,23 @@ def render_args(
     preset: str,
     audio_bitrate: str,
     log_level: str = "error",
+    audio_fade: float = 0.0,
 ) -> list[str]:
     """One re-encoding pass: seek before the input (accurate when re-encoding), first video and
-    first audio stream only, H.264 + AAC in MP4. Never a stream copy."""
+    first audio stream only, H.264 + AAC in MP4. Never a stream copy.
+
+    `audio_fade` (seconds) adds a fade-in at the clip start and a fade-out at its end so a tight
+    cut never clicks. Audio timestamps start at 0 after the input seek, so the fade times are
+    seconds from the clip start. With 0, or a clip shorter than two fades, there is no `-af`."""
+    fade = (
+        [
+            "-af",
+            f"afade=t=in:st=0:d={audio_fade:.3f},"
+            f"afade=t=out:st={duration - audio_fade:.3f}:d={audio_fade:.3f}",
+        ]
+        if audio_fade > 0 and duration > 2 * audio_fade
+        else []
+    )
     return [
         "ffmpeg",
         "-nostdin",
@@ -404,6 +418,7 @@ def render_args(
         "0:a:0",
         "-vf",
         vf,
+        *fade,
         "-c:v",
         "libx264",
         "-preset",

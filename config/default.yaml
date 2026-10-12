@@ -77,6 +77,7 @@ render:
   crf: 20                    # x264 quality, 0-51, lower is better
   preset: medium             # x264 speed/size trade-off
   audio_bitrate: 160k
+  audio_fade_seconds: 0.08   # seconds of audio fade-in and fade-out on every clip; 0 = off
 fetch:
   max_size_gb: 8             # GiB (1024^3 bytes)
   max_duration_minutes: 240

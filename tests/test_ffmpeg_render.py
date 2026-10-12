@@ -29,6 +29,37 @@ def flag_value(args: list[str], flag: str) -> str:
     return args[args.index(flag) + 1]
 
 
+def make_args_fade(tmp_path: Path, *, duration: float, audio_fade: float) -> list[str]:
+    return ffmpeg.render_args(
+        tmp_path / "source.mp4",
+        tmp_path / "clips" / "c01.tmp.mp4",
+        start=10.0,
+        duration=duration,
+        vf="VF",
+        crf=20,
+        preset="medium",
+        audio_bitrate="160k",
+        audio_fade=audio_fade,
+    )
+
+
+def test_audio_fade_adds_a_fade_in_and_a_fade_out(tmp_path: Path) -> None:
+    args = make_args_fade(tmp_path, duration=26.78, audio_fade=0.08)
+
+    assert flag_value(args, "-af") == "afade=t=in:st=0:d=0.080,afade=t=out:st=26.700:d=0.080"
+    assert args.index("-af") == args.index("-vf") + 2  # right after the -vf pair
+
+
+def test_no_audio_fade_means_no_af_argument(tmp_path: Path) -> None:
+    assert "-af" not in make_args(tmp_path)
+    assert "-af" not in make_args_fade(tmp_path, duration=26.78, audio_fade=0.0)
+
+
+@pytest.mark.parametrize("duration", [0.16, 0.1])
+def test_clip_too_short_for_two_fades_has_no_af_argument(tmp_path: Path, duration: float) -> None:
+    assert "-af" not in make_args_fade(tmp_path, duration=duration, audio_fade=0.08)
+
+
 def test_filter_chain_is_plain_integers_and_relative_paths() -> None:
     vf = ffmpeg.video_filter(CROP, 1080, 1920, "clips/c04.ass", "../../assets/fonts")
     assert vf == (

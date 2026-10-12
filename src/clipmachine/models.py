@@ -289,6 +289,8 @@ class RenderConfig(StrictModel):
         "veryslow",
     ] = "medium"
     audio_bitrate: str = "160k"
+    # seconds of audio fade-in and fade-out on every clip, so a tight cut never clicks; 0 = off
+    audio_fade_seconds: float = Field(default=0.08, ge=0, le=0.5)
 
     @model_validator(mode="after")
     def _check_bitrate(self) -> "RenderConfig":
@@ -717,6 +719,8 @@ class RenderedSettings(StrictModel):
     words_per_line: int
     highlight_color: str
     caption_offset_seconds: float = 0.0  # added in Brief 6.1; old JSON files load as 0.0
+    # added in Brief 10; old JSON files load as 0.0, which makes old outputs stale so they re-render
+    audio_fade_seconds: float = 0.0
 
 
 class RenderedOutput(StrictModel):

@@ -442,6 +442,28 @@ def test_config_without_offset_loads(project: Path) -> None:
     assert load_app_config(project).captions.offset_seconds == 0.15
 
 
+def test_audio_fade_default_and_range(project: Path) -> None:
+    assert load_app_config(project).render.audio_fade_seconds == 0.08
+    data = yaml.safe_load((project / "config" / "default.yaml").read_text(encoding="utf-8"))
+    assert data["render"]["audio_fade_seconds"] == 0.08
+    for value in (0, 0.25, 0.5):
+        _default(project, lambda d, v=value: d["render"].update(audio_fade_seconds=v))
+        assert load_app_config(project).render.audio_fade_seconds == value
+    for bad in (-0.01, 0.51):
+        _default(project, lambda d, v=bad: d["render"].update(audio_fade_seconds=v))
+        with pytest.raises(ConfigError, match="audio_fade_seconds"):
+            load_app_config(project)
+
+
+def test_resolved_file_from_before_the_fade_still_loads(project: Path, tmp_path: Path) -> None:
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "example-client"), target)
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    del data["config"]["render"]["audio_fade_seconds"]
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert load_resolved_file(target).app.render.audio_fade_seconds == 0.08
+
+
 def test_extend_defaults_and_config_without_them_loads(project: Path) -> None:
     assert load_app_config(project).score.extend_before == 4
     assert load_app_config(project).score.extend_after == 3

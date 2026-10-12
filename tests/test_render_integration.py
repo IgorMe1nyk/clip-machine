@@ -86,6 +86,7 @@ def test_real_render_makes_a_vertical_h264_aac_clip(project: Path) -> None:
     data = json.loads((clips / "c01.json").read_text(encoding="utf-8"))
     assert data["crop"] == {"w": 100, "h": 180, "x": 110, "y": 0}
     assert data["caption_events"] == 2
+    assert data["settings"]["audio_fade_seconds"] == 0.08  # rendered with the fade, still verified
     assert data["output"]["size_bytes"] == (clips / "c01.mp4").stat().st_size
 
 
