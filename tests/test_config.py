@@ -624,14 +624,14 @@ def test_invalid_snap_settings_are_rejected(project: Path, key: str, value: floa
 
 def test_brief_8_2_speaker_defaults() -> None:
     cfg = SpeakerConfig()
-    assert (cfg.signal, cfg.min_turn_seconds, cfg.min_turn_motion_seconds) == ("mix", 1.0, 1.5)
-    assert cfg.min_shot_seconds == 1.5  # still there, for signal "mouth"
+    assert (cfg.signal, cfg.min_turn_seconds, cfg.min_turn_motion_seconds) == ("mouth", 1.0, 1.5)
+    assert cfg.min_shot_seconds == 1.5  # for signal "mouth", the default
 
 
 def test_default_yaml_has_the_mix_keys(project: Path) -> None:
     speaker = load_app_config(project).speaker
     assert (speaker.signal, speaker.min_turn_seconds, speaker.min_turn_motion_seconds) == (
-        "mix",
+        "mouth",
         1.0,
         1.5,
     )
@@ -666,7 +666,7 @@ def test_a_speaker_section_from_before_brief_8_2_still_loads(project: Path, tmp_
     speaker = load_resolved_file(target).app.speaker
 
     assert (speaker.signal, speaker.min_turn_seconds, speaker.min_turn_motion_seconds) == (
-        "mix",
+        "mouth",
         1.0,
         1.5,
     )

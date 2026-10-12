@@ -251,9 +251,10 @@ class SpeakerConfig(StrictModel):
     # read on every sample).
     detect_every: int = Field(default=1, ge=1, le=10)
     window_seconds: float = Field(default=0.5, gt=0)  # the speaker is chosen per window
-    # "mix": per window, mouth against loudness where every main face has a readable mouth, else
-    # pixel motion (D-019). "mouth": the older rule, the variance of mouth openness.
-    signal: Literal["mix", "mouth"] = "mix"
+    # "mouth": the variance of mouth openness (the default: D-019 keeps it until wide two-person
+    # shots have their own layout). "mix": per window, mouth against loudness where every main
+    # face has a readable mouth, else pixel motion.
+    signal: Literal["mix", "mouth"] = "mouth"
     min_shot_seconds: float = Field(default=1.5, gt=0)  # signal "mouth": no shot is shorter
     # signal "mix": the shortest stretch of a new speaker that gets a cut, in windows decided by
     # sync ...

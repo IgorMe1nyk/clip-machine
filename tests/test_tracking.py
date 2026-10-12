@@ -1023,6 +1023,8 @@ def test_build_plan_finds_the_audio_file_or_warns(
     project: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     app = make_ctx(project).config.app
+    # only the mix signal reads the audio, so only it warns
+    app = app.model_copy(update={"speaker": app.speaker.model_copy(update={"signal": "mix"})})
     run_dir = project / "runs" / "run"
     run_dir.mkdir(parents=True, exist_ok=True)
     track_fakes.write_model(project)
