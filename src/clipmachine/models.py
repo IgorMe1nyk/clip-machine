@@ -785,13 +785,13 @@ class ClipScore(StrictModel):
             "before and after it), or null"
         )
     )
-    # Brief 12 (scout): asked for only when the prompt lists topics; null otherwise
+    # Brief 12 (scout): asked for only when the prompt says so; null otherwise. Required in the
+    # wire schema like every other field (the API wants no optional keys), nullable.
     topic: str | None = Field(
-        default=None, description="One of the topic keys listed in the prompt, or null if none"
+        description="One of the topic keys listed in the prompt, or null when none are listed"
     )
     caption: str | None = Field(
-        default=None,
-        description="One sentence that leads with the idea in the clip, when asked; else null",
+        description="One sentence that leads with the idea in the clip, when asked; else null"
     )
 
     @field_validator("verdict", "reject_reason", mode="before")

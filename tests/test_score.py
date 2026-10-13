@@ -86,6 +86,8 @@ def clip(
         "suggested_title": title,
         "reason": reason,
         "keep_sentences": None if keep is None else {"first": keep[0], "last": keep[1]},
+        "topic": None,
+        "caption": None,
     }
 
 
