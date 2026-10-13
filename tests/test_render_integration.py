@@ -15,6 +15,7 @@ from clipmachine.runs import write_json_atomic
 from clipmachine.stages import render
 from clipmachine.utils import ffmpeg
 from clipmachine.utils.crop import CropBox
+from clipmachine.utils.zoom import Ramp, ZoomSpan, plan_ramps, smooth_path
 from test_render import make_ctx, write_inputs
 
 pytestmark = pytest.mark.ffmpeg
@@ -263,3 +264,85 @@ def test_a_sendcmd_file_zooms_in_and_out_on_the_exact_frames(tmp_path: Path) -> 
         assert seen[last_before + 1][1] == after, (change, seen[last_before + 1])
         assert seen[last_before + 1][0] >= change
     assert [c for _, c in seen].count("other") == 0
+
+
+def make_bands_source(path: Path) -> None:
+    """4 s at 10 fps, 320x180: the top half green, the bottom half red, with a sine tone."""
+    args = [
+        "ffmpeg", "-nostdin", "-hide_banner", "-v", "error", "-y",
+        "-f", "lavfi", "-i", "color=c=green:s=320x90:r=10:d=4",
+        "-f", "lavfi", "-i", "color=c=red:s=320x90:r=10:d=4",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+        "-filter_complex", "[0:v][1:v]vstack[v]",
+        "-map", "[v]", "-map", "2:a",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+        str(path),
+    ]  # fmt: skip
+    result = subprocess.run(
+        args, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120, check=False
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_smooth_zoom_changes_the_crop_size_gradually_over_the_ramp_frames(
+    tmp_path: Path,
+) -> None:
+    """Brief R2.1: the window shrinks frame by frame. The base window 100x180 shows the green
+    top half and the red bottom half 50/50. A zoom to scale 2 centred on y = 0.25 clamps the
+    window at the top, so the share of the output rows that are green grows from 0.5 to 1.0."""
+    make_bands_source(tmp_path / "source.mp4")
+    (tmp_path / "fonts").mkdir()
+    shutil.copy(
+        Path(__file__).resolve().parents[1] / "assets" / "fonts" / "Montserrat-Bold.ttf",
+        tmp_path / "fonts" / "Montserrat-Bold.ttf",
+    )
+    (tmp_path / "c.ass").write_text(
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: 108\nPlayResY: 192\n\n"
+        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, Alignment\n"
+        "Style: Default,Montserrat Bold,20,&H00FFFFFF,2\n\n"
+        "[Events]\nFormat: Layer, Start, End, Style, Text\n",
+        encoding="utf-8",
+    )
+    base = CropBox(w=100, h=180, x=110, y=0)
+    spans = [ZoomSpan(1.0, 4.0, 0.25)]
+    ramps, _ = plan_ramps(spans, [4.0], 1.0, 4.0)
+    assert ramps == [Ramp(1.0, 2.0, "in")]  # the clip ends zoomed in: no ramp-out
+    boxes = smooth_path([(0.0, 110)], base, spans, ramps, 2.0, 320, 180, 10.0, 4.0)
+    assert [b.h for t, b in boxes if 1.0 < t < 2.0 + 1e-9] == sorted(
+        [b.h for t, b in boxes if 1.0 < t < 2.0 + 1e-9], reverse=True
+    )
+    assert boxes[-1][1].h == 90 and all(b.y == 0 for _, b in boxes)
+    (tmp_path / "c.cmd").write_text(ffmpeg.crop_box_commands(boxes), encoding="utf-8")
+    vf = ffmpeg.video_filter(base, 108, 192, "c.ass", "fonts", sendcmd_rel="c.cmd")
+    out = tmp_path / "out.mp4"
+    args = ffmpeg.render_args(
+        tmp_path / "source.mp4",
+        out,
+        start=0.0,
+        duration=4.0,
+        vf=vf,
+        crf=18,
+        preset="ultrafast",
+        audio_bitrate="64k",
+    )
+    ffmpeg.render_clip(args, tmp_path, 4.0)
+
+    frames = ffmpeg.read_timed_frames(
+        ffmpeg.timed_frame_args(out, start=0.0, duration=4.0, width=108), 108, 192, 60
+    )
+    assert len(frames) == pytest.approx(40, abs=2)
+    assert all(frame.shape == (192, 108, 3) for _, frame in frames)  # the size never changes
+
+    def green_share(frame: "np.ndarray[Any, Any]") -> float:
+        column = frame[:, 54].astype(int)  # the middle column, away from the captions
+        return float(np.mean(column[:, 1] > column[:, 0] + 40))
+
+    shares = [(t, green_share(frame)) for t, frame in frames]
+    before = [s for t, s in shares if t < 1.0 - 1e-6]
+    ramp = [s for t, s in shares if 1.0 + 1e-6 < t < 2.0 - 1e-6]
+    hold = [s for t, s in shares if t > 2.0 + 1e-6]
+    assert all(s == pytest.approx(0.5, abs=0.02) for s in before)
+    assert len(set(round(s, 3) for s in ramp)) >= 4
+    assert all(a < b for a, b in zip(ramp, ramp[1:], strict=False)), ramp
+    assert ramp[0] > 0.5 and ramp[-1] < 1.0
+    assert all(s == pytest.approx(1.0, abs=0.02) for s in hold)
