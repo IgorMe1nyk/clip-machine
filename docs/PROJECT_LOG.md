@@ -10,7 +10,7 @@ name spellings (Whisper wrote one name three ways; one was listed). Igor also wa
 post: profanity masked, sensitive words flagged. Goal: a new campaign takes about 2 minutes to set
 up. $0, deterministic, local, no model (D-030).
 
-**Done** (11 commits on the branch `brief-11-1-auto-setup` from `main`; nothing pushed or merged)
+**Done** (12 commits on the branch `brief-11-1-auto-setup` from `main`)
 - **`watermark.position: auto`.** A grid of centre positions (x 0.5 ± 0.05 steps, y every 0.02)
   is filtered by the geometry checks an explicit position must pass, by the caption envelope (the
   widest, tallest caption box, so no clip's captions can reach the spot) and, per sampled clip,
@@ -53,7 +53,7 @@ up. $0, deterministic, local, no model (D-030).
   format named and the advice to convert.
 - Refactor: the watermark is measured once (`WatermarkAsset`) and placed apart, so a position can
   be chosen later. `face_rects_timed` keeps the sample time of each face box.
-- Tests: 1882 passed, 3 skipped (Whisper, MediaPipe, a symlink test); the ffmpeg tests ran here,
+- Tests: 1886 passed, 3 skipped (Whisper, MediaPipe, a symlink test); the ffmpeg tests ran here,
   including an auto-position campaign on a generated source. ruff, format, mypy and pip-audit
   clean. Built by Fable in auto mode, one commit per step, every check run separately.
 
@@ -71,8 +71,9 @@ speaker crop with the real face models; $0, API calls 0)
   variants is spoken in the five rendered clips (0 fixes). Found in the real transcript: a
   two-word variant and the three-word span containing it were both counted from the same place;
   fixed (a longer span is not a variant when a shorter span inside it already applies). One
-  applied rule maps a short ordinary word to a name (ratio 0.86, same sound): Igor to veto or
-  keep.
+  applied rule mapped a three-letter ordinary word to a name (ratio 0.86, same sound); Igor's
+  rule since: a span under 4 letters is a suggestion at most. Detection run again without a
+  render (no clip text changed): 1 rule applied, 2 suggestions, 1 already in spelling.
 - Masking: 8 words masked across 4 clips (profanity, inflections included), 0 sensitive words.
   All eight checks pass on every clip.
 

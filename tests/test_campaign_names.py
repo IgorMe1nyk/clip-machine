@@ -79,10 +79,21 @@ def test_soundex_is_the_basic_american_one() -> None:
         ("from", "Frob", None),  # an ordinary word: 0.75, another sound
         ("on", "Frob", None),
         ("gorbal twee", "Gorbal Twee", "apply"),
+        ("nin", "Nion", "suggest"),  # 0.86 and the same sound, but 3 letters: a suggestion at most
+        ("q x v", "QXV", "suggest"),  # exact letters, 3 of them: a suggestion at most
+        ("nib", "Nion", None),  # 3 letters and another sound: dropped as before
     ],
 )
 def test_classify(span: str, name: str, status: str | None) -> None:
     assert classify(span, name, apply_threshold=0.8, suggest_threshold=0.7)[2] == status
+
+
+def test_a_span_under_four_letters_is_never_applied() -> None:
+    index = index_of("nin s1 nin s3.", "the nion show.")
+    found = variants(index, "Nion")
+    assert [(v.text, v.count, v.status) for v in found] == [("nin", 2, "suggest")]
+    rules, covered = auto_rules(found, [])
+    assert rules == [] and covered == []
 
 
 # --- scanning the transcript ---------------------------------------------------------------

@@ -10,6 +10,8 @@ basic Soundex key:
   spelling rule that is applied to the captions;
 - suggest_threshold <= ratio < apply_threshold with the same Soundex key is a suggestion: listed
   in the report and in auto_spelling.json, never applied (Igor's decision, 2026-10-12);
+- a span of fewer than 4 normalised letters is a suggestion at most, whatever its ratio and
+  sound: too often it is an ordinary word (Igor, after the real run);
 - an explicit rule in `spelling` with the same `from` always wins, so `{from: x, to: x}` vetoes.
 
 Pure functions; the transcript files are never written. The variants hold transcript words, so
@@ -29,6 +31,7 @@ AUTO_SPELLING_FILE = "auto_spelling.json"
 MAX_SEEN = 3  # timestamps kept per variant
 MAX_SPAN = 3  # adjacent words joined and compared with a name
 SHORT_NAME = 5  # a normalised name shorter than this must also match in Soundex to be applied
+MIN_APPLY_LETTERS = 4  # a normalised span shorter than this is a suggestion at most (Igor)
 _LOOKALIKES = str.maketrans({"3": "e", "1": "i", "0": "o"})
 _SOUNDEX = {
     **dict.fromkeys("bfpv", "1"),
@@ -99,7 +102,9 @@ def classify(
     ratio = SequenceMatcher(None, a, b).ratio()
     same_sound = soundex(a) == soundex(b)
     if ratio >= apply_threshold and (len(b) >= SHORT_NAME or same_sound):
-        return ratio, same_sound, "apply"
+        # a span of fewer than MIN_APPLY_LETTERS letters is too often an ordinary word ("non" for
+        # a name sounding like "neon"): listed, never applied, whatever its ratio and sound
+        return ratio, same_sound, "apply" if len(a) >= MIN_APPLY_LETTERS else "suggest"
     if ratio >= suggest_threshold and same_sound:
         return ratio, same_sound, "suggest"
     return ratio, same_sound, None
