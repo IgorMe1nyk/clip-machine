@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from clipmachine import pipeline
 from clipmachine.campaign.loader import load_campaign, load_moments, select_moments
 from clipmachine.campaign.render import MomentContext, MomentResult, render_moment
+from clipmachine.campaign.report import write_report
 from clipmachine.campaign.used import load_used, save_used
 from clipmachine.config import ConfigError, load_app_config
 from clipmachine.models import FetchMeta, RunState
@@ -134,7 +135,8 @@ def run_campaign(
     if app.captions.style != "box_karaoke":
         raise ConfigError("campaign mode needs captions.style: box_karaoke in config/default.yaml")
     campaign = load_campaign(root, slug, app)
-    moments = select_moments(load_moments(campaign), only)
+    all_moments = load_moments(campaign)
+    moments = select_moments(all_moments, only)
     for warning in campaign.warnings:
         print(f"warning: {warning}")
     pipeline.check_ffmpeg()
@@ -197,4 +199,5 @@ def run_campaign(
         f"{counts['refused']} refused; API calls: 0; {seconds:.1f} s"
     )
     print(f"output: {out_dir}")
+    print(f"report: {write_report(out_dir, campaign, all_moments, run_dir.name)}")
     return EXIT_MOMENT_FAILED if counts["failed"] or refused_named else EXIT_OK

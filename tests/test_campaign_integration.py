@@ -48,4 +48,6 @@ def test_a_campaign_run_renders_a_real_clip(project: Path) -> None:
         ffmpeg.probe(out / "A01_tiktok.mp4"), width=1080, height=1920, duration=clip.duration
     )
     assert (out / "A01_tiktok.post.txt").read_text(encoding="utf-8").endswith("closer one\n")
+    report = (out / "campaign_report.html").read_text(encoding="utf-8")
+    assert report.startswith("<!DOCTYPE html>") and 'src="A01_tiktok.mp4"' in report
     assert not list(out.glob("*.tmp*"))
