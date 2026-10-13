@@ -13,6 +13,7 @@ from clipmachine.models import (
     TRACK_SCHEMA_VERSION,
     SpeakerConfig,
     TrackFile,
+    TrackShot,
     TranscriptSegment,
     TranscriptWord,
     VideoStreamInfo,
@@ -21,6 +22,7 @@ from clipmachine.runs import write_json_atomic
 from clipmachine.stages import render
 from clipmachine.tracking import TrackPlan, analyse_clip, load_valid_track
 from clipmachine.utils import camera
+from clipmachine.utils.faces import RawFace
 from test_render import CLIPS, FakeFfmpeg, clip_files, make_ctx, write_inputs
 
 
@@ -98,6 +100,7 @@ def test_two_speakers_give_two_shots_and_a_cut(
     assert track.cuts == [] and track.summary.cuts == 0
     assert [(s.start, s.end, s.track) for s in track.shots] == [(0.0, 10.0, 0), (10.0, 20.0, 1)]
     assert [s.face_cx for s in track.shots] == [0.25, 0.75]
+    assert [s.face_cy for s in track.shots] == [0.5, 0.5]
     summary = track.summary
     assert (summary.faces_seen, summary.switches, summary.samples) == (2, 1, 200)
     assert summary.face_time_pct == 100.0
@@ -151,6 +154,7 @@ def test_no_face_falls_back_to_the_centre_crop(
     assert track.fallback_reason == "no_face"
     assert {s.crop_x for s in track.samples} == {218}  # the render stage's centre crop x
     assert [(s.start, s.end, s.track, s.face_cx) for s in track.shots] == [(0.0, 20.0, None, None)]
+    assert track.shots[0].face_cy is None
     assert track.summary.face_time_pct == 0.0 and track.summary.faces_seen == 0
 
 
@@ -1044,7 +1048,7 @@ def test_build_plan_finds_the_audio_file_or_warns(
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
-# --- faces in track.json (schema 4) ---------------------------------------------------------
+# --- faces in track.json (schema 4; schema 5 adds face_cy) ---------------------------------
 
 
 def test_the_track_lists_every_face_of_every_sample(
@@ -1054,7 +1058,7 @@ def test_the_track_lists_every_face_of_every_sample(
 
     track = analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0)
 
-    assert TRACK_SCHEMA_VERSION == 4
+    assert TRACK_SCHEMA_VERSION == 5
     assert len(track.faces) == 2 * track.summary.samples == 400
     first_sample = [f for f in track.faces if f.t == 0.0]
     assert [(f.cx, f.cy, f.w, f.h) for f in first_sample] == [
@@ -1110,3 +1114,43 @@ def test_a_schema_3_track_file_is_recomputed(
     path = tracking.track_path(plan.clips_dir, "c01")
     assert TrackFile.model_validate_json(path.read_text(encoding="utf-8")).faces == []  # parses
     assert load(plan) is None  # but is analysed again
+
+
+def test_face_cy_is_the_mean_height_of_the_followed_face_in_each_shot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def scenario(t: float) -> list[RawFace]:
+        a_talks = t < 10.0
+        # A sinks from 0.4 to 0.5 over the first shot, B sits at 0.6
+        return [
+            RawFace(
+                0.25,
+                0.4 + 0.1 * min(t, 10.0) / 10,
+                0.15,
+                0.3,
+                track_fakes.talking(t) if a_talks else 0.05,
+            ),
+            RawFace(0.75, 0.6, 0.15, 0.3, 0.05 if a_talks else track_fakes.talking(t)),
+        ]
+
+    track_fakes.install(monkeypatch, scenario)
+
+    track = analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0)
+
+    first, second = track.shots
+    assert first.face_cy == pytest.approx(0.4495, abs=1e-4)  # mean of the 100 samples
+    assert second.face_cy == 0.6
+
+
+def test_face_cy_is_none_when_nobody_is_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    track_fakes.install(monkeypatch, track_fakes.nobody)
+
+    track = analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0)
+
+    assert [s.face_cy for s in track.shots] == [None]
+
+
+def test_a_track_file_without_face_cy_reads_as_none() -> None:
+    assert TrackShot(start=0.0, end=1.0, track=0, face_cx=0.5).face_cy is None

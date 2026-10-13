@@ -454,17 +454,22 @@ def analyse_clip(
     track_shots: list[TrackShot] = []
     for shot in shots:
         face_cx: float | None = None
+        face_cy: float | None = None
         if shot.track is not None:
-            xs = [
-                s.cx for k, s in track_by_id[shot.track].points if _shot_at(shots, times[k]) is shot
+            in_shot = [
+                s for k, s in track_by_id[shot.track].points if _shot_at(shots, times[k]) is shot
             ]
-            face_cx = round(sum(xs) / len(xs), 4) if xs else None
+            if in_shot:
+                face_cx = round(sum(s.cx for s in in_shot) / len(in_shot), 4)
+                # the punch-in zoom (Brief R2) centres its window on this height
+                face_cy = round(sum(s.cy for s in in_shot) / len(in_shot), 4)
         track_shots.append(
             TrackShot(
                 start=round(shot.start, 3),
                 end=round(shot.end, 3),
                 track=shot.track,
                 face_cx=face_cx,
+                face_cy=face_cy,
             )
         )
     track_faces = [

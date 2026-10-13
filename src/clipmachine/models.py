@@ -1035,9 +1035,9 @@ class TrackSummary(StrictModel):
     unscored_windows: int = 0
 
 
-# 2: cuts_exact. 3: the mix signal. 4: faces. load_valid_track recomputes files of any other
-# version
-TRACK_SCHEMA_VERSION = 4
+# 2: cuts_exact. 3: the mix signal. 4: faces. 5: face_cy. load_valid_track recomputes files of
+# any other version
+TRACK_SCHEMA_VERSION = 5
 
 
 class TrackFile(StrictModel):
