@@ -18,8 +18,10 @@ spelling:                                       # caption word fixes; whole word
   - { from: "q x v", to: "QXV" }                # three words merge into one caption word
 names_to_check: [Zorb1e, QXV]                   # listed in the report for a visual check
 names: [Zorb1e, QXV]                            # correct spellings; the transcript is scanned for the ways Whisper writes them (auto_spelling.json)
+platforms: [tiktok, instagram, youtube]      # "platform: auto" in moments.yaml spreads the moments over these, in this order (Brief 11.2)
+posting_times: ["12:30", "15:30", "18:30"]    # posting_plan.csv: one slot each per platform per day, 24-hour Eastern, in quotes
 post:
-  prefix: { tiktok: "@example", instagram: "@example", youtube: "@example" }
+  prefix: { tiktok: "@example", instagram: "@example", youtube: "@example" }   # youtube's goes first in the description
   closers:
     - "watch the full episode of the example show @example"
     - "the whole example conversation is on the channel @example"

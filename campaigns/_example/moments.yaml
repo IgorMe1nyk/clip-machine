@@ -3,14 +3,14 @@
   end: "12:48"
   hook: THE BLUE LANTERN NEVER WENT OUT
   caption: tells the story of the lantern that stayed lit.
-  platform: tiktok      # tiktok | instagram | youtube
+  platform: auto        # auto (or left out): the tool picks one of campaign.yaml's platforms, once, and locks it in assignments.json
 
 - id: A02
   start: "1:02:10"
   end: auto             # the tool picks a clean sentence end near the target length
   hook: WHY THE MAP WAS DRAWN BACKWARDS
   caption: explains the map that was drawn backwards.
-  platform: instagram
+  platform: instagram   # or say which: tiktok | instagram | youtube
 
 - id: A03
   start: "31:10"
