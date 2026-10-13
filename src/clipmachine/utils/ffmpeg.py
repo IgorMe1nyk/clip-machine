@@ -346,6 +346,30 @@ def crop_commands(path: Sequence[tuple[float, int]]) -> str:
     return "".join(f"{t:.6f} crop x {x};\n" for t, x in path[1:])
 
 
+def crop_box_commands(path: Sequence[tuple[float, CropBox]]) -> str:
+    """The text of a `sendcmd` file that moves and resizes the crop (punch-in zooms): one line
+    for every change point after the first, like `<time> crop w 964, crop h 1714, crop x 120;`
+    with only the fields that changed. Times are seconds from the seek point. Empty when the
+    box never changes.
+
+    The commands of a line run in order and the crop filter checks the window against the frame
+    after each one, so the order keeps every in-between state inside the frame: size first
+    (w, h, x, y) when the window gets smaller, position first (x, y, w, h) otherwise. A change
+    of x alone is exactly the line `crop_commands` writes."""
+    lines: list[str] = []
+    for (_, before), (t, after) in zip(path, path[1:], strict=False):
+        shrinks = after.w < before.w or after.h < before.h
+        fields = ("w", "h", "x", "y") if shrinks else ("x", "y", "w", "h")
+        changed = [
+            f"crop {name} {getattr(after, name)}"
+            for name in fields
+            if getattr(after, name) != getattr(before, name)
+        ]
+        if changed:
+            lines.append(f"{t:.6f} " + ", ".join(changed) + ";\n")
+    return "".join(lines)
+
+
 def video_filter(
     crop: CropBox,
     width: int,
