@@ -1026,3 +1026,101 @@ def test_masking_off_leaves_the_campaign_texts_alone(project: Path, fake: FakeFf
     clip = rig.clip("A01_tiktok")
     assert (clip.masked_words, clip.sensitive_words) == (0, 0)
     assert review(rig, "A01_tiktok") == []
+
+
+# --- names and automatic spelling rules (Brief 11.1) ---------------------------------------------
+
+
+def with_names(*names: str) -> Callable[[dict[str, Any]], None]:
+    def mutate(d: dict[str, Any]) -> None:
+        d["names"] = list(names)
+
+    return mutate
+
+
+def auto_spelling(rig: Rig) -> dict[str, Any]:
+    data: dict[str, Any] = json.loads(
+        (rig.folder / "auto_spelling.json").read_text(encoding="utf-8")
+    )
+    return data
+
+
+def test_name_variants_become_spelling_rules_and_are_recorded(
+    project: Path, fake: FakeFfmpeg, capsys: pytest.CaptureFixture[str]
+) -> None:
+    overrides = {(5, 2): "z0rble", (6, 0): "zor", (6, 1): "ble", (6, 3): "Z0rble,"}
+    rig = make_rig(project, fake, mutate=with_names("Zorb1e", "QXV"), overrides=overrides)
+    transcript = rig.run_dir / "transcript.json"
+    before = transcript.read_bytes()
+
+    assert rig.go() == 0
+
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    assert ass.count("Zorb1e") >= 3 and "z0rble" not in ass.lower() and "ble" not in ass.split()
+    clip = rig.clip("A01_tiktok")
+    assert clip.spelling_replacements == 3
+    assert clip.names_to_check == {"Zorb1e": [1.25, 5.15, 6.65], "QXV": []}
+    assert clip.checks["names_listed"] == "pass"
+    assert transcript.read_bytes() == before
+
+    data = auto_spelling(rig)
+    by_text = {v["text"]: v for v in data["variants"]}
+    assert set(by_text) == {"z0rble", "zor ble"}
+    assert by_text["z0rble"]["count"] == 2 and by_text["z0rble"]["status"] == "apply"
+    assert by_text["z0rble"]["rule_to"] == "Zorb1e"
+    assert by_text["z0rble"]["seen"] == [
+        {"clip": "A01_tiktok", "at": 1.25},
+        {"clip": "A01_tiktok", "at": 6.65},
+    ]
+    assert by_text["zor ble"]["seen"] == [{"clip": "A01_tiktok", "at": 5.15}]
+    assert data["names"] == ["Zorb1e", "QXV"] and data["source_sha256"] == "b" * 64
+    text = out_of(capsys)
+    assert "names: 2 automatic spelling rules, 0 suggestions, 0 already in spelling" in text
+    assert "z0rble" not in text and "zor ble" not in text
+    html = (rig.out / "campaign_report.html").read_text(encoding="utf-8")
+    assert "<b>z0rble</b> &rarr; Zorb1e: 2 times" in html and "heard at A01_tiktok 0:01.2" in html
+
+
+def test_an_explicit_rule_wins_and_an_identity_rule_vetoes(project: Path, fake: FakeFfmpeg) -> None:
+    def mutate(d: dict[str, Any]) -> None:
+        d["names"] = ["Zorb1e"]
+        d["spelling"].append({"from": "z0rble", "to": "z0rble"})
+
+    rig = make_rig(project, fake, mutate=mutate, overrides={(5, 2): "z0rble", (6, 0): "zorbie"})
+
+    assert rig.go() == 0
+
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    assert "z0rble" in ass and "zorbie" not in ass and "Zorb1e" in ass
+    by_text = {v["text"]: v for v in auto_spelling(rig)["variants"]}
+    assert by_text["z0rble"]["status"] == "explicit" and by_text["z0rble"]["rule_to"] is None
+    assert by_text["zorbie"]["status"] == "apply"
+    html = (rig.out / "campaign_report.html").read_text(encoding="utf-8")
+    assert "Already in your spelling list" in html
+
+
+def test_a_suggestion_is_listed_but_not_applied(
+    project: Path, fake: FakeFfmpeg, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig = make_rig(project, fake, mutate=with_names("Frob"), overrides={(5, 2): "frab"})
+
+    assert rig.go() == 0
+
+    assert "frab" in (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    assert rig.clip("A01_tiktok").spelling_replacements == 0
+    by_text = {v["text"]: v for v in auto_spelling(rig)["variants"]}
+    assert by_text["frab"]["status"] == "suggest" and by_text["frab"]["seen"] == [
+        {"clip": "A01_tiktok", "at": 1.25}
+    ]
+    assert "names: 0 automatic spelling rules, 1 suggestions" in out_of(capsys)
+    html = (rig.out / "campaign_report.html").read_text(encoding="utf-8")
+    assert "<b>frab</b> (for Frob): 1 time" in html
+
+
+def test_without_names_nothing_is_scanned_or_written(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert rig.go() == 0
+    assert not (rig.folder / "auto_spelling.json").exists()
+    assert "names:" not in out_of(capsys)
+    assert "Automatic spelling rules" not in (rig.out / "campaign_report.html").read_text("utf-8")

@@ -125,13 +125,16 @@ class CampaignConfig(StrictModel):
     captions: CampaignCaptions = Field(default_factory=CampaignCaptions)
     spelling: list[SpellingRule] = Field(default_factory=list)
     names_to_check: list[str] = Field(default_factory=list)
+    # Brief 11.1: the correct spellings; the transcript is scanned for the ways Whisper writes
+    # them, and each accepted variant becomes a spelling rule (`spelling` wins on a conflict)
+    names: list[str] = Field(default_factory=list)
     post: PostConfig
     # Brief 11.1: words this campaign is fine with (taken off the mask, context and flag lists;
     # a show called "High Stakes") and words to mask on top of config/wordlists/mask.txt
     allowed: list[str] = Field(default_factory=list)
     extra_masked: list[str] = Field(default_factory=list)
 
-    @field_validator("names_to_check", "allowed", "extra_masked")
+    @field_validator("names_to_check", "names", "allowed", "extra_masked")
     @classmethod
     def _names(cls, value: list[str]) -> list[str]:
         names = [n.strip() for n in value]
@@ -191,6 +194,38 @@ class Moment(StrictModel):
     @property
     def clip_name(self) -> str:
         return f"{self.id}_{self.platform}"
+
+
+class AutoSeen(StrictModel):
+    clip: str  # <id>_<platform>
+    at: float  # seconds from the start of that clip
+
+
+class AutoVariant(StrictModel):
+    """One way a name is written in the transcript (auto_spelling.json)."""
+
+    text: str  # the span as spoken, lower case
+    name: str
+    count: int
+    ratio: float
+    soundex_match: bool
+    # apply: a rule was made; suggest: listed only; explicit: `spelling` has this `from` already
+    status: Literal["apply", "suggest", "explicit"]
+    rule_to: str | None = None
+    seen: list[AutoSeen] = Field(default_factory=list)  # up to 3, from the rendered moments
+
+
+class AutoSpelling(StrictModel):
+    """campaigns/<slug>/auto_spelling.json: what the names scan found. Local and git-ignored, it
+    holds transcript words."""
+
+    schema_version: int = 1
+    names: list[str]
+    apply_threshold: float
+    suggest_threshold: float
+    source_sha256: str
+    written_at: str
+    variants: list[AutoVariant]
 
 
 class UsedEntry(StrictModel):

@@ -25,6 +25,7 @@ from clipmachine.campaign.models import (
     CampaignClip,
     CampaignClipWatermark,
     Moment,
+    SpellingRule,
     UsedEntry,
     UsedLog,
 )
@@ -70,6 +71,11 @@ class MomentContext:
     units: SentenceIndex
     duration: float  # of the source audio
     source_sha256: str
+    # Brief 11.1: the campaign's rules plus the automatic ones; the variant texts to time; the
+    # names listed for a visual check (names_to_check plus names)
+    spelling_rules: tuple[SpellingRule, ...] = ()
+    variant_texts: tuple[str, ...] = ()
+    names_to_check: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -91,6 +97,7 @@ class MomentResult:
     start_moved: float | None = None
     end_moved: float | None = None
     closer_number: int | None = None  # 1-based position in the campaign's closers
+    variant_times: dict[str, list[float]] | None = None  # name variants heard: clip seconds
 
 
 @dataclass
@@ -316,8 +323,9 @@ def _render_moment(
     words = clip_words(plan.segments, start, end)
     if not words:
         raise MomentFailed("no words in this stretch, so there would be no captions", "captions_on")
-    words, work.spelling = apply_spelling(words, campaign.config.spelling)
-    work.names = find_names(words, campaign.config.names_to_check)
+    variant_times = find_names(words, ctx.variant_texts)  # before the rules change them
+    words, work.spelling = apply_spelling(words, ctx.spelling_rules)
+    work.names = find_names(words, ctx.names_to_check)
     _check_sensitive(ctx, moment, work)
 
     clip = MomentClipObject(name, start, end, moment.hook)
@@ -445,9 +453,7 @@ def _render_moment(
             "source_audio_only": "pass",
             "closer_present": "pass" if last_line == closer else "fail",
             "not_previously_used": "warn" if reused else "pass",
-            "names_listed": "pass"
-            if set(work.names) == set(campaign.config.names_to_check)
-            else "fail",
+            "names_listed": "pass" if set(work.names) == set(ctx.names_to_check) else "fail",
         }
     )
     seconds_taken = round(time.perf_counter() - started, 2)
@@ -475,6 +481,7 @@ def _render_moment(
         start_moved=start_moved,
         end_moved=end_moved,
         closer_number=closers.index(closer) + 1,
+        variant_times=variant_times,
     )
 
 

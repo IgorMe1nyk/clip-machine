@@ -14,7 +14,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from clipmachine.campaign.loader import Campaign
-from clipmachine.campaign.models import CHECKS, CampaignClip, Moment
+from clipmachine.campaign.models import CHECKS, AutoSpelling, CampaignClip, Moment
 from clipmachine.campaign.render import REVIEW_SUFFIX
 from clipmachine.runs import write_text_atomic
 from clipmachine.stages.report import CSS, _esc, _hms
@@ -194,8 +194,47 @@ def _card(
     return "".join(parts)
 
 
+def _auto_spelling(auto: AutoSpelling | None) -> str:
+    """The automatic spelling rules, the suggestions and the variants an explicit rule covers."""
+    if auto is None:
+        return ""
+    lines = [f"<p><b>Names:</b> {_esc(', '.join(auto.names))}</p>"]
+
+    def items(status: str, arrow: bool) -> str:
+        rows = []
+        for v in auto.variants:
+            if v.status != status:
+                continue
+            seen = "; ".join(f"{_esc(s.clip)} {_clock(s.at)}" for s in v.seen)
+            where = f", heard at {seen}" if seen else ""
+            target = f" &rarr; {_esc(v.rule_to or v.name)}" if arrow else f" (for {_esc(v.name)})"
+            rows.append(
+                f"<li><b>{_esc(v.text)}</b>{target}: {v.count} time{'s' if v.count != 1 else ''}, "
+                f"ratio {v.ratio:.2f}{where}</li>"
+            )
+        return f'<ul class="names">{"".join(rows)}</ul>' if rows else '<p class="muted">none</p>'
+
+    lines.append(
+        "<p><b>Automatic spelling rules</b> (from the transcript; to veto one, add "
+        '<code>{from: "&lt;variant&gt;", to: "&lt;variant&gt;"}</code> to '
+        "<code>spelling</code>)</p>" + items("apply", True)
+    )
+    lines.append(
+        f"<p><b>Suggestions, not applied</b> (ratio {auto.suggest_threshold:g}&ndash;"
+        f"{auto.apply_threshold:g} with the same sound; add a spelling rule to apply one)</p>"
+        + items("suggest", False)
+    )
+    if any(v.status == "explicit" for v in auto.variants):
+        lines.append("<p><b>Already in your spelling list</b></p>" + items("explicit", False))
+    return "\n".join(lines)
+
+
 def _header(
-    campaign: Campaign, run_name: str, moments: Sequence[Moment], clips: Mapping[str, CampaignClip]
+    campaign: Campaign,
+    run_name: str,
+    moments: Sequence[Moment],
+    clips: Mapping[str, CampaignClip],
+    auto: AutoSpelling | None = None,
 ) -> str:
     cfg, wm = campaign.config, campaign.watermark
     states = [clips.get(m.clip_name) for m in moments]
@@ -224,6 +263,7 @@ def _header(
     ]
     if campaign.warnings:
         lines.append("<p><b>Warnings</b></p>" + _list(campaign.warnings))
+    lines.append(_auto_spelling(auto))
     return '<header class="summary">\n' + "\n".join(line for line in lines if line) + "\n</header>"
 
 
@@ -235,6 +275,7 @@ def build_html(
     clips: Mapping[str, CampaignClip],
     posts: Mapping[str, str],
     reviews: Mapping[str, str] | None = None,
+    auto: AutoSpelling | None = None,
 ) -> str:
     """The whole page. `clips`, `posts` and `reviews` (the .review.txt texts) are keyed by
     Moment.clip_name; a moment with no clip is listed as not rendered yet."""
@@ -243,7 +284,7 @@ def build_html(
         _card(m, clips.get(m.clip_name), posts.get(m.clip_name), found.get(m.clip_name))
         for m in moments
     ]
-    body = "\n".join([_header(campaign, run_name, moments, clips), *cards])
+    body = "\n".join([_header(campaign, run_name, moments, clips, auto), *cards])
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n<head>\n<meta charset="utf-8">\n'
@@ -254,7 +295,12 @@ def build_html(
 
 
 def write_report(
-    out_dir: Path, campaign: Campaign, moments: Sequence[Moment], run_name: str
+    out_dir: Path,
+    campaign: Campaign,
+    moments: Sequence[Moment],
+    run_name: str,
+    *,
+    auto: AutoSpelling | None = None,
 ) -> Path:
     """Build the page from the jsons and post texts in `out_dir` and write it there. A json that
     is missing or does not validate counts as not rendered yet."""
@@ -283,6 +329,7 @@ def write_report(
             clips=clips,
             posts=posts,
             reviews=reviews,
+            auto=auto,
         ),
     )
     return path

@@ -16,6 +16,7 @@ spelling:                                       # caption word fixes; whole word
   - { from: "zorble", to: "Zorb1e" }
   - { from: "q x v", to: "QXV" }                # three words merge into one caption word
 names_to_check: [Zorb1e, QXV]                   # listed in the report for a visual check
+names: [Zorb1e, QXV]                            # correct spellings; the transcript is scanned for the ways Whisper writes them (auto_spelling.json)
 post:
   prefix: { tiktok: "@example", instagram: "@example", youtube: "@example" }
   closers:

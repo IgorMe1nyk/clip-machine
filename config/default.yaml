@@ -128,3 +128,5 @@ campaign:                    # campaign mode (Brief 11): the rules live in campa
   max_snap_seconds: 1.5      # a moment's start or end moves at most this far to a clean sentence edge
   corner_zone: 0.15          # fraction of width and height; a watermark may not touch the four corners
   auto_end_target_s: 40      # "end: auto" aims for this clip length in seconds
+  name_match_threshold: 0.8  # a transcript span this close to a name (difflib ratio) becomes a spelling rule (Brief 11.1)
+  name_suggest_threshold: 0.7   # from here up to name_match_threshold, with the same Soundex key, it is a suggestion in the report only

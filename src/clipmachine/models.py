@@ -364,6 +364,10 @@ class CampaignModeConfig(StrictModel):
     corner_zone: float = Field(default=0.15, gt=0, lt=0.5)
     # `end: auto` aims for this clip length in seconds
     auto_end_target_s: float = Field(default=40, gt=0)
+    # Brief 11.1: a transcript span this close to a campaign name (difflib ratio) becomes a
+    # spelling rule; between the two thresholds, with the same Soundex key, it is a suggestion
+    name_match_threshold: float = Field(default=0.8, ge=0.5, le=1.0)
+    name_suggest_threshold: float = Field(default=0.7, ge=0.5, le=1.0)
 
 
 class RenderConfig(StrictModel):
