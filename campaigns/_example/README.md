@@ -9,6 +9,8 @@ This folder shows the layout of a campaign folder. Everything in it is invented.
 - `campaign.yaml`: the rules (hook, watermark, spelling fixes, post caption parts).
 - `moments.yaml`: the moments you chose, one entry each.
 - `used.json`: written by the tool; it records which moments were rendered and posted. Do not edit it.
+- `auto_position.json`: written by the tool with `watermark.position: auto`; the chosen spot. Delete it to choose again.
+- `auto_spelling.json`: written by the tool when `names:` is set; the name variants found in the transcript.
 - `assets/`: the watermark PNG named in `campaign.yaml`.
 
 Every folder under `campaigns/` except `_example` is git-ignored and must never be committed.

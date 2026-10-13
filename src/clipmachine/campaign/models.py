@@ -66,7 +66,9 @@ class WatermarkPosition(StrictModel):
 
 class WatermarkConfig(StrictModel):
     file: str
-    position: WatermarkPosition  # where the centre of the visible content goes
+    # where the centre of the visible content goes; "auto" (Brief 11.1) lets the tool choose by
+    # face overlap and background darkness, once per campaign (auto_position.json)
+    position: WatermarkPosition | Literal["auto"]
     scale: float = Field(default=1.0, gt=0, le=10)  # uniform only
     blend: Literal["normal", "screen"] = "normal"
 
@@ -196,6 +198,40 @@ class Moment(StrictModel):
         return f"{self.id}_{self.platform}"
 
 
+class AutoCandidate(StrictModel):
+    x_center: float
+    y_center: float
+    score: float
+    face_cost: float
+    luminance: float
+
+
+class AutoPosition(StrictModel):
+    """campaigns/<slug>/auto_position.json: the watermark position chosen for `position: auto`,
+    reused while the watermark and the frame geometry stay the same (Brief 11.1)."""
+
+    schema_version: int = 1
+    x_center: float
+    y_center: float
+    score: float
+    face_cost: float
+    luminance: float
+    runner_up: AutoCandidate | None = None
+    sampled: list[str]  # the moments scored, as <id>_<platform>
+    candidates: int  # grid positions tried
+    placeable: int  # of those, inside the frame, the safe area, off the corners and captions
+    scored: int  # of those, with room for the hook in every sampled clip
+    watermark_sha256: str
+    scale: float
+    blend: str
+    frame: tuple[int, int]
+    safe: tuple[int, int, int, int]  # top, bottom, left, right
+    corner_zone: float
+    hook_position: str
+    notes: list[str] = Field(default_factory=list)
+    chosen_at: str
+
+
 class AutoSeen(StrictModel):
     clip: str  # <id>_<platform>
     at: float  # seconds from the start of that clip
@@ -265,6 +301,7 @@ CHECKS = (
 class CampaignClipWatermark(StrictModel):
     sha256: str
     blend: str
+    position_mode: Literal["explicit", "auto"] = "explicit"
     x: int  # top-left of the scaled canvas on the output frame
     y: int
     width: int  # the scaled canvas

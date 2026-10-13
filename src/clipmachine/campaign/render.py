@@ -190,6 +190,9 @@ def _clip_json(
         watermark=CampaignClipWatermark(
             sha256=wm.sha256,
             blend=wm.blend,
+            position_mode="auto"
+            if ctx.campaign.config.watermark.position == "auto"
+            else "explicit",
             x=wm.x,
             y=wm.y,
             width=wm.size[0],

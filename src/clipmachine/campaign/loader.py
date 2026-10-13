@@ -12,8 +12,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
+from pydantic import ValidationError
 
-from clipmachine.campaign.models import CampaignConfig, Moment
+from clipmachine.campaign.models import AutoPosition, CampaignConfig, Moment
 from clipmachine.config import ConfigError, _read_yaml, _validate
 from clipmachine.models import AppConfig
 from clipmachine.utils.image import (
@@ -27,6 +28,7 @@ from clipmachine.utils.image import (
 from clipmachine.utils.safezone import Rect, safe_rect
 
 SLUG_RE = re.compile(r"_?[a-z0-9][a-z0-9-]{0,40}")
+AUTO_POSITION_FILE = "auto_position.json"
 
 
 @dataclass(frozen=True)
@@ -75,6 +77,7 @@ class Campaign:
     hook_seconds: float  # intro mode: the campaign's own, else hook.seconds from the app config
     hook_position: str  # top | avoid_faces: the campaign's own, else from the app config
     warnings: tuple[str, ...]
+    auto: AutoPosition | None = None  # the lock, with `position: auto` once it is chosen
 
     @property
     def placed(self) -> Watermark:
@@ -236,14 +239,68 @@ def load_campaign(root: Path, slug: str, app: AppConfig) -> Campaign:
     cfg = _validate(CampaignConfig, _read_yaml(folder / "campaign.yaml"), "campaign.yaml")
     path = _watermark_path(folder, cfg.watermark.file)
     asset, warnings = measure_watermark(cfg, app, path)
-    where = cfg.watermark.position
-    watermark = place_watermark(asset, where.x_center, where.y_center, app)
     font_size = cfg.hook.font_size if cfg.hook.font_size is not None else app.hook.font_size
     seconds = cfg.hook.seconds if cfg.hook.seconds is not None else app.hook.seconds
     position = cfg.hook.position if cfg.hook.position is not None else app.hook.position
+    where = cfg.watermark.position
+    watermark: Watermark | None = None
+    lock: AutoPosition | None = None
+    if where == "auto":
+        lock, stale = _read_lock(folder, asset, app, position)
+        if stale is not None:
+            warnings.append(stale)
+        if lock is not None:
+            problem = placement_problem(asset, lock.x_center, lock.y_center, app)
+            if problem is not None:
+                raise ConfigError(
+                    f"{AUTO_POSITION_FILE}: the locked position {problem}; delete the file to "
+                    "choose again, or set an explicit watermark.position"
+                )
+            watermark = place_watermark(asset, lock.x_center, lock.y_center, app)
+    else:
+        watermark = place_watermark(asset, where.x_center, where.y_center, app)
     return Campaign(
-        slug, folder, cfg, asset, watermark, font_size, seconds, position, tuple(warnings)
+        slug, folder, cfg, asset, watermark, font_size, seconds, position, tuple(warnings), lock
     )
+
+
+def _read_lock(
+    folder: Path, asset: WatermarkAsset, app: AppConfig, hook_position: str
+) -> tuple[AutoPosition | None, str | None]:
+    """The auto_position.json lock when it is there and still fits the watermark and the frame
+    geometry: (lock, None). A stale or unreadable lock gives (None, why), so the position is
+    chosen again; no file gives (None, None)."""
+    path = folder / AUTO_POSITION_FILE
+    if not path.is_file():
+        return None, None
+    try:
+        lock = AutoPosition.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ValidationError) as exc:
+        return None, f"{AUTO_POSITION_FILE} cannot be read ({type(exc).__name__}); choosing again"
+    current = (
+        asset.sha256,
+        asset.scale,
+        asset.blend,
+        (app.video.width, app.video.height),
+        (app.safe.top, app.safe.bottom, app.safe.left, app.safe.right),
+        app.campaign.corner_zone,
+        hook_position,
+    )
+    locked = (
+        lock.watermark_sha256,
+        lock.scale,
+        lock.blend,
+        lock.frame,
+        lock.safe,
+        lock.corner_zone,
+        lock.hook_position,
+    )
+    if current != locked:
+        return None, (
+            f"{AUTO_POSITION_FILE} is stale (the watermark file, its scale or blend, the frame, "
+            "the safe margins, the corner zone or the hook position changed); choosing again"
+        )
+    return lock, None
 
 
 def load_moments(campaign: Campaign) -> list[Moment]:

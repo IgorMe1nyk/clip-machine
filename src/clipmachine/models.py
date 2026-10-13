@@ -368,6 +368,14 @@ class CampaignModeConfig(StrictModel):
     # spelling rule; between the two thresholds, with the same Soundex key, it is a suggestion
     name_match_threshold: float = Field(default=0.8, ge=0.5, le=1.0)
     name_suggest_threshold: float = Field(default=0.7, ge=0.5, le=1.0)
+    # Brief 11.1, `watermark.position: auto`: moments scored, frames read per moment, the two
+    # weights of the score, and the grid steps as fractions of the frame
+    auto_watermark_sample: int = Field(default=5, ge=1, le=50)
+    auto_watermark_frames: int = Field(default=3, ge=1, le=30)
+    auto_watermark_face_weight: float = Field(default=0.6, ge=0, le=1)
+    auto_watermark_light_weight: float = Field(default=0.4, ge=0, le=1)
+    auto_watermark_x_step: float = Field(default=0.05, gt=0, le=0.5)
+    auto_watermark_y_step: float = Field(default=0.02, gt=0, le=0.5)
 
 
 class RenderConfig(StrictModel):

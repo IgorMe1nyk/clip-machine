@@ -13,6 +13,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from clipmachine import pipeline
+from clipmachine.campaign.autoposition import choose_position, describe
 from clipmachine.campaign.loader import load_campaign, load_moments, select_moments
 from clipmachine.campaign.names import AUTO_SPELLING_FILE, auto_rules, find_variants, record
 from clipmachine.campaign.render import MomentContext, MomentResult, render_moment
@@ -140,6 +141,14 @@ def run_campaign(
     moments = select_moments(all_moments, only)
     for warning in campaign.warnings:
         print(f"warning: {warning}")
+    if campaign.config.watermark.position == "auto":
+        if campaign.auto is not None:
+            print(f"{describe(campaign.auto)} (locked in auto_position.json)")
+        else:
+            print(
+                "watermark position: auto; choosing from the first "
+                f"{app.campaign.auto_watermark_sample} moments being rendered"
+            )
     pipeline.check_ffmpeg()
     started = time.perf_counter()
 
@@ -197,6 +206,10 @@ def run_campaign(
         )
         heard: dict[str, list[tuple[str, float]]] = {v.text: [] for v in variants}
         used = load_used(campaign.folder)
+        if campaign.watermark is None:  # position: auto, not chosen yet
+            campaign, lock = choose_position(ctx, moments, used, force_reuse=force_reuse)
+            ctx = dataclasses.replace(ctx, campaign=campaign)
+            print(describe(lock))
         closers = len(campaign.config.post.closers)
         wanted = {part.strip() for part in only.split(",")} if only else set()
         counts = {"rendered": 0, "failed": 0, "refused": 0}

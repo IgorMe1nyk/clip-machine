@@ -80,10 +80,41 @@ def face_rects(
     sample before it (a face with no such sample is skipped). Faces that do not reach the output
     frame are dropped. `source_w` and `source_h` are the upright source size.
     """
+    return [
+        rect
+        for _, rect in face_rects_timed(
+            faces,
+            samples,
+            source_w=source_w,
+            source_h=source_h,
+            crop_w=crop_w,
+            crop_h=crop_h,
+            crop_y=crop_y,
+            out_w=out_w,
+            out_h=out_h,
+            until=until,
+        )
+    ]
+
+
+def face_rects_timed(
+    faces: Sequence[TrackFace],
+    samples: Sequence[TrackSample],
+    *,
+    source_w: float,
+    source_h: float,
+    crop_w: float,
+    crop_h: float,
+    crop_y: float,
+    out_w: float,
+    out_h: float,
+    until: float,
+) -> list[tuple[float, Rect]]:
+    """`face_rects` with each rectangle's sample time, for a cost over time (Brief 11.1)."""
     ordered = sorted(samples, key=lambda sample: sample.t)
     times = [sample.t for sample in ordered]
     frame = Rect(0.0, 0.0, float(out_w), float(out_h))
-    found: list[Rect] = []
+    found: list[tuple[float, Rect]] = []
     for face in faces:
         if face.t > until:
             continue
@@ -103,7 +134,7 @@ def face_rects(
         pad_y = FACE_PAD_FRAC * (y2 - y1)
         rect = Rect(x1 - pad_x, y1 - pad_y, x2 + pad_x, y2 + pad_y)
         if rect.intersects(frame):
-            found.append(rect)
+            found.append((face.t, rect))
     return found
 
 

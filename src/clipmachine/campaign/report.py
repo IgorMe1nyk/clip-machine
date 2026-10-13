@@ -229,6 +229,31 @@ def _auto_spelling(auto: AutoSpelling | None) -> str:
     return "\n".join(lines)
 
 
+def _auto_position(campaign: Campaign) -> str:
+    """The chosen watermark position with its score, and the runner-up."""
+    lock = campaign.auto
+    if lock is None:
+        return "<p><b>Watermark position:</b> auto, not chosen yet (no moment rendered)</p>"
+    text = (
+        f"<p><b>Watermark position:</b> auto &rarr; x {lock.x_center:.2f}, y {lock.y_center:.2f} "
+        f"(face overlap {lock.face_cost:.2f}, background luminance {lock.luminance:.0f} of 255, "
+        f"score {lock.score:.3f})"
+    )
+    if lock.runner_up is not None:
+        r = lock.runner_up
+        text += (
+            f"; runner-up x {r.x_center:.2f}, y {r.y_center:.2f} (face {r.face_cost:.2f}, "
+            f"luminance {r.luminance:.0f}, score {r.score:.3f})"
+        )
+    text += (
+        f". Scored on {_esc(', '.join(lock.sampled))}: {lock.scored} of {lock.candidates} grid "
+        f"positions had room. Locked in auto_position.json; delete it to choose again.</p>"
+    )
+    if lock.notes:
+        text += _list(lock.notes)
+    return text
+
+
 def _header(
     campaign: Campaign,
     run_name: str,
@@ -266,6 +291,8 @@ def _header(
         f"background {_esc(background)}, "
         f"blend {_esc(asset.blend)}; {where}</p>",
     ]
+    if cfg.watermark.position == "auto":
+        lines.append(_auto_position(campaign))
     if campaign.warnings:
         lines.append("<p><b>Warnings</b></p>" + _list(campaign.warnings))
     lines.append(_auto_spelling(auto))
