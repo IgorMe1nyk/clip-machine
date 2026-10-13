@@ -6,9 +6,15 @@ import pytest
 from clipmachine.models import ZoomConfig
 from clipmachine.utils.crop import CropBox
 from clipmachine.utils.zoom import (
+    Ramp,
     SentenceStart,
     ZoomSpan,
+    ease_in_out,
+    plan_ramps,
     select_zooms,
+    smooth_box,
+    smooth_path,
+    smooth_size,
     upscale_factor,
     zoom_box,
     zoomed_path,
@@ -367,3 +373,187 @@ def test_the_first_entry_is_at_zero_even_if_the_path_starts_later() -> None:
 def test_an_empty_path_is_refused() -> None:
     with pytest.raises(ValueError, match="path"):
         path_with([], [])
+
+
+# --- smooth zooms (Brief R2.1) ----------------------------------------------------------------
+
+B810 = CropBox(810, 1440, 0, 0)
+B606 = CropBox(606, 1080, 656, 0)
+
+
+def test_ease_in_out_values_and_symmetry() -> None:
+    assert ease_in_out(0.0) == 0.0
+    assert ease_in_out(0.5) == pytest.approx(0.5)
+    assert ease_in_out(1.0) == pytest.approx(1.0)
+    for u in (0.1, 0.25, 0.4):
+        assert ease_in_out(u) + ease_in_out(1 - u) == pytest.approx(1.0)
+    assert ease_in_out(-3) == 0.0 and ease_in_out(7) == pytest.approx(1.0)
+
+
+def test_smooth_size_at_one_is_the_base_and_1080p_gives_the_known_numbers() -> None:
+    assert smooth_size(B810, 1.0) == (810, 1440)
+    assert smooth_size(B606, 1.0) == (606, 1080)
+    assert smooth_size(B606, 1.15) == (528, 940)
+    assert upscale_factor(B606, 1.15, 1080, 1920, "smooth") == pytest.approx(1080 / 528)
+    assert upscale_factor(B606, 1.15, 1080, 1920, "smooth") <= 2.1
+
+
+def test_smooth_box_at_one_returns_the_window() -> None:
+    window = CropBox(810, 1440, 300, 0)
+    assert smooth_box(window, 1, 0.3, 2560, 1440) is window
+
+
+@pytest.mark.parametrize("base", [B810, B606])
+@pytest.mark.parametrize("s", [1.01, 1.05, 1.1, 1.15, 1.5, 2.0])
+def test_smooth_box_keeps_the_aspect_within_half_a_percent_even_and_inside(
+    base: CropBox, s: float
+) -> None:
+    frame_w, frame_h = (2560, 1440) if base is B810 else (1920, 1080)
+    for face_cy in (0.0, 0.2, 0.5, 0.9, 1.0):
+        box = smooth_box(base, s, face_cy, frame_w, frame_h)
+        assert abs(box.w / box.h - base.w / base.h) / (base.w / base.h) < 0.005
+        assert box.w % 2 == box.h % 2 == box.x % 2 == box.y % 2 == 0
+        assert box.x >= 0 and box.x + box.w <= frame_w
+        assert box.y >= 0 and box.y + box.h <= frame_h
+
+
+def test_smooth_box_is_clamped_at_every_edge() -> None:
+    top = smooth_box(B810, 1.5, 0.0, 2560, 1440)
+    bottom = smooth_box(B810, 1.5, 1.0, 2560, 1440)
+    assert top.y == 0 and bottom.y + bottom.h == 1440
+    left = smooth_box(CropBox(810, 1440, 0, 0), 1.5, 0.5, 2560, 1440)
+    right = smooth_box(CropBox(810, 1440, 1750, 0), 1.5, 0.5, 2560, 1440)
+    assert left.x >= 0 and right.x + right.w <= 2560
+
+
+def test_smooth_box_is_centred_on_the_window_and_the_face() -> None:
+    box = smooth_box(CropBox(810, 1440, 400, 0), 2.0, 0.5, 2560, 1440)
+    assert (box.w, box.h) == (404, 720)
+    assert box.x == 604  # 400 + 203, to the even pixel
+    assert box.y == 360
+
+
+# plan_ramps
+
+SPAN = ZoomSpan(4.0, 10.0, 0.5)
+
+
+def test_a_plain_hold_ramps_in_and_out_in_full() -> None:
+    ramps, notes = plan_ramps([SPAN], [30.0], 0.4, 30.0)
+    assert ramps == [Ramp(4.0, 4.4, "in"), Ramp(9.6, 10.0, "out")]
+    assert notes == []
+
+
+def test_no_ramp_out_when_the_hold_ends_on_a_boundary() -> None:
+    ramps, notes = plan_ramps([SPAN], [10.0, 30.0], 0.4, 30.0)
+    assert ramps == [Ramp(4.0, 4.4, "in")]
+    assert notes == []
+
+
+def test_no_ramp_out_at_the_clip_end() -> None:
+    ramps, notes = plan_ramps([ZoomSpan(24.0, 30.0, 0.5)], [30.0], 0.4, 30.0)
+    assert ramps == [Ramp(24.0, 24.4, "in")]
+    assert notes == []
+
+
+def test_a_ramp_in_is_shortened_by_a_boundary_closer_than_ramp_s() -> None:
+    ramps, notes = plan_ramps([SPAN], [4.25, 30.0], 0.4, 30.0)
+    assert ramps[0] == Ramp(4.0, 4.25, "in")
+    assert notes == ["zoom_ramp_shortened"]
+
+
+def test_a_ramp_never_crosses_a_cut_in_either_direction() -> None:
+    cuts = [4.25, 9.8, 30.0]
+    spans = [ZoomSpan(4.0, 9.8, 0.5)]
+    for ramp in plan_ramps(spans, cuts, 0.4, 30.0)[0]:
+        assert not any(ramp.start + 1e-9 < c < ramp.end - 1e-9 for c in cuts)
+
+
+def test_short_holds_split_between_the_two_ramps_with_a_note() -> None:
+    ramps, notes = plan_ramps([ZoomSpan(4.0, 4.5, 0.5)], [30.0], 0.4, 30.0)
+    assert ramps == [Ramp(4.0, 4.25, "in"), Ramp(4.25, 4.5, "out")]
+    assert notes == ["zoom_ramp_shortened"]
+
+
+def test_ramp_s_zero_gives_no_ramps() -> None:
+    assert plan_ramps([SPAN], [30.0], 0.0, 30.0) == ([], [])
+
+
+# smooth_path
+
+FPS = 10.0
+FW, FH = 2560, 1440
+
+
+def smooth(
+    path: list[tuple[float, int]],
+    spans: list[ZoomSpan],
+    boundaries: list[float] | None = None,
+    duration: float = 20.0,
+    ramp_s: float = 0.4,
+) -> list[tuple[float, CropBox]]:
+    ramps, _ = plan_ramps(spans, [*(boundaries or []), duration], ramp_s, duration)
+    return smooth_path(path, B810, spans, ramps, 1.15, FW, FH, FPS, duration)
+
+
+def test_smooth_path_without_spans_is_the_base_window_with_the_paths_x() -> None:
+    boxes = smooth([(0.0, 0), (5.0, 300)], [])
+    assert boxes == [(0.0, CropBox(810, 1440, 0, 0)), (5.0, CropBox(810, 1440, 300, 0))]
+
+
+def test_the_line_count_in_a_ramp_is_one_per_frame_after_the_start() -> None:
+    boxes = smooth([(0.0, 0)], [ZoomSpan(4.0, 10.0, 0.5)])
+    times = [t for t, _ in boxes]
+    ramp_in = [t for t in times if 4.0 < t <= 4.4 + 1e-9]
+    ramp_out = [t for t in times if 9.6 < t <= 10.0 + 1e-9]
+    assert ramp_in == pytest.approx([4.1, 4.2, 4.3, 4.4])
+    assert ramp_out == pytest.approx([9.7, 9.8, 9.9, 10.0])
+    assert len(boxes) == 1 + 4 + 4  # the base, 4 frames in, 4 frames out
+
+
+def test_an_off_grid_ramp_end_adds_one_entry() -> None:
+    boxes = smooth([(0.0, 0)], [ZoomSpan(4.05, 10.0, 0.5)])
+    times = [t for t, _ in boxes if 4.05 < t < 4.5]
+    assert times == pytest.approx([4.1, 4.2, 4.3, 4.4, 4.45])
+
+
+def test_a_span_at_zero_starts_at_the_base_window_and_eases_in() -> None:
+    boxes = smooth([(0.0, 0)], [ZoomSpan(0.0, 6.0, 0.5)])
+    assert boxes[0] == (0.0, B810)
+    assert boxes[1][0] == pytest.approx(0.1) and boxes[1][1].h < 1440
+    assert boxes[4][1] == smooth_box(B810, 1.15, 0.5, FW, FH)  # t = 0.4: fully in
+
+
+def test_boxes_shrink_through_a_ramp_in_and_grow_through_a_ramp_out() -> None:
+    boxes = smooth([(0.0, 0)], [ZoomSpan(4.0, 10.0, 0.5)], ramp_s=1.0)
+    ins = [1440] + [b.h for t, b in boxes if 4.0 < t <= 5.0 + 1e-9]
+    outs = [1252] + [b.h for t, b in boxes if 9.0 < t <= 10.0 + 1e-9]
+    assert ins == sorted(ins, reverse=True) and ins[0] == 1440 and ins[-1] == 1252
+    assert outs == sorted(outs) and outs[0] == 1252 and outs[-1] == 1440
+    assert len(set(ins)) > 6
+
+
+def test_an_x_step_inside_a_hold_recentres_the_zoomed_box() -> None:
+    boxes = smooth([(0.0, 0), (7.0, 400)], [ZoomSpan(4.0, 10.0, 0.5)])
+    before = [b for t, b in boxes if t < 7.0][-1]
+    step = [b for t, b in boxes if t == pytest.approx(7.0)]
+    assert len(step) == 1
+    assert step[0].x == before.x + 400 and step[0].h == before.h
+
+
+def test_a_hold_ending_on_a_boundary_switches_in_one_entry_with_the_x_jump() -> None:
+    boxes = smooth([(0.0, 0), (10.0, 400)], [ZoomSpan(4.0, 10.0, 0.5)], boundaries=[10.0])
+    at_cut = [(t, b) for t, b in boxes if t == pytest.approx(10.0)]
+    assert len(at_cut) == 1
+    assert at_cut[0][1] == CropBox(810, 1440, 400, 0)
+    assert not any(9.6 < t < 10.0 for t, _ in boxes)
+
+
+def test_a_clip_ending_zoomed_makes_no_entry_at_the_end() -> None:
+    boxes = smooth([(0.0, 0)], [ZoomSpan(14.0, 20.0, 0.5)])
+    assert boxes[-1][0] < 20.0 and boxes[-1][1].h == 1252
+
+
+def test_smooth_path_rejects_an_empty_path() -> None:
+    with pytest.raises(ValueError):
+        smooth_path([], B810, [], [], 1.15, FW, FH, FPS, 20.0)

@@ -123,6 +123,8 @@ class CampaignZoom(StrictModel):
     config. The bounds are those of ZoomConfig."""
 
     enabled: bool | None = None
+    style: Literal["smooth", "punch"] | None = None
+    ramp_s: float | None = Field(default=None, ge=0, le=2)
     scale: float | None = Field(default=None, gt=1, le=2)
     loud_pct: float | None = Field(default=None, ge=0, le=1)
     min_gap_s: float | None = Field(default=None, gt=0)
@@ -357,6 +359,7 @@ class CampaignClip(StrictModel):
     # Brief R2: punch-in zooms; counts and times only
     zoom_count: int = 0
     zoom_spans: list[tuple[float, float]] = Field(default_factory=list)
+    zoom_ramps: list[tuple[float, float]] = Field(default_factory=list)  # Brief R2.1
     checks: dict[str, Literal["pass", "warn", "fail"]] = Field(default_factory=dict)
     closer: str | None = None
     hook_mode: str

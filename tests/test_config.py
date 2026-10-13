@@ -1060,6 +1060,10 @@ def test_config_without_a_zoom_block_loads_with_zoom_off(project: Path, tmp_path
         ({"max_hold_s": 3}, "max_hold_s must be at least min_gap_s"),  # min_gap_s is 4
         ({"max_upscale": 0.5}, "zoom.max_upscale"),
         ({"scal": 1.1}, "zoom.scal"),  # typo: unknown key
+        ({"style": "fast"}, "zoom.style"),
+        ({"ramp_s": -0.1}, "zoom.ramp_s"),
+        ({"ramp_s": 2.5}, "zoom.ramp_s"),  # above the 2 s bound; also too long for min_gap_s 4
+        ({"ramp_s": 1.0, "min_gap_s": 1.5}, "two ramps must fit"),
     ],
 )
 def test_invalid_zoom_settings_are_rejected(
@@ -1087,3 +1091,37 @@ def test_rendered_settings_from_before_r2_load_with_zoom_off() -> None:
     settings = RenderedSettings.model_validate(old_settings)
     assert settings.zoom_enabled is False
     assert settings.zoom_scale == 0.0 and settings.zoom_max_upscale == 0.0
+
+
+# --- Brief R2.1: smooth zooms -------------------------------------------------------------------
+
+
+def test_zoom_style_defaults() -> None:
+    zoom = ZoomConfig()
+    assert (zoom.style, zoom.ramp_s, zoom.scale, zoom.max_upscale) == ("smooth", 0.4, 1.15, 2.1)
+    assert ZoomConfig(style="punch").style == "punch"
+
+
+def test_two_ramps_may_fill_the_shortest_hold_exactly() -> None:
+    assert ZoomConfig(ramp_s=2.0, min_gap_s=4.0).ramp_s == 2.0
+
+
+def test_rendered_settings_from_r2_read_as_no_style() -> None:
+    settings = RenderedSettings.model_validate(
+        {
+            "width": 1080,
+            "height": 1920,
+            "crf": 20,
+            "preset": "medium",
+            "audio_bitrate": "160k",
+            "font": "Montserrat",
+            "font_file": "Montserrat-Bold.ttf",
+            "font_size": 80,
+            "margin_v": 350,
+            "words_per_line": 3,
+            "highlight_color": "#FFD400",
+            "zoom_enabled": True,
+            "zoom_scale": 1.12,
+        }
+    )
+    assert settings.zoom_style == "" and settings.zoom_ramp_s == 0.0

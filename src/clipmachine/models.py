@@ -224,18 +224,23 @@ class ZoomConfig(StrictModel):
     zoom off."""
 
     enabled: bool = False
-    scale: float = Field(default=1.12, gt=1, le=2)  # the crop window is this much tighter
+    # "smooth" eases to the zoomed window over `ramp_s` (Brief R2.1); "punch" jumps (Brief R2)
+    style: Literal["smooth", "punch"] = "smooth"
+    ramp_s: float = Field(default=0.4, ge=0, le=2)  # length of one ease in or out
+    scale: float = Field(default=1.15, gt=1, le=2)  # the crop window is this much tighter
     loud_pct: float = Field(default=0.30, ge=0, le=1)  # share of the loudest sentences
     min_gap_s: float = Field(default=4.0, gt=0)  # least time between two zoom changes
     max_hold_s: float = Field(default=6.0, gt=0)  # longest a zoom-in lasts
     # A zoom that would upscale the source more than this is skipped. A key, not a constant:
     # with a higher scale the guard has to move too, or every zoom of a 1080p source is skipped.
-    max_upscale: float = Field(default=2.0, ge=1)
+    max_upscale: float = Field(default=2.1, ge=1)
 
     @model_validator(mode="after")
     def _hold_covers_the_gap(self) -> "ZoomConfig":
         if self.max_hold_s < self.min_gap_s:
             raise ValueError("max_hold_s must be at least min_gap_s")
+        if 2 * self.ramp_s > self.min_gap_s:
+            raise ValueError("two ramps must fit in the shortest hold: 2 * ramp_s <= min_gap_s")
         return self
 
 
@@ -933,6 +938,9 @@ class RenderedSettings(StrictModel):
     zoom_min_gap_s: float = 0.0
     zoom_max_hold_s: float = 0.0
     zoom_max_upscale: float = 0.0
+    # added in Brief R2.1; an R2 file (a punch) reads as "" and is stale when zoom is on
+    zoom_style: str = ""
+    zoom_ramp_s: float = 0.0
 
 
 class RenderedOutput(StrictModel):
@@ -979,6 +987,8 @@ class RenderedClip(StrictModel):
     # added in Brief R2: punch-ins as (in, out) seconds from the clip start; none = zoom off
     zoom_count: int = 0
     zoom_spans: list[tuple[float, float]] = []
+    # added in Brief R2.1: the ease windows (start, end) actually used; none for a punch
+    zoom_ramps: list[tuple[float, float]] = []
 
 
 class TrackSource(StrictModel):

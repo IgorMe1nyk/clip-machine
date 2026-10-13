@@ -9,6 +9,7 @@ import math
 from bisect import bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from clipmachine.models import ZoomConfig
 from clipmachine.utils.crop import TIME_DIGITS, CropBox, even_round
@@ -41,11 +42,13 @@ def _zoomed_size(box: CropBox, scale: float) -> tuple[int, int]:
     return max(2, even_round(box.w / scale)), max(2, even_round(box.h / scale))
 
 
-def upscale_factor(box: CropBox, scale: float, out_w: int, out_h: int) -> float:
+def upscale_factor(
+    box: CropBox, scale: float, out_w: int, out_h: int, style: str = "punch"
+) -> float:
     """How much larger than the source's pixels the zoomed window is drawn on the output: the
     bigger of the two axes' ratios. The same for every zoom of a clip, because the window size
     does not depend on where the zoom is."""
-    zoomed_w, zoomed_h = _zoomed_size(box, scale)
+    zoomed_w, zoomed_h = _zoomed_size(box, scale) if style == "punch" else smooth_size(box, scale)
     return max(out_w / zoomed_w, out_h / zoomed_h)
 
 
@@ -180,6 +183,150 @@ def zoomed_path(
             if span.start - EPS <= t < span.end - EPS:
                 window = zoom_box(window, scale, span.face_cy, frame_w, frame_h)
                 break
+        if not boxes or window != boxes[-1][1]:
+            boxes.append((t, window))
+    return boxes
+
+
+# ---------------------------------------------------------------------------------------------
+# Smooth zooms (Brief R2.1): the same spans, but the window eases to the zoomed size and back.
+
+
+def ease_in_out(u: float) -> float:
+    """Cosine ease-in-out: 0 at u = 0, 0.5 at u = 0.5, 1 at u = 1; u is clamped to 0..1."""
+    u = min(max(u, 0.0), 1.0)
+    return (1 - math.cos(math.pi * u)) / 2
+
+
+def smooth_size(base: CropBox, s: float) -> tuple[int, int]:
+    """The (w, h) of the base window zoomed by the continuous factor `s` (1 = the base).
+
+    The height is the base's divided by `s`; the width follows from the height with the base
+    window's own aspect, so at s = 1 the size equals the base exactly (no command at the first
+    frame of a ramp) and the aspect stays within rounding of the base's. "Within 0.5%" in the
+    brief is measured against the base window's aspect, which is the closest even 9:16 the
+    source allows. Both even, at least 2."""
+    h = max(2, even_round(base.h / s))
+    w = max(2, even_round(h * base.w / base.h))
+    return w, h
+
+
+def smooth_box(window: CropBox, s: float, face_cy: float, frame_w: int, frame_h: int) -> CropBox:
+    """`window` zoomed by `s` (1 = unchanged): horizontally centred on `window`, vertically on
+    the face (`face_cy`, 0..1 of the frame height). Even pixels, clamped inside the frame."""
+    if s == 1:
+        return window
+    w, h = smooth_size(window, s)
+    x = even_round(window.x + (window.w - w) / 2)
+    y = even_round(face_cy * frame_h - h / 2)
+    return CropBox(
+        w=w,
+        h=h,
+        x=min(max(x, 0), (frame_w - w) // 2 * 2),
+        y=min(max(y, 0), (frame_h - h) // 2 * 2),
+    )
+
+
+@dataclass(frozen=True)
+class Ramp:
+    """One ease between the base window and the zoomed one, from `start` to `end` seconds."""
+
+    start: float
+    end: float
+    direction: Literal["in", "out"]
+
+
+def plan_ramps(
+    spans: Sequence[ZoomSpan],
+    boundaries: Sequence[float],
+    ramp_s: float,
+    duration: float,
+) -> tuple[list[Ramp], list[str]]:
+    """The eases of the zooms, and reason codes.
+
+    A zoom eases in from the base window over `ramp_s` starting at its start, holds, and eases
+    back out over `ramp_s` ending at its end. At camera cuts there is no ramp: a hold that ends
+    on a cut (or at the clip's end) switches instantly, the cut hides it. A ramp never crosses a
+    cut (`boundaries`, which include the clip's end): one that would is shortened, to the next
+    boundary for a ramp-in, and so that the two ramps fit in a hold that is shorter than two
+    ramps. A ramp of zero length is dropped; `ramp_s == 0` gives none. The note
+    `zoom_ramp_shortened` is added once when a ramp is shorter than `ramp_s` for such a reason."""
+    ramps: list[Ramp] = []
+    shortened = False
+    if ramp_s <= 0:
+        return ramps, []
+    for span in spans:
+        ahead = [b for b in boundaries if b > span.start + EPS]
+        d_in = min(ramp_s, min(ahead, default=duration) - span.start, (span.end - span.start) / 2)
+        on_cut = span.end >= duration - EPS or any(abs(span.end - b) < EPS for b in boundaries)
+        d_out = 0.0 if on_cut else min(ramp_s, span.end - span.start - d_in)
+        if d_in > EPS:
+            ramps.append(Ramp(span.start, span.start + d_in, "in"))
+            shortened |= d_in < ramp_s - EPS
+        if d_out > EPS:
+            ramps.append(Ramp(span.end - d_out, span.end, "out"))
+            shortened |= d_out < ramp_s - EPS
+    return ramps, ["zoom_ramp_shortened"] if shortened else []
+
+
+def smooth_path(
+    path: Sequence[tuple[float, int]],
+    base: CropBox,
+    spans: Sequence[ZoomSpan],
+    ramps: Sequence[Ramp],
+    scale: float,
+    frame_w: int,
+    frame_h: int,
+    fps: float,
+    duration: float,
+) -> list[tuple[float, CropBox]]:
+    """The crop window at every change, as (time, box), with eased zooms.
+
+    Like `zoomed_path`, but the zoom factor `s(t)` is 1 outside the spans, `scale` inside a
+    span, and between the two inside a ramp: `1 + (scale - 1) * ease_in_out(u)`, u running 0..1
+    over a ramp-in and 1..0 over a ramp-out. During a ramp there is one entry per output frame
+    (`n / fps`); elsewhere the box changes where the path moves and where a span starts or ends.
+    A span starting at 0 therefore starts at the base window and eases in. The crop x comes from
+    `path` (a step function), so a step inside a hold re-centres the zoomed box. An entry is made
+    only where the box differs from the one before; the first is at 0.0. A span that ends at or
+    after `duration` makes no entry for its end.
+
+    Raises ValueError for an empty path."""
+    if not path:
+        raise ValueError("a zoomed path needs at least one path entry")
+    path_times = [t for t, _ in path]
+    events = {0.0, *(round(t, TIME_DIGITS) for t in path_times)}
+    for span in spans:
+        events.add(round(span.start, TIME_DIGITS))
+        if span.end < duration - EPS:
+            events.add(round(span.end, TIME_DIGITS))
+    for ramp in ramps:
+        events.add(round(ramp.start, TIME_DIGITS))
+        events.add(round(ramp.end, TIME_DIGITS))
+        first, last = math.ceil(ramp.start * fps - EPS), math.floor(ramp.end * fps + EPS)
+        events.update(round(n / fps, TIME_DIGITS) for n in range(first, last + 1))
+
+    boxes: list[tuple[float, CropBox]] = []
+    for t in sorted(events):
+        if t >= duration - EPS and t > 0:
+            continue
+        x = path[max(bisect_right(path_times, t + EPS) - 1, 0)][1]
+        window = CropBox(base.w, base.h, x, base.y)
+        s = 1.0
+        face_cy = 0.5
+        for ramp in ramps:
+            if ramp.start - EPS <= t <= ramp.end + EPS:
+                u = (t - ramp.start) / (ramp.end - ramp.start)
+                s = 1 + (scale - 1) * ease_in_out(u if ramp.direction == "in" else 1 - u)
+                break
+        else:
+            for span in spans:
+                if span.start - EPS <= t < span.end - EPS:
+                    s = scale
+                    break
+        if s != 1.0:
+            face_cy = next(sp.face_cy for sp in spans if sp.start - EPS <= t <= sp.end + EPS)
+        window = smooth_box(window, s, face_cy, frame_w, frame_h)
         if not boxes or window != boxes[-1][1]:
             boxes.append((t, window))
     return boxes
