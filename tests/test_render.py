@@ -1657,9 +1657,10 @@ def zoom_rig(
     big: bool = True,
     zoom: ZoomConfig | None = None,
     audio_file: bool = False,
+    style: str = "legacy",
 ) -> tuple[RunContext, track_fakes.TrackFakes]:
     """The speaker rig with the zoom switched on (the project fixture ships it off)."""
-    ctx, fakes = speaker_ctx(project, monkeypatch, scenario)
+    ctx, fakes = speaker_ctx(project, monkeypatch, scenario, style=style)
     if big:
         write_inputs(ctx.run_dir, **BIG)
     ctx.config.app.video.zoom = zoom if zoom is not None else ZoomConfig(enabled=True)
@@ -1930,3 +1931,24 @@ def test_resume_keeps_output_rendered_before_brief_r2_while_zoom_is_off(
     ctx.config.app.video.zoom = ZoomConfig(enabled=True)
     render.run(resume(ctx))
     assert fake.ids == ["c01", "c02", "c01", "c02"]  # zoom on makes them stale
+
+
+def test_the_hook_looks_for_faces_in_the_zoomed_windows(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = zoom_rig(project, monkeypatch, style="box_karaoke")
+    ctx.config.app.hook = ctx.config.app.hook.model_copy(update={"position": "avoid_faces"})
+    seen: list[object] = []
+    real = render.face_rects
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("boxes"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(render, "face_rects", spy)
+
+    render.run(ctx)
+
+    first = seen[0]
+    assert isinstance(first, tuple) and len(first) >= 2  # the zoom-in at 0 s and the out at 6 s
+    assert first[0][0] == 0.0 and first[0][1].w == 724  # the window the hook starts under

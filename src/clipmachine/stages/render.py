@@ -601,6 +601,7 @@ def _face_boxes(plan: Plan, chosen: SpeakerCrop | None, until: float) -> list[Re
         out_w=settings.width,
         out_h=settings.height,
         until=until,
+        boxes=chosen.boxes or None,
     )
 
 
