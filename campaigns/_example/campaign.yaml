@@ -25,3 +25,11 @@ post:
     - "the whole example conversation is on the channel @example"
     - "more from the example show, link on the channel @example"
   hashtags: []
+# video:                # optional; each key left out falls back to video.zoom in config/default.yaml
+#   zoom:
+#     enabled: true     # optional; punch-in zooms on some sentence starts (speaker crop only)
+#     scale: 1.12       # optional; the crop window is this much tighter, above 1 and up to 2
+#     loud_pct: 0.30    # optional; share of the loudest sentences that may zoom, 0 to 1
+#     min_gap_s: 4.0    # optional; least time between two zoom changes
+#     max_hold_s: 6.0   # optional; longest a zoom-in lasts, at least min_gap_s
+#     max_upscale: 2.0  # optional; a zoom that enlarges the source more than this is skipped
