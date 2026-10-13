@@ -1,0 +1,41 @@
+# Words that only get a warning in the campaign report when they appear in a hook or a post
+# caption. Never masked: "he killed that shot" is normal sports talk.
+# One entry per line; # starts a comment; single words also match their inflections.
+
+# Violence
+kill
+killed
+killer
+murder
+shoot
+shot
+gun
+guns
+weapon
+stab
+dead body
+bomb
+terrorist
+
+# Gambling
+gambling
+casino
+stake
+betting
+bet
+slots
+roulette
+
+# Alcohol / weed
+weed
+drunk
+high
+alcohol
+vodka
+blunt
+
+# Crime
+scam
+fraud
+stolen
+robbery

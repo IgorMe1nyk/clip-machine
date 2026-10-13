@@ -1,0 +1,18 @@
+# Normal language that is never masked or flagged, even when an inflection rule from the other
+# lists would catch it. One plain word per line; # starts a comment.
+death
+dead
+died
+die
+dies
+dying
+jail
+prison
+arrested
+fake
+faked
+hell
+damn
+crap
+sucks
+ass
