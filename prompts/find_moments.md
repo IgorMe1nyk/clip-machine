@@ -6,7 +6,7 @@ Answer only with the JSON object that the output format asks for.
 
 USER:
 Client rules: {rules_summary}
-Clip length: {min_seconds}-{max_seconds} seconds.
+{scout_block}Clip length: {min_seconds}-{max_seconds} seconds.
 This block covers {block_start}-{block_end} seconds of a longer recording.
 Return up to {k} candidate moments from this block only.
 

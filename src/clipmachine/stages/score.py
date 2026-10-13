@@ -423,12 +423,12 @@ def select(drafts: list[Draft], min_score: int, keep_top: int) -> Selection:
 
 
 def run(ctx: RunContext) -> None:
-    run_dir = ctx.run_dir.resolve()
-    _remove_outputs(run_dir, strict=True)  # a rerun replaces the output cleanly
+    out_dir = ctx.stage_dir.resolve()
+    _remove_outputs(out_dir, strict=True)  # a rerun replaces the output cleanly
     try:
-        _score(ctx, run_dir)
+        _score(ctx, ctx.run_dir.resolve(), out_dir)
     except BaseException:
-        _remove_outputs(run_dir, strict=False)
+        _remove_outputs(out_dir, strict=False)
         raise
 
 
@@ -450,12 +450,12 @@ def _words(text: str) -> int:
     return len(text.split())
 
 
-def _score(ctx: RunContext, run_dir: Path) -> None:
+def _score(ctx: RunContext, run_dir: Path, out_dir: Path) -> None:
     app = ctx.config.app
     cfg = app.score
     root = ctx.project_root if ctx.project_root is not None else REPO_ROOT
     transcript = _load_transcript(run_dir)
-    found = _load_candidates(run_dir)
+    found = _load_candidates(out_dir)
     if found.snap is None:
         raise RunError(
             f"{CANDIDATES_JSON} was made before Brief 10 (it records no snap settings): "
@@ -487,6 +487,7 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
     for number, group in enumerate(groups, start=1):
         values = {
             "rules_summary": summary_rules,
+            "scout_block": ctx.scout_block,
             "min_seconds": f"{min_length:g}",
             "max_seconds": f"{max_length:g}",
             "count": str(len(group)),
@@ -577,6 +578,8 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
                 hook_line=_one_line(clip.hook_line)[:MAX_TEXT_CHARS],
                 suggested_title=_one_line(clip.suggested_title)[:MAX_TEXT_CHARS],
                 reason=_one_line(clip.reason)[:MAX_TEXT_CHARS],
+                topic=None if clip.topic is None else _one_line(clip.topic)[:MAX_TEXT_CHARS],
+                caption=None if clip.caption is None else _one_line(clip.caption)[:MAX_TEXT_CHARS],
                 start=draft.adjust.start,
                 end=draft.adjust.end,
                 candidate_start=draft.candidate.start,
@@ -630,7 +633,7 @@ def _score(ctx: RunContext, run_dir: Path) -> None:
         actual_usd=totals.actual_usd,
     )
     output = ScoredFile(settings=cfg, summary=summary, clips=scored, warnings=warnings)
-    write_json_atomic(run_dir / SCORED_JSON, output.model_dump(mode="json"))
+    write_json_atomic(out_dir / SCORED_JSON, output.model_dump(mode="json"))
     for entry in scored:
         log.info(
             f"score: {entry.id} rank={entry.rank} kept={entry.kept} score={entry.score} "

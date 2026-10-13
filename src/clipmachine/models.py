@@ -655,6 +655,8 @@ class ClientRules(StrictModel):
     prefer: list[str] = Field(default_factory=list)
     avoid: list[str] = Field(default_factory=list)
     clip_length: ClipLength | None = None
+    # Brief 12: plain-language rules passed to both prompts as written (a campaign's `scout.rules`)
+    extra: list[str] = Field(default_factory=list)
 
 
 class FoundMoment(StrictModel):
@@ -779,6 +781,14 @@ class ClipScore(StrictModel):
             "before and after it), or null"
         )
     )
+    # Brief 12 (scout): asked for only when the prompt lists topics; null otherwise
+    topic: str | None = Field(
+        default=None, description="One of the topic keys listed in the prompt, or null if none"
+    )
+    caption: str | None = Field(
+        default=None,
+        description="One sentence that leads with the idea in the clip, when asked; else null",
+    )
 
     @field_validator("verdict", "reject_reason", mode="before")
     @classmethod
@@ -813,6 +823,8 @@ class ScoredClip(StrictModel):
     hook_line: str
     suggested_title: str
     reason: str
+    topic: str | None = None  # Brief 12 (scout): the model's topic key, when asked for
+    caption: str | None = None  # Brief 12 (scout): the model's post caption, when asked for
     start: float  # final, after any trim
     end: float
     candidate_start: float

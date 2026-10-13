@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from claude_fakes import FakeMessages, answer, status_error
+from claude_fakes import VALID, FakeMessages, answer, status_error
 from clipmachine import pipeline
 from clipmachine.config import load_resolved
 from clipmachine.context import RunContext
@@ -702,3 +702,42 @@ def test_model_output_is_never_used_as_a_path_or_command(rig: Rig) -> None:
     assert out.candidates[0].hook == hook  # stored as plain data
     assert not (rig.project.parent / "evil.txt").exists()
     assert rig.listing() == ["candidates.json", "costs.json", "transcript.json"]
+
+
+# --- scout hooks (Brief 12): the output folder, the scout block and extra rules ------------------
+
+
+def test_the_scout_block_is_empty_by_default_and_inserted_when_given(rig: Rig) -> None:
+    import dataclasses
+
+    rig.script(answer(VALID), answer(VALID))
+    rig.run()
+    user = rig.fake.create_calls[0]["messages"][0]["content"]
+    assert "Client rules: " in user and "\n\nClip length" not in user.split("Client rules")[0]
+    assert "{scout_block}" not in user
+
+    rig.script(answer(VALID), answer(VALID))
+    ctx = dataclasses.replace(rig.ctx(), scout_block="Campaign rules: no ad reads.\n")
+    candidates.run(ctx)
+    user = rig.fake.create_calls[0]["messages"][0]["content"]
+    assert "Client rules: " in user and "\nCampaign rules: no ad reads.\nClip length:" in user
+
+
+def test_an_out_dir_gets_the_candidates_file_and_the_run_folder_stays_clean(rig: Rig) -> None:
+    import dataclasses
+
+    rig.script(answer(VALID), answer(VALID))
+    out = rig.run_dir / "scout" / "demo"
+    candidates.run(dataclasses.replace(rig.ctx(), out_dir=out))
+    assert (out / "candidates.json").is_file()
+    assert not (rig.run_dir / "candidates.json").exists()
+    assert (rig.run_dir / "costs.json").is_file()  # the cost still books against the run
+
+
+def test_rules_summary_appends_extra_rules_as_written(project: Path) -> None:
+    rules = load_resolved(project, "general").rules.model_copy(
+        update={"extra": ["skip ad reads", "never cut mid-thought"]}
+    )
+    summary = rules_summary(rules)
+    assert summary.endswith("rules: skip ad reads; never cut mid-thought")
+    assert "rules:" not in rules_summary(load_resolved(project, "general").rules)

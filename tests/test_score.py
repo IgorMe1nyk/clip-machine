@@ -1416,3 +1416,35 @@ def test_a_finished_stage_is_not_rerun_by_the_pipeline_and_makes_no_calls(
 def test_chunk_helper_splits_in_order() -> None:
     assert chunk([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]  # type: ignore[list-item]
     assert chunk([], 20) == []
+
+
+# --- scout hooks (Brief 12): topic and caption, the output folder ---------------------------------
+
+
+def test_topic_and_caption_are_optional_and_pass_through_to_scored_json(rig: Rig) -> None:
+    rig.candidates((0, 2), (3, 5))
+    tagged = clip("c01") | {"topic": "values_purpose_growth", "caption": "Leads with the idea."}
+    rig.script(answer(batch(tagged, clip("c02"))))
+    out = rig.run()
+    by_id = {c.id: c for c in out.clips}
+    assert (by_id["c01"].topic, by_id["c01"].caption) == (
+        "values_purpose_growth",
+        "Leads with the idea.",
+    )
+    assert (by_id["c02"].topic, by_id["c02"].caption) == (None, None)
+    schema = rig.fake.create_calls[0]["output_config"]["format"]["schema"]
+    assert "topic" in json.dumps(schema) and "caption" in json.dumps(schema)
+
+
+def test_score_reads_and_writes_in_the_out_dir_when_given(rig: Rig) -> None:
+    import dataclasses
+    import shutil
+
+    rig.candidates((0, 2))
+    out = rig.run_dir / "scout" / "demo"
+    out.mkdir(parents=True)
+    shutil.move(rig.run_dir / "candidates.json", out / "candidates.json")
+    rig.script(answer(batch(clip("c01"))))
+    score.run(dataclasses.replace(rig.ctx(), out_dir=out, scout_block="Topics: a, b.\n"))
+    assert (out / "scored.json").is_file() and not (rig.run_dir / "scored.json").exists()
+    assert "\nTopics: a, b.\nClip length:" in rig.user_text()
