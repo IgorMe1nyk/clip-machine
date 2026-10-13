@@ -1,69 +1,101 @@
 # HANDOFF — Clip Machine (read this first)
 
-> **Written:** 2026-10-12 01:32 ET, end of session 4 (Sun Oct 11 15:48 → Mon Oct 12 ~01:35).
-> **Read next:** `ROLE-instructions.md` (how to work with Igor; skip its `<first_move>`, since Gate 0 is done; don't re-ask PC specs or budget; do ask for today's stop time), then `docs/ROADMAP.md`, `docs/EVAL.md`, and the newest `docs/PROJECT_LOG.md` entries.
-> **Source of truth:** the repo (`C:\Users\15513\dev\clip-machine`, public as IgorMe1nyk/clip-machine). Repo docs are newer than any copy here.
+> **Written:** 2026-10-13 ~02:25 ET, end of session 6 (Mon Oct 12 14:38 → Tue Oct 13 ~03:00). Session 5 was a short planning session (Oct 12 01:33–02:30, briefs 8.3 and R1).
+> **Read next:** `ROLE-instructions.md` (how to work with Igor; skip `<first_move>`; don't re-ask PC specs or budget; do ask for today's stop time), then `docs/ROADMAP.md`, `docs/DECISIONS.md`, and the newest `docs/PROJECT_LOG.md` entries.
+> **Source of truth:** the repo (`C:\Users\15513\dev\clip-machine`, public as IgorMe1nyk/clip-machine). Repo docs beat any copy here.
+> **Public repo rule:** no campaign, creator or show names, transcript text, hooks or frames in commits. Campaign specifics live only in the gitignored `campaigns/<slug>/` folder.
 
 ## 1. Where we are
-**The MVP finish line is met, with one command and no manual steps.**
-- `uv run python -m clipmachine run <video> --client general` → finished vertical clips with the speaker-following crop, synced captions, clean cuts, and a review page.
-- **EVAL.md row 2** (`runs/2026-10-12_t3`, T3 = 41-min two-person studio podcast, private): 16 candidates → 6 kept → **5 usable, 0 needs edit, 1 reject**, in **7 min 9 s**, **$0.054**.
-- **EVAL.md row 1** (`runs/2026-10-11_t3-2`, one manual step): 8 kept → 6 usable, 2 needs edit (camera switching), 0 reject.
-- Caveat: test videos are third-party and private (D-012). **Public samples must come from permissioned creator content.**
+**The product works end to end for paid clipping campaigns.** Igor's first 3 campaign clips are **scheduled for Tue Oct 13**, one per platform, each a different moment:
+- TikTok 12:30 PM ET
+- Instagram Reels 11:45 AM ET
+- YouTube Shorts 1:00 PM ET
 
-**Check first:** commit `f6c6654` (EVAL row 2 + c09 diagnosis) and possibly later docs commits are local. **Push, and check CI green.**
+All three are marked posted in `used.json`.
 
-## 2. What was built in session 4
+**Check first:**
+- Did Claude Code finish the R2 merge, push and the full re-render?
+- `main` should contain R2/R2.1 and be pushed.
+- About 32 unposted clips should be re-rendered with smooth zoom; posted moments are refused.
+
+## 2. What was built in sessions 5–6
 | Brief | Result |
 |---|---|
-| 8.1 small faces + cut detection | YuNet detector (D-016): wide-shot faces 0% → 100%; camera resets at shot cuts (frame-exact) |
-| 8 Part B moving crop | ffmpeg `sendcmd` crop path; verified frame-exact at cuts |
-| 9 boundary repair | Judge can extend clips; T1 kept 2 → 8 |
-| 10 clean boundaries | Whisper `small` + style prompt in every window + conditioning (D-017): unpunctuated runs T3 45% → 5%; cuts only at real sentence ends with a pause ≥ 0.15 s; mid-pause cut times; 80 ms audio fades; max clip 90 s (D-018) |
-| 8.2 camera polish | Smooth "operator" motion (moving episodes 64 → 24). The smarter switching signal (mix) **failed the held-out test** (false cuts); default stays `signal: mouth` (D-019). `video.crop` default = `speaker`, with an early model-file check (D-020) |
-| Other | Speaker/no-pause rules measured against Igor's hand labels; sound hooks in Igor's user settings (chime = needs input, ding = finished) |
+| R1 captions + hook | Karaoke box captions (spoken words yellow, wide word gaps), size 96, safe zones (bottom 560, D-022/D-023). Hook: own size 80, **top of frame, first 3 s** (`hook.position: top`, `hook.seconds: 3`) |
+| 11 campaign mode | `clipmachine campaign <video> --campaign <slug>`: the campaign's own moment list in, rule-compliant clips out (watermark overlay with screen blend, auto end, start snapping ±1.5 s, spelling fixes, `.post.txt` with rotating approved closer, used-moments log, `campaign-posted`, compliance report). **No API calls, $0.** Human/campaign picks the moments (campaign rules ban auto-clipping tools) |
+| 11.1 auto setup | `watermark.position: auto` (least face overlap + darkest background, locked per campaign; avoids TikTok's button column), `names:` auto spelling variants (≥0.8 apply, 0.7–0.8 suggest only, under 4 letters suggest only), profanity masking `f***` in captions, hook and post text (audio never changed), sensitive-word warnings. Word lists in `config/wordlists/` (3 tiers, from `docs/wordlists.md`) |
+| R2 / R2.1 zooms | Deterministic zooms on the first line + loudest sentences; **smooth cosine ease 0.4 s, scale 1.15**, max upscale 2.1; no zoom across camera cuts. `style: punch` kept as an option |
+| Housekeeping | All third-party test videos and their runs deleted (D-012 done); about 3.9 GB freed |
 
-## 3. Open problems (evidence-based, in priority order)
-1. **Wide two-person shots: who to show.** Lip reading fails on people turned sideways; the mixed signal gave false cuts. **Proposed fix: Brief 8.3, a stacked layout** (both people, top and bottom, filling 9:16, no borders) whenever two faces share a wide shot. That removes most switching decisions. Reaction shots on punchlines are wanted (Igor liked one).
-2. **Compilation edit points** (T3 is a "best of" compilation): c09 crossed a source edit. Short moments (< 20 s) get grown across edits, and judge extensions can too. Fix: detect edit points (camera-cut burst with no face, topic jump) and forbid clips from crossing them. One case seen.
-3. **A Whisper "." at a mid-sentence pause** passes the clean-cut rules (one case: c09's end). Watch for more before fixing.
-4. **The judge's extension reasons can be wrong** ("ends cleanly on the finding" when the finding came next). Brief 9.1 (rubric) may help.
-5. **Names misspelled** ("Claude" → "Claw"): the vocabulary brief, via Whisper hotwords (the same mechanism as D-017's style prompt).
+## 3. Decisions added (check DECISIONS.md)
+- D-021 stacked layout (brief only, not built)
+- D-022/D-023 + updates
+- D-024 public proof via campaigns on Igor's own accounts
+- D-025 source footage obtained per campaign instructions (neutral wording)
+- D-026 campaign mode: human/campaign-picked, software-rendered
+- D-027 zooms + update
+- D-029 auto mode allowed in Claude Code (`disableAutoMode` removed; push still asks; bypass never)
+- D-030 auto setup
 
-## 4. Order of work (next sessions)
-1. **Brief 8.3: stacked layout for wide two-shots** (design with Igor first: when to stack, how to frame each half, transitions).
-2. **Edit-point guard** (small brief).
-3. **Vocabulary brief** (per-client hint words).
-4. **Brief 9.1: scoring rubric** from `docs/research/clip-scoring-guide.md` section 7 (test on frozen candidates).
-5. **Polish:** loudness, caption placement and safe zones, a low-resolution warning, never a watermark.
-6. **The UI** (design first: PRODUCT.md v2, stack decision D-0xx).
-7. Then ops (batch, retention) and proof (README, demo, case study).
+**⚠️ D-028 (Fable may write code within its included weekly limit, usage credits off) was approved by Igor but may not be in DECISIONS.md yet. Add it.**
 
-## 5. Decisions added this session
-D-016 (YuNet small-face detection) · D-017 (Whisper bhc punctuation setting) · D-018 (max clip 90 s) · D-019 (speaker signal: mouth stays; mix kept in code, failed held-out) · D-020 (default crop = speaker, early model check). **Still open:** D-006 update (private validation on third-party videos; public proof only from permissioned creators). Igor hasn't formally confirmed it; ask.
+## 4. Business track (finally running)
+- **Brand: MiniCast.**
+  - TikTok **@minicast.tv**. Display name is stuck as "minicast.tv" until about Oct 19 (7-day name lock), then rename to MiniCast.
+  - Instagram **@minicast.tv**, Business account.
+  - YouTube **@watchminicast**, verified intermediate; advanced (ID check) pending.
+  - Purple/black/white brand. Logo, banner and watermark were made with ChatGPT.
+- **Campaign 1** (podcast clipping on Whop Content Rewards, joined Oct 12):
+  - Pay: $1 per 1K views, min payout at 2K views, max $300 per clip.
+  - Rules: ≥40% US/CA/UK viewers, ≥1% engagement, supplied watermark on every clip, approved closer on every caption, each clip posted once (different moments per platform).
+  - Submit **48 h after posting** with analytics screenshots including **viewer location**.
+  - Moments, closers and spelling are in `campaigns/<slug>/`.
+- **Campaign 2/3** (another marketplace's sports-podcast campaigns): researched, not joined for posting. Their rules ticket was never sent. Parked.
+- Accounts are 2+ months old; Igor chose a shortened/no warm-up to catch budget. **The first posts are the experiment:** watch views, % US/CA/UK and engagement.
+
+## 5. Next steps (in order)
+0. **First thing next session:** build **Brief 11.2** (`docs/brief-11-2-per-platform-outputs.md`): one folder per platform, the right caption per platform, `posting_plan.csv`, and `--fix-platform`. Then fix the records (A03 → instagram, B05 → youtube; tonight they were marked under "tiktok" as a workaround) and re-render.
+   - **Volume plan (Igor, Oct 13):** **3 posts per platform per day** (9 total) at about 12:30 / 3:30 / 6:30 PM ET. Go to **4 per platform** (the campaign cap is 4 a day per account) if the first results are healthy.
+   - The 32 remaining moments last about 3 days. The campaign pool is expected to run out within a week, so **submit each clip promptly at 48 h** (budget dry-up = unpaid views).
+   - **Join 1–2 more podcast campaigns** so the queue doesn't run dry. Mind Igor’s own business launch (Svitlo, opens Oct 20).
+1. **Tue morning (Igor):** pin an opinion comment on each post and reply to comments in the first hour.
+2. **Thu Oct 15, from ~noon (48 h after posting):** analytics screenshots (views, likes, comments, **location**) + a post screenshot → campaign form → post in `#content-rewards`. Record the results.
+3. **Set up Buffer** (free: 3 channels, 10 queued posts each) to schedule the buffer of clips. Test whether TikTok posts publish fully or need a phone tap.
+4. **Disclosure question:** decide on platform paid-promotion labels; ask the campaign. Not legal advice; flagged.
+5. **Check the auto-spelling "curious like" → show name** rule (listen at its timestamp in `auto_spelling.json`); veto with an identity rule if it's normal speech.
+6. Watch one clip for **wide two-person shots**. Only then build Brief 8.3 (stacked layout).
+7. After real results: tune hook, zoom and caption config from data, not taste.
 
 ## 6. Parked
-Framing width (arms cut at the edges; judge on finished clips) · laughs in pixel-motion windows · pauses measured from audio instead of Whisper gaps · turbo + conditioning as a fallback transcription setting · Haiku candidate variance · overlap threshold maybe ~30% · score drift +1 after the Brief 9 prompt · **clean up risky "always allow" entries in `C:\Users\15513\.claude\settings.json`** (`Read(//c//**)`, `Bash(uv lock *)`, `Bash(python -)`, `Bash(python - *)`, `Bash(git stash *)`, `Bash(git rm *)`) · the model licence [gap] (confirm before clients) · telemetry measurement.
+- Cover image export per clip
+- Buffer API push from Clip Machine
+- R3 B-roll (off by default)
+- R4 music bed (campaigns mostly ban music)
+- Lavender caption colour test
+- Closers advance on every render, not only on post (harmless)
+- AI-mode extras (scoring rubric 9.1, edit-point guard, vocabulary hotwords)
+- Loudness, low-res warning
+- UI, batch, README, demo, case study
+- **EVAL row 3:** the T3 videos were deleted before rating, so log it as "not rated"
+- The `docs/brief-11-*.md` files stay untracked (real names); keep them local
+- Clean up risky "always allow" entries in `C:\Users\15513\.claude\settings.json` (from session 4)
 
 ## 7. Standing rules (abbreviated)
-- **Secrets:** the API key lives only in `.env` as `CLIPMACHINE_ANTHROPIC_API_KEY`. Never export `ANTHROPIC_API_KEY`.
-- **Money:** $0 cash; Max API credit only (current $100 expires Oct 23, renews monthly); Console spend limit $5. New paid dependency → ask Igor.
-- **Privacy:** no transcript text, hooks, titles, frames or video names in commits, tests or logs. Test videos live in `C:\Users\15513\Videos\clip-tests\` (t1.mp4, t3.mkv). Never cloud-sync clips; delete after testing.
-- **Repo hygiene:** always `uv run`; scratch only in `runs/_scratch/`; never `uv lock --upgrade` without a brief; never pipe checks without pipefail.
-- **Workflow:** Opus plans (High for risky briefs) and reviews; a Sonnet 5.5 Medium subagent builds; each check run separately. **Measure before choosing** (use Igor's hand labels as ground truth; keep a held-out window). One brief at a time per code area; planning sessions can run in parallel (read-only).
-- **Reply format:** a senior colleague; "Learn:" notes; label fact, judgment or estimate; status shows Build, Business, time and API; end with the next step and its owner; check the clock with the time tool.
+- **Secrets:** the API key only in `.env` as `CLIPMACHINE_ANTHROPIC_API_KEY`. Never export `ANTHROPIC_API_KEY`.
+- **Money:** $0 cash. Max API credits only; Console spend limit $5. Fable within its included weekly limit, usage credits off. A new paid dependency means asking Igor.
+- **Privacy:** campaign data and run folders are gitignored. Video frames may be viewed for **public, campaign-authorized** footage only, never private client video.
+- **Claude Code:** auto mode OK, push always asks, one session at a time (two sessions collided once), Opus/Fable plans and reviews, Sonnet subagents build, checks run separately, branches per brief, merge after Igor's phone check.
+- **Campaign integrity:** never post AI-picked moments to campaigns that ban auto-clipping; never burn the MiniCast logo into clips; each clip posted once.
+- **Reply format:** senior colleague; "Learn:" notes; label fact, judgment or estimate; status line shows Build, Business, time and API; end with the next step and its owner.
 
 ## 8. Numbers
-API spend about **$0.45** of $100. Tests **1250**. A 41-min episode: about 7 min end to end (transcribe about 165 s on GPU, render about 230 s for 6 speaker-crop clips), about $0.05.
+- API spend about **$0.6** of $100 (campaign renders cost $0)
+- Tests: **2043** passing
+- Campaign render about **20 s per clip** (tracks reused); 35 clips rendered for campaign 1
 
-## 9. Business track
-Not started. Next: **pick a niche** (it decides layout priorities), **join creator clipping campaigns** (permissioned public proof), then a target list. **Svitlo opens Oct 20.**
-
-## 10. Session history
-| Session | Date and time (ET) | What happened |
+## 9. Session history
+| Session | Date (ET) | What happened |
 |---|---|---|
-| 1 | Oct 10, 02:11–04:00 | Gate 0, setup, Brief 1 |
-| 2 | Oct 10, 17:47–20:00 | Briefs 2 and 3 |
-| 2b | Oct 10, ~20:00–22:00 | API key; Briefs 4 and 4.1 |
-| 3 | Oct 10 22:39 – Oct 11 ~01:55 | Briefs 5.1, 6, 6.1, 7, 8 Part A; first full run; ROADMAP; research guide |
-| 4 | Oct 11 15:48 – Oct 12 ~01:35 | T2/T3 tests; 8 checkpoint; 8.1; 8 Part B; 9 real run; 10; 8.2; **MVP finish line met (EVAL rows 1–2)** |
+| 1–4 | Oct 10–12 | Gate 0 → MVP finish line (see the previous handoff in git history) |
+| 5 | Oct 12 01:33–~02:30 | Briefs 8.3 (stacked layout) and R1 written; music/B-roll research; campaign search started |
+| 6 | Oct 12 14:38 – Oct 13 ~03:00 | R1 built; MiniCast brand on 3 platforms; Briefs 11, 11.1, R2, R2.1 built and merged; cleanup; **first 3 posts scheduled** |
