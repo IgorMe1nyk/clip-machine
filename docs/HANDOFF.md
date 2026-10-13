@@ -5,18 +5,18 @@
 > **Source of truth:** the repo (`C:\Users\15513\dev\clip-machine`, public as IgorMe1nyk/clip-machine). Repo docs beat any copy here.
 > **Public repo rule:** no campaign, creator or show names, transcript text, hooks or frames in commits. Campaign specifics live only in the gitignored `campaigns/<slug>/` folder.
 
-## 1. Where we are
-**The product works end to end for paid clipping campaigns.** Igor's first 3 campaign clips are **scheduled for Tue Oct 13**, one per platform, each a different moment:
-- TikTok 12:30 PM ET
-- Instagram Reels 11:45 AM ET
-- YouTube Shorts 1:00 PM ET
+## 1. Where we are (stopped Tue Oct 13, 03:05 ET)
+**The product works end to end for paid clipping campaigns, and the first 9 posts are scheduled for Tue Oct 13** (3 per platform, all different moments, smooth-zoom renders):
 
-All three are marked posted in `used.json`.
+| Time (ET) | TikTok @minicast.tv | Instagram @minicast.tv | YouTube @watchminicast |
+|---|---|---|---|
+| ~Noon | A01 12:30 PM | A03 11:45 AM | B05 1:00 PM |
+| Afternoon | A02 3:30 PM | A07 3:45 PM | B07 4:00 PM |
+| Evening | A06 6:30 PM | A04 6:43 PM | A05 7:00 PM |
 
-**Check first:**
-- Did Claude Code finish the R2 merge, push and the full re-render?
-- `main` should contain R2/R2.1 and be pushed.
-- About 32 unposted clips should be re-rendered with smooth zoom; posted moments are refused.
+- `main` is pushed and clean: R1, Brief 11, 11.1, R2/R2.1 (smooth zoom), D-028, this handoff and the Brief 11.2 brief.
+- **All 9 are marked posted, but under platform "tiktok"** (workaround: moments.yaml had tiktok for all). The real platforms are in the table above. Fix them with `--fix-platform` once Brief 11.2 exists.
+- 26 moments are still unposted. Their current renders predate smooth zoom, and Brief 11.2 re-renders them anyway.
 
 ## 2. What was built in sessions 5–6
 | Brief | Result |
@@ -54,12 +54,16 @@ All three are marked posted in `used.json`.
 - Accounts are 2+ months old; Igor chose a shortened/no warm-up to catch budget. **The first posts are the experiment:** watch views, % US/CA/UK and engagement.
 
 ## 5. Next steps (in order)
+**Today, Tue Oct 13 (Igor, phone, ~5 min per post):** as each post goes live (11:45 AM → 7 PM), pin an opinion comment ("be honest, is he right?") and reply to every comment in the first hour. Check that YouTube B07 finished processing. Connect TikTok, Instagram and YouTube in Whop (Settings → Connected accounts) if not done.
+
+**Thu Oct 15 – Fri Oct 16 (48–72 h after posting):** for each of the 9: analytics screenshot (views, likes, comments, **viewer location**) + a post screenshot → the campaign's Google Form → link in `#content-rewards`. Submit when the views stop climbing fast, by day 4 at the latest (the pool is draining). Record views, % US/CA/UK and engagement per post (time slot + platform) for the posting-schedule data.
+
 0. **First thing next session:** build **Brief 11.2** (`docs/brief-11-2-per-platform-outputs.md`): one folder per platform, the right caption per platform, `posting_plan.csv`, and `--fix-platform`. Then fix the records (A03 → instagram, B05 → youtube; tonight they were marked under "tiktok" as a workaround) and re-render.
    - **Volume plan (Igor, Oct 13):** **3 posts per platform per day** (9 total) at about 12:30 / 3:30 / 6:30 PM ET. Go to **4 per platform** (the campaign cap is 4 a day per account) if the first results are healthy.
    - The 32 remaining moments last about 3 days. The campaign pool is expected to run out within a week, so **submit each clip promptly at 48 h** (budget dry-up = unpaid views).
-   - **Join 1–2 more podcast campaigns** so the queue doesn't run dry. Mind Igor’s own business launch (Svitlo, opens Oct 20).
-1. **Tue morning (Igor):** pin an opinion comment on each post and reply to comments in the first hour.
-2. **Thu Oct 15, from ~noon (48 h after posting):** analytics screenshots (views, likes, comments, **location**) + a post screenshot → campaign form → post in `#content-rewards`. Record the results.
+   - **Join 1–2 more podcast campaigns** so the queue doesn't run dry. Mind Svitlo week (opens Oct 20).
+1. After 11.2: render the remaining 26 moments into the per-platform folders, then **schedule the next days** (3 per platform per day at 12:30 / 3:30 / 6:30 PM ET) from `posting_plan.csv`.
+2. Add a **results column** to the posting plan (views at 48 h, % US/CA/UK, engagement), so by the end of October the posting hours and volume are chosen from data.
 3. **Set up Buffer** (free: 3 channels, 10 queued posts each) to schedule the buffer of clips. Test whether TikTok posts publish fully or need a phone tap.
 4. **Disclosure question:** decide on platform paid-promotion labels; ask the campaign. Not legal advice; flagged.
 5. **Check the auto-spelling "curious like" → show name** rule (listen at its timestamp in `auto_spelling.json`); veto with an identity rule if it's normal speech.
