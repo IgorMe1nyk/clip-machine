@@ -114,7 +114,7 @@ captions:
   margin_v: 350              # legacy style only: pixels from the bottom edge, clear of phone UI
 hook:                        # the clip's hook line as big text at the start (needs captions.style box_karaoke)
   enabled: true
-  seconds: 2.0               # shown from 0 to this
+  seconds: 5.0               # shown from 0 to this; a campaign may set its own hook.seconds
   fade_ms: 150               # fade-out at the end
   font_size: 80              # the hook's own ASS font size, separate from captions.font_size; 20-200
 safe:                        # pixels the TikTok / Reels / Shorts apps cover (D-023)

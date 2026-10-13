@@ -772,7 +772,7 @@ def test_the_shipped_default_is_box_karaoke_with_the_hook_on(project: Path) -> N
     assert set(data["safe"]) == set(SafeConfig.model_fields)
     app = load_app_config(project)
     assert (app.captions.style, app.captions.font_size) == ("box_karaoke", 96)
-    assert app.hook == HookConfig(enabled=True)
+    assert app.hook == HookConfig(enabled=True, seconds=5.0)  # 5 s since Brief 11's run
     assert app.safe == SafeConfig()
     assert app.captions.model_dump(include=set(R1_CAPTION_KEYS)) == CaptionsConfig(
         words_per_line=1, font="x", highlight_color="#FFD400", style="box_karaoke"

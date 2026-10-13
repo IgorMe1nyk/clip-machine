@@ -4,6 +4,7 @@ clip_length: { min: 20, max: 60 }
 hook:
   mode: full            # full = on screen the whole clip; intro = the first seconds only
   # font_size: 80       # optional; left out, hook.font_size from config/default.yaml is used
+  # seconds: 5          # optional, intro mode only; left out, hook.seconds from config/default.yaml
   max_chars: 48
 watermark:
   file: assets/watermark.png

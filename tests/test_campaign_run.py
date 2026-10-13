@@ -436,8 +436,34 @@ def test_hook_mode_intro_shows_the_hook_only_at_the_start(project: Path, fake: F
     assert rig.go() == 0
     ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
     hooks = [line for line in ass.split("\n") if line.startswith("Dialogue: 2,")]
-    assert hooks and all(",0:00:00.00,0:00:02.00," in line for line in hooks)
+    assert hooks and all(",0:00:00.00,0:00:05.00," in line for line in hooks)
     assert "\\fad(0,150)" in ass
+    assert rig.clip("A01_tiktok").hook_mode == "intro"
+
+
+def test_a_campaign_can_set_its_own_hook_seconds_in_intro_mode(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    def intro(d: dict[str, Any]) -> None:
+        d["hook"]["mode"] = "intro"
+        d["hook"]["seconds"] = 3
+
+    rig = make_rig(project, fake, mutate=intro)
+    assert rig.go() == 0
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    hooks = [line for line in ass.splitlines() if line.startswith("Dialogue: 2,")]
+    assert hooks and all(",0:00:00.00,0:00:03.00," in line for line in hooks)
+
+
+def test_hook_seconds_is_ignored_in_full_mode(project: Path, fake: FakeFfmpeg) -> None:
+    def full(d: dict[str, Any]) -> None:
+        d["hook"]["seconds"] = 3
+
+    rig = make_rig(project, fake, mutate=full)
+    assert rig.go() == 0
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    hooks = [line for line in ass.splitlines() if line.startswith("Dialogue: 2,")]
+    assert hooks and not any(",0:00:03.00," in line for line in hooks)
 
 
 def test_the_clip_json_records_the_watermark_and_the_settings(rig: Rig) -> None:

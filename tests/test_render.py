@@ -1175,7 +1175,7 @@ def test_the_hook_events_are_written_when_enabled(project: Path, fake: FakeFfmpe
 
     hooks = hook_lines(ctx.run_dir)
     assert len(hooks) == 2  # the band and one line of text
-    assert all(",0:00:00.00,0:00:02.00," in d for d in hooks)
+    assert all(",0:00:00.00,0:00:05.00," in d for d in hooks)
     assert "\\fad(0,150)" in hooks[0] and HOOK_TEXT.split()[0] in hooks[1]
 
 

@@ -49,6 +49,8 @@ class CampaignHook(StrictModel):
     mode: Literal["full", "intro"] = "full"  # full = on screen the whole clip; intro = R1's time
     # optional; left out, hook.font_size from the app config is used
     font_size: int | None = Field(default=None, ge=20, le=200)
+    # optional, intro mode only; left out, hook.seconds from the app config is used
+    seconds: float | None = Field(default=None, gt=0, le=10)
     max_chars: int = Field(default=48, ge=1, le=200)
 
 

@@ -234,6 +234,26 @@ def test_the_hook_font_size_falls_back_to_the_app_config_and_can_be_overridden(
     assert load(project, mutate).hook_font_size == 120
 
 
+@pytest.mark.parametrize("seconds", [0, -1, 10.5])
+def test_the_hook_seconds_range(project: Path, seconds: float) -> None:
+    def mutate(d: dict[str, Any]) -> None:
+        d["hook"]["seconds"] = seconds
+
+    with pytest.raises(ConfigError, match="hook.seconds"):
+        load(project, mutate)
+
+
+def test_the_hook_seconds_fall_back_to_the_app_config_and_can_be_overridden(
+    project: Path,
+) -> None:
+    assert load(project).hook_seconds == app_of(project).hook.seconds == 5.0
+
+    def mutate(d: dict[str, Any]) -> None:
+        d["hook"]["seconds"] = 3
+
+    assert load(project, mutate).hook_seconds == 3.0
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

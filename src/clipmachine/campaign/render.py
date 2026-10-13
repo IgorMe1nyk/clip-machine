@@ -273,7 +273,10 @@ def _render_moment(
     clip = MomentClipObject(name, start, end, moment.hook)
     chosen = stage._speaker_crop(plan, clip) if plan.speaker is not None else None
     hook_cfg = campaign.config.hook
-    seconds, fade = (length, 0) if hook_cfg.mode == "full" else (app.hook.seconds, app.hook.fade_ms)
+    if hook_cfg.mode == "full":
+        seconds, fade = length, 0
+    else:  # intro: the first seconds only; faces are checked over that window
+        seconds, fade = campaign.hook_seconds, app.hook.fade_ms
     spec = stage.HookSpec(seconds, fade, campaign.hook_font_size, (wm.rect,))
     captions = stage._karaoke_captions(plan, clip, words, chosen, length, spec)
     work.notes.extend(captions.notes)
