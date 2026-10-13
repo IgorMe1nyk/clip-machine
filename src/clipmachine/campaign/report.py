@@ -14,7 +14,8 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from clipmachine.campaign.loader import Campaign
-from clipmachine.campaign.models import CHECKS, CampaignClip, Moment
+from clipmachine.campaign.models import CHECKS, AutoSpelling, CampaignClip, Moment
+from clipmachine.campaign.render import REVIEW_SUFFIX
 from clipmachine.runs import write_text_atomic
 from clipmachine.stages.report import CSS, _esc, _hms
 from clipmachine.utils.image import color_type_name
@@ -50,7 +51,9 @@ EXTRA_CSS = """
 pre.post { white-space: pre-wrap; background: #f1f3f7; border-radius: 6px; padding: 8px 10px;
   margin: 6px 0; overflow-wrap: anywhere; }
 .names { margin: 4px 0; padding-left: 18px; }
+.review { margin: 4px 0; padding-left: 18px; }
 """
+WHERE = {"captions": "captions", "hook": "hook", "post": "post caption"}
 
 
 def _clock(seconds: float) -> str:
@@ -105,7 +108,37 @@ def _names(names: Mapping[str, Sequence[float]]) -> str:
     return f'<p><b>Names to check</b></p><ul class="names">{"".join(rows)}</ul>'
 
 
-def _card(moment: Moment, clip: CampaignClip | None, post: str | None) -> str:
+def _review_block(clip: CampaignClip, review: str | None) -> str:
+    """Masked words as a count (slurs counted apart) and the sensitive words by name, from the
+    clip's review file; nothing when there is nothing to say."""
+    rows = [line.split("\t") for line in (review or "").splitlines() if line.count("\t") == 3]
+    slurs = sum(1 for what, _, _, kind in rows if what == "masked" and kind == "slur")
+    parts = []
+    if clip.masked_words:
+        apart = f" ({slurs} slur{'s' if slurs != 1 else ''})" if slurs else ""
+        count = f"{clip.masked_words} word{'s' if clip.masked_words != 1 else ''}"
+        parts.append(f"<p><b>Masked:</b> {count}{apart}</p>")
+    sensitive = [(where, word, kind) for what, where, word, kind in rows if what == "sensitive"]
+    if sensitive:
+        items = "".join(
+            f"<li>{'a slur' if kind == 'slur' else _esc(word)} ({_esc(WHERE.get(where, where))})"
+            "</li>"
+            for where, word, kind in sensitive
+        )
+        parts.append(
+            f"<p><b>Sensitive words</b> (reword, or add to <code>allowed:</code> in campaign.yaml "
+            f'if the campaign is fine with it)</p><ul class="review">{items}</ul>'
+        )
+    elif clip.sensitive_words:
+        parts.append(
+            f"<p><b>Sensitive words:</b> {clip.sensitive_words} (the review file is missing)</p>"
+        )
+    return "".join(parts)
+
+
+def _card(
+    moment: Moment, clip: CampaignClip | None, post: str | None, review: str | None = None
+) -> str:
     name = moment.clip_name
     heading = f"<h2>{_esc(moment.id)} &middot; {_esc(moment.platform)}</h2>"
     if clip is None:
@@ -149,6 +182,9 @@ def _card(moment: Moment, clip: CampaignClip | None, post: str | None) -> str:
         parts.append(f"<p><b>Closer:</b> {_esc(clip.closer or '')}</p>\n")
         parts.append(f"<p>{_esc(clip.spelling_replacements)} spelling fixes</p>\n")
         parts.append(_names(clip.names_to_check) + "\n")
+    block = _review_block(clip, review)
+    if block:
+        parts.append(block + "\n")
     parts.append("<p><b>Compliance checklist</b></p>" + _checks(clip) + "\n")
     if badges:
         parts.append(f"<p>{badges}</p>\n")
@@ -158,17 +194,87 @@ def _card(moment: Moment, clip: CampaignClip | None, post: str | None) -> str:
     return "".join(parts)
 
 
+def _auto_spelling(auto: AutoSpelling | None) -> str:
+    """The automatic spelling rules, the suggestions and the variants an explicit rule covers."""
+    if auto is None:
+        return ""
+    lines = [f"<p><b>Names:</b> {_esc(', '.join(auto.names))}</p>"]
+
+    def items(status: str, arrow: bool) -> str:
+        rows = []
+        for v in auto.variants:
+            if v.status != status:
+                continue
+            seen = "; ".join(f"{_esc(s.clip)} {_clock(s.at)}" for s in v.seen)
+            where = f", heard at {seen}" if seen else ""
+            target = f" &rarr; {_esc(v.rule_to or v.name)}" if arrow else f" (for {_esc(v.name)})"
+            rows.append(
+                f"<li><b>{_esc(v.text)}</b>{target}: {v.count} time{'s' if v.count != 1 else ''}, "
+                f"ratio {v.ratio:.2f}{where}</li>"
+            )
+        return f'<ul class="names">{"".join(rows)}</ul>' if rows else '<p class="muted">none</p>'
+
+    lines.append(
+        "<p><b>Automatic spelling rules</b> (from the transcript; to veto one, add "
+        '<code>{from: "&lt;variant&gt;", to: "&lt;variant&gt;"}</code> to '
+        "<code>spelling</code>)</p>" + items("apply", True)
+    )
+    lines.append(
+        f"<p><b>Suggestions, not applied</b> (ratio {auto.suggest_threshold:g}&ndash;"
+        f"{auto.apply_threshold:g} with the same sound; add a spelling rule to apply one)</p>"
+        + items("suggest", False)
+    )
+    if any(v.status == "explicit" for v in auto.variants):
+        lines.append("<p><b>Already in your spelling list</b></p>" + items("explicit", False))
+    return "\n".join(lines)
+
+
+def _auto_position(campaign: Campaign) -> str:
+    """The chosen watermark position with its score, and the runner-up."""
+    lock = campaign.auto
+    if lock is None:
+        return "<p><b>Watermark position:</b> auto, not chosen yet (no moment rendered)</p>"
+    text = (
+        f"<p><b>Watermark position:</b> auto &rarr; x {lock.x_center:.2f}, y {lock.y_center:.2f} "
+        f"(face overlap {lock.face_cost:.2f}, background luminance {lock.luminance:.0f} of 255, "
+        f"score {lock.score:.3f})"
+    )
+    if lock.runner_up is not None:
+        r = lock.runner_up
+        text += (
+            f"; runner-up x {r.x_center:.2f}, y {r.y_center:.2f} (face {r.face_cost:.2f}, "
+            f"luminance {r.luminance:.0f}, score {r.score:.3f})"
+        )
+    text += (
+        f". Scored on {_esc(', '.join(lock.sampled))}: {lock.scored} of {lock.candidates} grid "
+        f"positions had room. Locked in auto_position.json; delete it to choose again.</p>"
+    )
+    if lock.notes:
+        text += _list(lock.notes)
+    return text
+
+
 def _header(
-    campaign: Campaign, run_name: str, moments: Sequence[Moment], clips: Mapping[str, CampaignClip]
+    campaign: Campaign,
+    run_name: str,
+    moments: Sequence[Moment],
+    clips: Mapping[str, CampaignClip],
+    auto: AutoSpelling | None = None,
 ) -> str:
-    cfg, wm = campaign.config, campaign.watermark
+    cfg, asset = campaign.config, campaign.asset
     states = [clips.get(m.clip_name) for m in moments]
     rendered = sum(1 for c in states if c is not None and c.status == "rendered")
     failed = sum(1 for c in states if c is not None and c.status == "failed")
     waiting = sum(1 for c in states if c is None)
-    box = wm.rect
-    alpha = "yes" if wm.info.has_alpha else "no"
-    background = BACKGROUNDS.get(wm.background, wm.background)
+    wm = campaign.watermark
+    where = (
+        f"visible box on the frame x {wm.rect.x1:g}&ndash;{wm.rect.x2:g}, "
+        f"y {wm.rect.y1:g}&ndash;{wm.rect.y2:g}"
+        if wm is not None
+        else "position not chosen yet"
+    )
+    alpha = "yes" if asset.info.has_alpha else "no"
+    background = BACKGROUNDS.get(asset.background, asset.background)
     lines = [
         f"<h1>{_esc(cfg.name)}</h1>",
         f'<p class="muted">{_esc(cfg.source_note)}</p>' if cfg.source_note else "",
@@ -181,13 +287,15 @@ def _header(
         + f", font size {_esc(campaign.hook_font_size)}"
         + f", position {_esc(campaign.hook_position)}</p>",
         f"<p>Watermark {_esc(cfg.watermark.file)}: "
-        f"PNG {_esc(color_type_name(wm.info.color_type))}, alpha {alpha}, "
+        f"format PNG ({_esc(color_type_name(asset.info.color_type))}), alpha {alpha}, "
         f"background {_esc(background)}, "
-        f"blend {_esc(wm.blend)}; visible box on the frame x {box.x1:g}&ndash;{box.x2:g}, "
-        f"y {box.y1:g}&ndash;{box.y2:g}</p>",
+        f"blend {_esc(asset.blend)}; {where}</p>",
     ]
+    if cfg.watermark.position == "auto":
+        lines.append(_auto_position(campaign))
     if campaign.warnings:
         lines.append("<p><b>Warnings</b></p>" + _list(campaign.warnings))
+    lines.append(_auto_spelling(auto))
     return '<header class="summary">\n' + "\n".join(line for line in lines if line) + "\n</header>"
 
 
@@ -198,11 +306,17 @@ def build_html(
     moments: Sequence[Moment],
     clips: Mapping[str, CampaignClip],
     posts: Mapping[str, str],
+    reviews: Mapping[str, str] | None = None,
+    auto: AutoSpelling | None = None,
 ) -> str:
-    """The whole page. `clips` and `posts` are keyed by Moment.clip_name; a moment with no clip
-    is listed as not rendered yet."""
-    cards = [_card(m, clips.get(m.clip_name), posts.get(m.clip_name)) for m in moments]
-    body = "\n".join([_header(campaign, run_name, moments, clips), *cards])
+    """The whole page. `clips`, `posts` and `reviews` (the .review.txt texts) are keyed by
+    Moment.clip_name; a moment with no clip is listed as not rendered yet."""
+    found = reviews or {}
+    cards = [
+        _card(m, clips.get(m.clip_name), posts.get(m.clip_name), found.get(m.clip_name))
+        for m in moments
+    ]
+    body = "\n".join([_header(campaign, run_name, moments, clips, auto), *cards])
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n<head>\n<meta charset="utf-8">\n'
@@ -213,12 +327,18 @@ def build_html(
 
 
 def write_report(
-    out_dir: Path, campaign: Campaign, moments: Sequence[Moment], run_name: str
+    out_dir: Path,
+    campaign: Campaign,
+    moments: Sequence[Moment],
+    run_name: str,
+    *,
+    auto: AutoSpelling | None = None,
 ) -> Path:
     """Build the page from the jsons and post texts in `out_dir` and write it there. A json that
     is missing or does not validate counts as not rendered yet."""
     clips: dict[str, CampaignClip] = {}
     posts: dict[str, str] = {}
+    reviews: dict[str, str] = {}
     for moment in moments:
         name = moment.clip_name
         try:
@@ -229,9 +349,19 @@ def write_report(
             continue
         with contextlib.suppress(OSError):
             posts[name] = (out_dir / f"{name}.post.txt").read_text(encoding="utf-8")
+        with contextlib.suppress(OSError):
+            reviews[name] = (out_dir / f"{name}{REVIEW_SUFFIX}").read_text(encoding="utf-8")
     path = out_dir / REPORT_HTML
     write_text_atomic(
         path,
-        build_html(campaign=campaign, run_name=run_name, moments=moments, clips=clips, posts=posts),
+        build_html(
+            campaign=campaign,
+            run_name=run_name,
+            moments=moments,
+            clips=clips,
+            posts=posts,
+            reviews=reviews,
+            auto=auto,
+        ),
     )
     return path

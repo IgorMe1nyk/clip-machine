@@ -54,6 +54,9 @@ class CampaignHook(StrictModel):
     # optional; left out, hook.position from the app config is used
     position: Literal["top", "avoid_faces"] | None = None
     max_chars: int = Field(default=48, ge=1, le=200)
+    # Brief 11.1: a word from config/wordlists/flag.txt (or a slur) in the hook is a warning in
+    # the report, or fails the moment. The hook is never rewritten.
+    sensitive: Literal["warn", "fail"] = "warn"
 
 
 class WatermarkPosition(StrictModel):
@@ -63,7 +66,9 @@ class WatermarkPosition(StrictModel):
 
 class WatermarkConfig(StrictModel):
     file: str
-    position: WatermarkPosition  # where the centre of the visible content goes
+    # where the centre of the visible content goes; "auto" (Brief 11.1) lets the tool choose by
+    # face overlap and background darkness, once per campaign (auto_position.json)
+    position: WatermarkPosition | Literal["auto"]
     scale: float = Field(default=1.0, gt=0, le=10)  # uniform only
     blend: Literal["normal", "screen"] = "normal"
 
@@ -122,14 +127,21 @@ class CampaignConfig(StrictModel):
     captions: CampaignCaptions = Field(default_factory=CampaignCaptions)
     spelling: list[SpellingRule] = Field(default_factory=list)
     names_to_check: list[str] = Field(default_factory=list)
+    # Brief 11.1: the correct spellings; the transcript is scanned for the ways Whisper writes
+    # them, and each accepted variant becomes a spelling rule (`spelling` wins on a conflict)
+    names: list[str] = Field(default_factory=list)
     post: PostConfig
+    # Brief 11.1: words this campaign is fine with (taken off the mask, context and flag lists;
+    # a show called "High Stakes") and words to mask on top of config/wordlists/mask.txt
+    allowed: list[str] = Field(default_factory=list)
+    extra_masked: list[str] = Field(default_factory=list)
 
-    @field_validator("names_to_check")
+    @field_validator("names_to_check", "names", "allowed", "extra_masked")
     @classmethod
     def _names(cls, value: list[str]) -> list[str]:
         names = [n.strip() for n in value]
         if any(not n for n in names):
-            raise ValueError("a name must not be empty")
+            raise ValueError("an entry must not be empty")
         return names
 
     @model_validator(mode="after")
@@ -186,6 +198,73 @@ class Moment(StrictModel):
         return f"{self.id}_{self.platform}"
 
 
+class AutoCandidate(StrictModel):
+    x_center: float
+    y_center: float
+    score: float
+    face_cost: float
+    luminance: float
+
+
+class AutoPosition(StrictModel):
+    """campaigns/<slug>/auto_position.json: the watermark position chosen for `position: auto`,
+    reused while the watermark and the frame geometry stay the same (Brief 11.1)."""
+
+    schema_version: int = 1
+    x_center: float
+    y_center: float
+    score: float
+    face_cost: float
+    luminance: float
+    runner_up: AutoCandidate | None = None
+    sampled: list[str]  # the moments scored, as <id>_<platform>
+    candidates: int  # grid positions tried
+    placeable: int  # of those, inside the frame, the safe area, off the corners and captions
+    scored: int  # of those, with room for the hook in every sampled clip
+    watermark_sha256: str
+    scale: float
+    blend: str
+    frame: tuple[int, int]
+    safe: tuple[int, int, int, int]  # top, bottom, left, right
+    button_column: tuple[int, int] = (780, 840)  # safe.button_left, safe.button_top
+    corner_zone: float
+    hook_position: str
+    notes: list[str] = Field(default_factory=list)
+    chosen_at: str
+
+
+class AutoSeen(StrictModel):
+    clip: str  # <id>_<platform>
+    at: float  # seconds from the start of that clip
+
+
+class AutoVariant(StrictModel):
+    """One way a name is written in the transcript (auto_spelling.json)."""
+
+    text: str  # the span as spoken, lower case
+    name: str
+    count: int
+    ratio: float
+    soundex_match: bool
+    # apply: a rule was made; suggest: listed only; explicit: `spelling` has this `from` already
+    status: Literal["apply", "suggest", "explicit"]
+    rule_to: str | None = None
+    seen: list[AutoSeen] = Field(default_factory=list)  # up to 3, from the rendered moments
+
+
+class AutoSpelling(StrictModel):
+    """campaigns/<slug>/auto_spelling.json: what the names scan found. Local and git-ignored, it
+    holds transcript words."""
+
+    schema_version: int = 1
+    names: list[str]
+    apply_threshold: float
+    suggest_threshold: float
+    source_sha256: str
+    written_at: str
+    variants: list[AutoVariant]
+
+
 class UsedEntry(StrictModel):
     """One rendered moment in used.json. Holds times and a path, never transcript text."""
 
@@ -223,6 +302,7 @@ CHECKS = (
 class CampaignClipWatermark(StrictModel):
     sha256: str
     blend: str
+    position_mode: Literal["explicit", "auto"] = "explicit"
     x: int  # top-left of the scaled canvas on the output frame
     y: int
     width: int  # the scaled canvas
@@ -253,6 +333,9 @@ class CampaignClip(StrictModel):
     notes: list[str] = Field(default_factory=list)  # reason codes from captions, hook, watermark
     spelling_replacements: int = 0
     names_to_check: dict[str, list[float]] = Field(default_factory=dict)
+    # Brief 11.1: counts only; the words are in <clip>.review.txt next to the clip
+    masked_words: int = 0  # in the captions, the hook and the post caption
+    sensitive_words: int = 0  # flagged in the hook and the post caption
     checks: dict[str, Literal["pass", "warn", "fail"]] = Field(default_factory=dict)
     closer: str | None = None
     hook_mode: str

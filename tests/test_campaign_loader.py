@@ -556,3 +556,10 @@ def test_select_moments_keeps_file_order_and_rejects_unknown_ids(project: Path) 
         select_moments(got, "A01,Z9")
     with pytest.raises(ConfigError, match="at least one id"):
         select_moments(got, " , ")
+
+
+def test_a_webp_named_png_fails_with_the_real_format_named(project: Path) -> None:
+    folder = write_campaign(project)
+    (folder / "assets" / "mark.png").write_bytes(b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 24)
+    with pytest.raises(ConfigError, match="WebP image named .png"):
+        load_campaign(project, "demo", app_of(project))

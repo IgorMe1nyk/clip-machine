@@ -29,7 +29,7 @@ from clipmachine.utils import claude, ffmpeg
 from clipmachine.utils.captions import ass_time
 from clipmachine.utils.snapping import START_KEPT_NOTE
 from helpers import edit_yaml
-from test_render import FakeFfmpeg
+from test_render import FakeFfmpeg, invented_lists
 
 HOOK = "AN INVENTED HOOK"
 CAPTION = "says something invented."
@@ -885,3 +885,242 @@ def test_the_json_and_the_post_file_hold_no_hook_or_caption_text(rig: Rig) -> No
 def test_used_json_is_written_in_the_campaign_folder(rig: Rig) -> None:
     assert rig.go() == 0
     assert (rig.folder / USED_FILE).is_file()
+
+
+# --- masking and the sensitive-word check (Brief 11.1) -------------------------------------------
+
+
+def review(rig: Rig, name: str) -> list[str]:
+    path = rig.out / f"{name}.review.txt"
+    return path.read_text(encoding="utf-8").rstrip("\n").split("\n") if path.is_file() else []
+
+
+def test_a_sensitive_word_in_the_hook_or_caption_is_a_warning_never_a_rewrite(
+    project: Path, fake: FakeFfmpeg, capsys: pytest.CaptureFixture[str]
+) -> None:
+    invented_lists(project)
+    rig = make_rig(project, fake)
+    rig.moments(
+        moment(start="0:24", end="0:58", hook="WHY WUMP MATTERS", caption="says zib invented.")
+    )
+
+    assert rig.go() == 0
+
+    clip = rig.clip("A01_tiktok")
+    assert clip.status == "rendered" and clip.sensitive_words == 2 and clip.masked_words == 0
+    assert "hook_sensitive" in clip.notes and "caption_sensitive" in clip.notes
+    assert review(rig, "A01_tiktok") == [
+        "sensitive\thook\tWUMP\tflag",
+        "sensitive\tpost\tzib\tcontext",
+    ]
+    assert "WUMP" in (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")  # not rewritten
+    assert post(rig, "A01_tiktok")[0] == "@demo says zib invented."
+    raw = (rig.out / "A01_tiktok.json").read_text(encoding="utf-8")
+    text = out_of(capsys)
+    for secret in ("WUMP", "zib"):
+        assert secret not in raw and secret not in text
+
+
+def test_hook_sensitive_fail_fails_the_moment_alone(project: Path, fake: FakeFfmpeg) -> None:
+    invented_lists(project)
+
+    def strict(d: dict[str, Any]) -> None:
+        d["hook"]["sensitive"] = "fail"
+
+    rig = make_rig(project, fake, mutate=strict)
+    rig.moments(
+        moment(start="0:24", end="0:58", hook="WHY WUMP MATTERS"),
+        moment(id="A02", start="0:10", end="0:40", platform="instagram", caption="zib here."),
+    )
+
+    assert rig.go() == 1
+
+    failed = rig.clip("A01_tiktok")
+    assert failed.status == "failed" and failed.checks["hook_from_start"] == "fail"
+    assert "1 sensitive word(s) (hook.sensitive: fail)" in (failed.error or "")
+    assert not (rig.out / "A01_tiktok.mp4").exists() and review(rig, "A01_tiktok") == []
+    other = rig.clip("A02_instagram")  # a caption hit is a warning even with fail
+    assert other.status == "rendered" and "caption_sensitive" in other.notes
+
+
+def test_the_post_caption_is_masked_but_the_closer_and_hashtags_are_not(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    invented_lists(project)
+
+    def closers(d: dict[str, Any]) -> None:
+        d["post"]["closers"] = ["blorp closer", "closer two"]
+        d["post"]["hashtags"] = ["#blorp"]
+
+    rig = make_rig(project, fake, mutate=closers)
+    rig.moments(moment(start="0:24", end="0:58", caption="says Blorp, then blorping."))
+
+    assert rig.go() == 0
+
+    assert post(rig, "A01_tiktok") == ["@demo says B***, then b***.", "#blorp", "blorp closer"]
+    clip = rig.clip("A01_tiktok")
+    assert clip.masked_words == 2 and clip.checks["closer_present"] == "pass"
+    assert review(rig, "A01_tiktok") == [
+        "masked\tpost\tBlorp\tmask",
+        "masked\tpost\tblorping\tmask",
+    ]
+
+
+def test_caption_words_are_masked_and_counted_and_a_slur_is_never_written(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    invented_lists(project)
+    rig = make_rig(project, fake, overrides={(5, 2): "blorp", (6, 1): "vexor"})
+    rig.moments(moment(start="0:24", end="0:58", hook="WHY BLORP MATTERS"))
+
+    assert rig.go() == 0
+
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    assert "b***" in ass and "v***" in ass and "B***" in ass
+    assert "blorp" not in ass.lower() and "vexor" not in ass.lower()
+    clip = rig.clip("A01_tiktok")
+    assert clip.masked_words == 3
+    assert review(rig, "A01_tiktok") == [
+        "masked\tcaptions\tblorp\tmask",
+        "masked\tcaptions\t-\tslur",
+        "masked\thook\tBLORP\tmask",
+    ]
+    raw = (rig.out / "A01_tiktok.json").read_text(encoding="utf-8")
+    assert "blorp" not in raw.lower() and "vexor" not in raw.lower()
+
+
+def test_allowed_extra_masked_and_the_campaigns_own_names_are_respected(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    invented_lists(project)
+
+    def own(d: dict[str, Any]) -> None:
+        d["allowed"] = ["Blorp", "wump"]
+        d["extra_masked"] = ["invented", "Zorb1e"]  # Zorb1e is a spelling target: never masked
+
+    rig = make_rig(project, fake, mutate=own, overrides={(5, 2): "blorp", (5, 3): "zorble"})
+    rig.moments(moment(start="0:24", end="0:58", hook="WHY WUMP MATTERS"))
+
+    assert rig.go() == 0
+
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    assert "blorp" in ass and "Zorb1e" in ass
+    assert post(rig, "A01_tiktok")[0] == "@demo says something i***."
+    clip = rig.clip("A01_tiktok")
+    assert clip.masked_words == 1 and clip.sensitive_words == 0
+    assert "hook_sensitive" not in clip.notes
+
+
+def test_masking_off_leaves_the_campaign_texts_alone(project: Path, fake: FakeFfmpeg) -> None:
+    invented_lists(project)
+    edit_yaml(
+        project / "config" / "default.yaml", lambda d: d["captions"].update(mask_profanity=False)
+    )
+    rig = make_rig(project, fake, overrides={(5, 2): "blorp"})
+    rig.moments(moment(start="0:24", end="0:58", hook="WHY WUMP MATTERS", caption="says blorp."))
+
+    assert rig.go() == 0
+
+    assert "blorp" in (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    assert post(rig, "A01_tiktok")[0] == "@demo says blorp."
+    clip = rig.clip("A01_tiktok")
+    assert (clip.masked_words, clip.sensitive_words) == (0, 0)
+    assert review(rig, "A01_tiktok") == []
+
+
+# --- names and automatic spelling rules (Brief 11.1) ---------------------------------------------
+
+
+def with_names(*names: str) -> Callable[[dict[str, Any]], None]:
+    def mutate(d: dict[str, Any]) -> None:
+        d["names"] = list(names)
+
+    return mutate
+
+
+def auto_spelling(rig: Rig) -> dict[str, Any]:
+    data: dict[str, Any] = json.loads(
+        (rig.folder / "auto_spelling.json").read_text(encoding="utf-8")
+    )
+    return data
+
+
+def test_name_variants_become_spelling_rules_and_are_recorded(
+    project: Path, fake: FakeFfmpeg, capsys: pytest.CaptureFixture[str]
+) -> None:
+    overrides = {(5, 2): "z0rble", (6, 0): "zor", (6, 1): "ble", (6, 3): "Z0rble,"}
+    rig = make_rig(project, fake, mutate=with_names("Zorb1e", "QXV"), overrides=overrides)
+    transcript = rig.run_dir / "transcript.json"
+    before = transcript.read_bytes()
+
+    assert rig.go() == 0
+
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    assert ass.count("Zorb1e") >= 3 and "z0rble" not in ass.lower() and "ble" not in ass.split()
+    clip = rig.clip("A01_tiktok")
+    assert clip.spelling_replacements == 3
+    assert clip.names_to_check == {"Zorb1e": [1.25, 5.15, 6.65], "QXV": []}
+    assert clip.checks["names_listed"] == "pass"
+    assert transcript.read_bytes() == before
+
+    data = auto_spelling(rig)
+    by_text = {v["text"]: v for v in data["variants"]}
+    assert set(by_text) == {"z0rble", "zor ble"}
+    assert by_text["z0rble"]["count"] == 2 and by_text["z0rble"]["status"] == "apply"
+    assert by_text["z0rble"]["rule_to"] == "Zorb1e"
+    assert by_text["z0rble"]["seen"] == [
+        {"clip": "A01_tiktok", "at": 1.25},
+        {"clip": "A01_tiktok", "at": 6.65},
+    ]
+    assert by_text["zor ble"]["seen"] == [{"clip": "A01_tiktok", "at": 5.15}]
+    assert data["names"] == ["Zorb1e", "QXV"] and data["source_sha256"] == "b" * 64
+    text = out_of(capsys)
+    assert "names: 2 automatic spelling rules, 0 suggestions, 0 already in spelling" in text
+    assert "z0rble" not in text and "zor ble" not in text
+    html = (rig.out / "campaign_report.html").read_text(encoding="utf-8")
+    assert "<b>z0rble</b> &rarr; Zorb1e: 2 times" in html and "heard at A01_tiktok 0:01.2" in html
+
+
+def test_an_explicit_rule_wins_and_an_identity_rule_vetoes(project: Path, fake: FakeFfmpeg) -> None:
+    def mutate(d: dict[str, Any]) -> None:
+        d["names"] = ["Zorb1e"]
+        d["spelling"].append({"from": "z0rble", "to": "z0rble"})
+
+    rig = make_rig(project, fake, mutate=mutate, overrides={(5, 2): "z0rble", (6, 0): "zorbie"})
+
+    assert rig.go() == 0
+
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    assert "z0rble" in ass and "zorbie" not in ass and "Zorb1e" in ass
+    by_text = {v["text"]: v for v in auto_spelling(rig)["variants"]}
+    assert by_text["z0rble"]["status"] == "explicit" and by_text["z0rble"]["rule_to"] is None
+    assert by_text["zorbie"]["status"] == "apply"
+    html = (rig.out / "campaign_report.html").read_text(encoding="utf-8")
+    assert "Already in your spelling list" in html
+
+
+def test_a_suggestion_is_listed_but_not_applied(
+    project: Path, fake: FakeFfmpeg, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig = make_rig(project, fake, mutate=with_names("Frob"), overrides={(5, 2): "frab"})
+
+    assert rig.go() == 0
+
+    assert "frab" in (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    assert rig.clip("A01_tiktok").spelling_replacements == 0
+    by_text = {v["text"]: v for v in auto_spelling(rig)["variants"]}
+    assert by_text["frab"]["status"] == "suggest" and by_text["frab"]["seen"] == [
+        {"clip": "A01_tiktok", "at": 1.25}
+    ]
+    assert "names: 0 automatic spelling rules, 1 suggestions" in out_of(capsys)
+    html = (rig.out / "campaign_report.html").read_text(encoding="utf-8")
+    assert "<b>frab</b> (for Frob): 1 time" in html
+
+
+def test_without_names_nothing_is_scanned_or_written(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert rig.go() == 0
+    assert not (rig.folder / "auto_spelling.json").exists()
+    assert "names:" not in out_of(capsys)
+    assert "Automatic spelling rules" not in (rig.out / "campaign_report.html").read_text("utf-8")

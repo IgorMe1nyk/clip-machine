@@ -957,6 +957,7 @@ def test_rendered_settings_and_clip_json_from_before_r1_still_load() -> None:
     clip = RenderedClip.model_validate(old_clip)
     assert clip.notes == [] and clip.caption_lines == 0 and clip.caption_max_words == 0
     assert (clip.hook_shown, clip.hook_moved, clip.outside_safe_zone) == (False, False, 0)
+    assert clip.masked_words == 0 and settings.mask_profanity is True  # Brief 11.1: not stale
 
 
 # --- Brief 11: campaign mode settings -------------------------------------------------------------

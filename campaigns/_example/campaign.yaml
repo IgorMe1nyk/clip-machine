@@ -9,13 +9,15 @@ hook:
   max_chars: 48
 watermark:
   file: assets/watermark.png
-  position: { x_center: 0.5, y_center: 0.18 }   # fractions of 1080x1920; never a corner
+  position: auto        # chosen once by face overlap and background darkness, locked in auto_position.json
+  # position: { x_center: 0.5, y_center: 0.18 }   # or fixed: fractions of 1080x1920; never a corner
   scale: 1.0                                    # uniform only; no stretching
 captions: { style: box_karaoke }                # font size comes from config/default.yaml
 spelling:                                       # caption word fixes; whole word, any case
   - { from: "zorble", to: "Zorb1e" }
   - { from: "q x v", to: "QXV" }                # three words merge into one caption word
 names_to_check: [Zorb1e, QXV]                   # listed in the report for a visual check
+names: [Zorb1e, QXV]                            # correct spellings; the transcript is scanned for the ways Whisper writes them (auto_spelling.json)
 post:
   prefix: { tiktok: "@example", instagram: "@example", youtube: "@example" }
   closers:

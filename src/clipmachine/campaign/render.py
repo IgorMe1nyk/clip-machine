@@ -13,6 +13,7 @@ hook, a caption or a name.
 
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +25,7 @@ from clipmachine.campaign.models import (
     CampaignClip,
     CampaignClipWatermark,
     Moment,
+    SpellingRule,
     UsedEntry,
     UsedLog,
 )
@@ -36,12 +38,14 @@ from clipmachine.utils import ffmpeg
 from clipmachine.utils.captions import clip_words
 from clipmachine.utils.image import color_type_name
 from clipmachine.utils.snapping import EPSILON, SentenceIndex, auto_end, snap_near
+from clipmachine.utils.wordlists import Hit, mask_text, sensitive_hits
 
 Check = Literal["pass", "warn", "fail"]
 Outcome = Literal["rendered", "failed", "refused"]
 
 # The clip length is compared with this much slack, as the render stage's checks are.
 LENGTH_SLACK = 0.001
+REVIEW_SUFFIX = ".review.txt"  # masked and sensitive words, for the report and Igor; local only
 
 
 class MomentFailed(Exception):
@@ -67,6 +71,11 @@ class MomentContext:
     units: SentenceIndex
     duration: float  # of the source audio
     source_sha256: str
+    # Brief 11.1: the campaign's rules plus the automatic ones; the variant texts to time; the
+    # names listed for a visual check (names_to_check plus names)
+    spelling_rules: tuple[SpellingRule, ...] = ()
+    variant_texts: tuple[str, ...] = ()
+    names_to_check: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -88,6 +97,7 @@ class MomentResult:
     start_moved: float | None = None
     end_moved: float | None = None
     closer_number: int | None = None  # 1-based position in the campaign's closers
+    variant_times: dict[str, list[float]] | None = None  # name variants heard: clip seconds
 
 
 @dataclass
@@ -105,6 +115,9 @@ class _Work:
     names: dict[str, list[float]] = field(default_factory=dict)
     checks: dict[str, Check] = field(default_factory=dict)
     closer: str | None = None
+    review: list[str] = field(default_factory=list)  # lines of <clip>.review.txt
+    masked: int = 0
+    sensitive: int = 0
 
 
 def _now() -> str:
@@ -119,7 +132,19 @@ def _outputs(ctx: MomentContext, name: str) -> list[Path]:
         out / f"{name}.ass",
         out / f"{name}{stage.CROP_CMD_SUFFIX}",
         out / f"{name}{stage.TEMP_SUFFIX}",
+        out / f"{name}{REVIEW_SUFFIX}",
     ]
+
+
+def review_line(what: str, where: str, hit: Hit) -> str:
+    """One tab-separated line of <clip>.review.txt: what (masked | sensitive), where (captions |
+    hook | post), the word as written (a slur is never written, a dash stands in) and the kind."""
+    word = "-" if hit.kind == "slur" else hit.word
+    return "\t".join((what, where, word, hit.kind))
+
+
+def _review(work: _Work, what: str, where: str, hits: Sequence[Hit]) -> None:
+    work.review.extend(review_line(what, where, hit) for hit in hits)
 
 
 def _clip_json(
@@ -133,7 +158,7 @@ def _clip_json(
     render_seconds: float | None = None,
     rendered_at: str | None = None,
 ) -> CampaignClip:
-    wm = ctx.campaign.watermark
+    wm = ctx.campaign.placed
     moment = work.moment
     known = work.start is not None and work.end is not None
     return CampaignClip(
@@ -155,6 +180,8 @@ def _clip_json(
         notes=work.notes,
         spelling_replacements=work.spelling,
         names_to_check=work.names,
+        masked_words=work.masked,
+        sensitive_words=work.sensitive,
         checks={name: work.checks[name] for name in CHECKS if name in work.checks},
         closer=work.closer,
         hook_mode=ctx.campaign.config.hook.mode,
@@ -163,6 +190,9 @@ def _clip_json(
         watermark=CampaignClipWatermark(
             sha256=wm.sha256,
             blend=wm.blend,
+            position_mode="auto"
+            if ctx.campaign.config.watermark.position == "auto"
+            else "explicit",
             x=wm.x,
             y=wm.y,
             width=wm.size[0],
@@ -237,16 +267,44 @@ def _check_times(ctx: MomentContext, start: float, end: float) -> float:
     return length
 
 
-def _post_text(ctx: MomentContext, moment: Moment, closer: str) -> str:
+def _post_text(ctx: MomentContext, moment: Moment, closer: str) -> tuple[str, list[Hit]]:
+    """The post text and the words masked in its first line. Only the prefix and the caption are
+    masked: the hashtags and the closer are fixed text."""
     post = ctx.campaign.config.post
     first = " ".join(
         part for part in (post.prefix.get(moment.platform, ""), moment.caption) if part
     )
+    hits: list[Hit] = []
+    if ctx.plan.wordlists is not None:
+        first, hits = mask_text(first, ctx.plan.wordlists)
     lines = [first]
     if post.hashtags:
         lines.append(" ".join(post.hashtags))
     lines.append(closer)
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n", hits
+
+
+def _check_sensitive(ctx: MomentContext, moment: Moment, work: _Work) -> None:
+    """Flag words and slurs in the hook and the post caption: a note and review lines; with
+    hook.sensitive: fail, a hook hit fails the moment. The hook is never rewritten."""
+    lists = ctx.plan.wordlists
+    if lists is None:
+        return
+    hook_hits = sensitive_hits(moment.hook, lists)
+    caption_hits = sensitive_hits(moment.caption, lists)
+    _review(work, "sensitive", "hook", hook_hits)
+    _review(work, "sensitive", "post", caption_hits)
+    work.sensitive = len(hook_hits) + len(caption_hits)
+    if hook_hits:
+        work.notes.append("hook_sensitive")
+    if caption_hits:
+        work.notes.append("caption_sensitive")
+    if hook_hits and ctx.campaign.config.hook.sensitive == "fail":
+        raise MomentFailed(
+            f"the hook has {len(hook_hits)} sensitive word(s) (hook.sensitive: fail); reword it, "
+            "see the report",
+            "hook_from_start",
+        )
 
 
 def _render_moment(
@@ -254,7 +312,7 @@ def _render_moment(
 ) -> MomentResult:
     name = moment.clip_name
     plan, app, campaign = ctx.plan, ctx.app, ctx.campaign
-    wm = campaign.watermark
+    wm = campaign.placed
     settings = plan.settings
     started = time.perf_counter()
 
@@ -268,8 +326,10 @@ def _render_moment(
     words = clip_words(plan.segments, start, end)
     if not words:
         raise MomentFailed("no words in this stretch, so there would be no captions", "captions_on")
-    words, work.spelling = apply_spelling(words, campaign.config.spelling)
-    work.names = find_names(words, campaign.config.names_to_check)
+    variant_times = find_names(words, ctx.variant_texts)  # before the rules change them
+    words, work.spelling = apply_spelling(words, ctx.spelling_rules)
+    work.names = find_names(words, ctx.names_to_check)
+    _check_sensitive(ctx, moment, work)
 
     clip = MomentClipObject(name, start, end, moment.hook)
     chosen = stage._speaker_crop(plan, clip) if plan.speaker is not None else None
@@ -283,6 +343,9 @@ def _render_moment(
     )
     captions = stage._karaoke_captions(plan, clip, words, chosen, length, spec)
     work.notes.extend(captions.notes)
+    _review(work, "masked", "captions", captions.masked)
+    _review(work, "masked", "hook", captions.hook_masked)
+    work.masked = len(captions.masked) + len(captions.hook_masked)
 
     if "hook_missing" in captions.notes or "hook_truncated" in captions.notes:
         raise MomentFailed(
@@ -361,7 +424,12 @@ def _render_moment(
     closer, used = take_closer(used, closers)
     work.closer = closer
     post_path = ctx.out_dir / f"{name}.post.txt"
-    write_text_atomic(post_path, _post_text(ctx, moment, closer))
+    post_text, post_hits = _post_text(ctx, moment, closer)
+    write_text_atomic(post_path, post_text)
+    _review(work, "masked", "post", post_hits)
+    work.masked += len(post_hits)
+    if work.review:
+        write_text_atomic(ctx.out_dir / f"{name}{REVIEW_SUFFIX}", "\n".join(work.review) + "\n")
     rendered_at = _now()
     used = record_render(
         used,
@@ -388,9 +456,7 @@ def _render_moment(
             "source_audio_only": "pass",
             "closer_present": "pass" if last_line == closer else "fail",
             "not_previously_used": "warn" if reused else "pass",
-            "names_listed": "pass"
-            if set(work.names) == set(campaign.config.names_to_check)
-            else "fail",
+            "names_listed": "pass" if set(work.names) == set(ctx.names_to_check) else "fail",
         }
     )
     seconds_taken = round(time.perf_counter() - started, 2)
@@ -418,6 +484,7 @@ def _render_moment(
         start_moved=start_moved,
         end_moved=end_moved,
         closer_number=closers.index(closer) + 1,
+        variant_times=variant_times,
     )
 
 

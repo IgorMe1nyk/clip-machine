@@ -1,0 +1,100 @@
+# Words masked in captions, hooks and post captions: shown as first letter + *** (f***).
+# One entry per line; # starts a comment; a phrase with spaces matches consecutive words.
+# Single words also match -s -es -ed -ing -er -ers -in (and a doubled consonant: shitting).
+# "context: word" is masked only next to another masked word, otherwise flagged in the report.
+# "slur: word" is always masked and always flagged. Keep slurs in this file only.
+# Per campaign: `allowed:` removes an entry here, `extra_masked:` adds one (campaign.yaml).
+# Risk reduction, not a guarantee: the platforms publish no banned-word lists (docs/wordlists.md).
+
+# Profanity
+fuck
+motherfucker
+shit
+bullshit
+bitch
+asshole
+dick
+pussy
+cunt
+bastard
+cock
+dickhead
+prick
+whore
+slut
+hoe
+thot
+
+# Sexual / adult
+porn
+porno
+pornhub
+onlyfans
+sex
+sexual
+sexy
+nude
+nudes
+naked
+horny
+orgasm
+blowjob
+hooker
+stripper
+escort
+
+# Hard drugs
+cocaine
+meth
+heroin
+fentanyl
+ecstasy
+lsd
+ketamine
+xanax
+percocet
+oxy
+shrooms
+context: coke
+context: crack
+context: lean
+context: molly
+
+# Self-harm
+suicide
+suicidal
+kill myself
+kill yourself
+kys
+overdose
+self harm
+context: cutting
+
+# Slurs (racial, ethnic, homophobic, transphobic, ableist): always masked and flagged
+slur: nigger
+slur: nigga
+slur: chink
+slur: gook
+slur: spic
+slur: wetback
+slur: kike
+slur: beaner
+slur: paki
+slur: raghead
+slur: towelhead
+slur: coon
+slur: darkie
+slur: jigaboo
+slur: zipperhead
+slur: redskin
+slur: injun
+slur: gypsy
+slur: faggot
+slur: fag
+slur: dyke
+slur: tranny
+slur: shemale
+slur: retard
+slur: retarded
+slur: spastic
+slur: mongoloid

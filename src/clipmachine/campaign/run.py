@@ -13,13 +13,15 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from clipmachine import pipeline
+from clipmachine.campaign.autoposition import choose_position, describe
 from clipmachine.campaign.loader import load_campaign, load_moments, select_moments
+from clipmachine.campaign.names import AUTO_SPELLING_FILE, auto_rules, find_variants, record
 from clipmachine.campaign.render import MomentContext, MomentResult, render_moment
 from clipmachine.campaign.report import write_report
 from clipmachine.campaign.used import load_used, save_used
 from clipmachine.config import ConfigError, load_app_config
 from clipmachine.models import FetchMeta, RunState
-from clipmachine.runs import RunError, validate_input
+from clipmachine.runs import RunError, validate_input, write_json_atomic
 from clipmachine.stages import render as stage
 from clipmachine.stages.candidates import _load_transcript
 from clipmachine.stages.fetch import META_FILE
@@ -139,6 +141,14 @@ def run_campaign(
     moments = select_moments(all_moments, only)
     for warning in campaign.warnings:
         print(f"warning: {warning}")
+    if campaign.config.watermark.position == "auto":
+        if campaign.auto is not None:
+            print(f"{describe(campaign.auto)} (locked in auto_position.json)")
+        else:
+            print(
+                "watermark position: auto; choosing from the first "
+                f"{app.campaign.auto_watermark_sample} moments being rendered"
+            )
     pipeline.check_ffmpeg()
     started = time.perf_counter()
 
@@ -157,6 +167,12 @@ def run_campaign(
                 inputs, track_plan=dataclasses.replace(inputs.track_plan, clips_dir=out_dir)
             )
         plan = stage._make_plan(run_dir, out_dir, app, inputs)
+        if plan.wordlists is not None:  # the campaign's own allowed and extra words
+            cfg = campaign.config
+            fine = [*cfg.allowed, *cfg.names_to_check, *cfg.names]
+            fine.extend(rule.to for rule in cfg.spelling)
+            lists = plan.wordlists.with_masked(cfg.extra_masked).without(fine)
+            plan = dataclasses.replace(plan, wordlists=lists)
         transcript = _load_transcript(run_dir)
         index = build_index(
             transcript.segments,
@@ -164,6 +180,16 @@ def run_campaign(
             min_pause=app.snap.min_pause_seconds,
             min_cut_gap=app.snap.min_cut_gap,
         )
+        cfg = campaign.config
+        variants = find_variants(
+            index,
+            cfg.names,
+            apply_threshold=app.campaign.name_match_threshold,
+            suggest_threshold=app.campaign.name_suggest_threshold,
+        )
+        auto, covered = auto_rules(variants, cfg.spelling)
+        listed = [*cfg.names_to_check, *(n for n in cfg.names if n not in cfg.names_to_check)]
+        source_sha256 = stage._load_meta(run_dir).sha256
         ctx = MomentContext(
             root=root,
             run_dir=run_dir,
@@ -173,9 +199,17 @@ def run_campaign(
             campaign=campaign,
             units=index.units(),
             duration=transcript.audio_duration_seconds,
-            source_sha256=stage._load_meta(run_dir).sha256,
+            source_sha256=source_sha256,
+            spelling_rules=(*cfg.spelling, *auto),
+            variant_texts=tuple(v.text for v in variants),
+            names_to_check=tuple(listed),
         )
+        heard: dict[str, list[tuple[str, float]]] = {v.text: [] for v in variants}
         used = load_used(campaign.folder)
+        if campaign.watermark is None:  # position: auto, not chosen yet
+            campaign, lock = choose_position(ctx, moments, used, force_reuse=force_reuse)
+            ctx = dataclasses.replace(ctx, campaign=campaign)
+            print(describe(lock))
         closers = len(campaign.config.post.closers)
         wanted = {part.strip() for part in only.split(",")} if only else set()
         counts = {"rendered": 0, "failed": 0, "refused": 0}
@@ -186,6 +220,8 @@ def run_campaign(
             counts[result.outcome] += 1
             if result.outcome == "rendered":
                 save_used(campaign.folder, used)
+                for text, times in (result.variant_times or {}).items():
+                    heard[text].extend((moment.clip_name, t) for t in times)
             if result.outcome == "refused" and moment.id in wanted:
                 refused_named = True
             print(_line(moment.clip_name, result, closers))
@@ -194,10 +230,30 @@ def run_campaign(
             raise RunError("campaign mode made an API call; this must never happen")
 
     seconds = time.perf_counter() - started
+    auto_spelling = None
+    if cfg.names:
+        auto_spelling = record(
+            variants,
+            covered,
+            heard,
+            names=cfg.names,
+            apply_threshold=app.campaign.name_match_threshold,
+            suggest_threshold=app.campaign.name_suggest_threshold,
+            source_sha256=source_sha256,
+        )
+        write_json_atomic(
+            campaign.folder / AUTO_SPELLING_FILE, auto_spelling.model_dump(mode="json")
+        )
+        suggestions = sum(1 for v in variants if v.status == "suggest")
+        print(
+            f"names: {len(auto)} automatic spelling rules, {suggestions} suggestions, "
+            f"{len(covered)} already in spelling; see {AUTO_SPELLING_FILE} and the report"
+        )
     print(
         f"campaign: {counts['rendered']} rendered, {counts['failed']} failed, "
         f"{counts['refused']} refused; API calls: 0; {seconds:.1f} s"
     )
     print(f"output: {out_dir}")
-    print(f"report: {write_report(out_dir, campaign, all_moments, run_dir.name)}")
+    report = write_report(out_dir, campaign, all_moments, run_dir.name, auto=auto_spelling)
+    print(f"report: {report}")
     return EXIT_MOMENT_FAILED if counts["failed"] or refused_named else EXIT_OK

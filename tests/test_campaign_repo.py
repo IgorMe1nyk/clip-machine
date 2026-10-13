@@ -45,7 +45,9 @@ def test_the_shipped_example_loads_with_the_real_config() -> None:
     moments = load_moments(campaign)
     assert campaign.warnings == ()
     assert campaign.hook_font_size == app.hook.font_size
-    assert campaign.watermark.blend == "normal" and campaign.watermark.background == "transparent"
+    assert campaign.asset.blend == "normal" and campaign.asset.background == "transparent"
+    assert campaign.config.watermark.position == "auto" and campaign.watermark is None
+    assert campaign.config.names == ["Zorb1e", "QXV"]
     assert len(moments) == 3
     assert moments[1].end is None  # `end: auto`
     assert all(m.end is not None for m in (moments[0], moments[2]))

@@ -317,6 +317,9 @@ class CaptionsConfig(StrictModel):
     upcoming_color: str = "#FFFFFF"
     box_opacity: float = Field(default=0.75, ge=0, le=1)
     box_padding_px: int = Field(default=18, ge=0, le=100)
+    # added in Brief 11.1: words on config/wordlists/mask.txt render as first letter + ***
+    # (captions and the hook, every mode); the audio is never changed
+    mask_profanity: bool = True
 
     @model_validator(mode="after")
     def _check_values(self) -> "CaptionsConfig":
@@ -350,6 +353,11 @@ class SafeConfig(StrictModel):
     bottom: int = Field(default=560, ge=0)
     left: int = Field(default=120, ge=0)
     right: int = Field(default=192, ge=0)
+    # TikTok's button column (D-023): from this x and this y down to the bottom right
+    # corner. The auto watermark never touches it (Brief 11.1); the safe-zone preview
+    # draws it. Captions may still reach it: Igor judges that on real frames.
+    button_left: int = Field(default=780, ge=0)
+    button_top: int = Field(default=840, ge=0)
 
 
 class CampaignModeConfig(StrictModel):
@@ -361,6 +369,18 @@ class CampaignModeConfig(StrictModel):
     corner_zone: float = Field(default=0.15, gt=0, lt=0.5)
     # `end: auto` aims for this clip length in seconds
     auto_end_target_s: float = Field(default=40, gt=0)
+    # Brief 11.1: a transcript span this close to a campaign name (difflib ratio) becomes a
+    # spelling rule; between the two thresholds, with the same Soundex key, it is a suggestion
+    name_match_threshold: float = Field(default=0.8, ge=0.5, le=1.0)
+    name_suggest_threshold: float = Field(default=0.7, ge=0.5, le=1.0)
+    # Brief 11.1, `watermark.position: auto`: moments scored, frames read per moment, the two
+    # weights of the score, and the grid steps as fractions of the frame
+    auto_watermark_sample: int = Field(default=5, ge=1, le=50)
+    auto_watermark_frames: int = Field(default=3, ge=1, le=30)
+    auto_watermark_face_weight: float = Field(default=0.6, ge=0, le=1)
+    auto_watermark_light_weight: float = Field(default=0.4, ge=0, le=1)
+    auto_watermark_x_step: float = Field(default=0.05, gt=0, le=0.5)
+    auto_watermark_y_step: float = Field(default=0.02, gt=0, le=0.5)
 
 
 class RenderConfig(StrictModel):
@@ -878,6 +898,10 @@ class RenderedSettings(StrictModel):
     hook_font_size: int = 0
     # old JSON files were rendered with faces avoided
     hook_position: Literal["top", "avoid_faces"] = "avoid_faces"
+    # added in Brief 11.1. Unlike the fields above, the default is the new value on purpose: an
+    # old clip with no masked word is not stale, and the chance of one is not worth re-rendering
+    # every run on resume
+    mask_profanity: bool = True
 
 
 class RenderedOutput(StrictModel):
@@ -920,6 +944,7 @@ class RenderedClip(StrictModel):
     hook_shown: bool = False
     hook_moved: bool = False  # moved down to clear a face
     outside_safe_zone: int = 0  # caption/hook boxes not fully inside the safe area
+    masked_words: int = 0  # Brief 11.1: caption and hook words masked (a count, never the words)
 
 
 class TrackSource(StrictModel):

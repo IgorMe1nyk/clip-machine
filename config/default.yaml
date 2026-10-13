@@ -112,6 +112,7 @@ captions:
   words_per_line: 3          # legacy style only
   highlight_color: "#FFD400" # legacy style only
   margin_v: 350              # legacy style only: pixels from the bottom edge, clear of phone UI
+  mask_profanity: true       # words in config/wordlists/mask.txt render as f*** in captions and the hook (Brief 11.1); the audio is never changed
 hook:                        # the clip's hook line as big text at the start (needs captions.style box_karaoke)
   enabled: true
   seconds: 3.0               # shown from 0 to this; a campaign may set its own hook.seconds
@@ -123,7 +124,17 @@ safe:                        # pixels the TikTok / Reels / Shorts apps cover (D-
   bottom: 560                # organic posts; the strictest published number is 672. To be checked against the real TikTok UI
   left: 120
   right: 192
+  button_left: 780           # TikTok's button column starts here (x) ...
+  button_top: 840            # ... and here (y); the auto watermark never touches it
 campaign:                    # campaign mode (Brief 11): the rules live in campaigns/<slug>/
   max_snap_seconds: 1.5      # a moment's start or end moves at most this far to a clean sentence edge
   corner_zone: 0.15          # fraction of width and height; a watermark may not touch the four corners
   auto_end_target_s: 40      # "end: auto" aims for this clip length in seconds
+  name_match_threshold: 0.8  # a transcript span this close to a name (difflib ratio) becomes a spelling rule (Brief 11.1)
+  name_suggest_threshold: 0.7   # from here up to name_match_threshold, with the same Soundex key, it is a suggestion in the report only
+  auto_watermark_sample: 5   # watermark.position auto: moments scored (the first ones being rendered)
+  auto_watermark_frames: 3   # frames read per scored moment for the background luminance
+  auto_watermark_face_weight: 0.6    # score = face_weight * face overlap + light_weight * luminance / 255; lower wins
+  auto_watermark_light_weight: 0.4
+  auto_watermark_x_step: 0.05        # grid steps as fractions of the frame
+  auto_watermark_y_step: 0.02

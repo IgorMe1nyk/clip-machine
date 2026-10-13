@@ -2,6 +2,90 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-12 — Brief 11.1: campaign auto-setup (built; real run done; Igor's phone check pending)
+
+**Why:** after Brief 11's real run two per-campaign settings needed hand-tuning: the watermark
+position (top centre covered the head and, with screen blend, was faint on a light wall) and the
+name spellings (Whisper wrote one name three ways; one was listed). Igor also wants clips safe to
+post: profanity masked, sensitive words flagged. Goal: a new campaign takes about 2 minutes to set
+up. $0, deterministic, local, no model (D-030).
+
+**Done** (12 commits on the branch `brief-11-1-auto-setup` from `main`)
+- **`watermark.position: auto`.** A grid of centre positions (x 0.5 ± 0.05 steps, y every 0.02)
+  is filtered by the geometry checks an explicit position must pass, by the caption envelope (the
+  widest, tallest caption box, so no clip's captions can reach the spot) and, per sampled clip,
+  by the render's own hook and caption checks. Survivors are scored over the first
+  `campaign.auto_watermark_sample` (5) moments being rendered: 0.6 × the share of face samples
+  the box overlaps (from the track; 0 with a centre crop) + 0.4 × the median luminance of the
+  source pixels behind it on 3 frames per clip, read through the existing ffmpeg frame pipe into
+  memory (no frame touches disk). Lower wins; ties go to the spot nearest the captions, then the
+  centre. Locked in `campaigns/<slug>/auto_position.json` (score, runner-up, sampled ids, the
+  geometry it was chosen for) and reused while the watermark file, scale, blend, frame, safe
+  margins, corner zone and hook position stay the same; a stale lock is a warning and a new
+  choice; a lock that no longer fits is a clear error. Console and report show the choice.
+  TikTok's button column (`safe.button_left: 780`, `safe.button_top: 840`, D-023; the preview
+  draws the same values) is a no-go zone: a candidate touching it is dropped (Igor, before the
+  real run).
+- **`names:`** with automatic spelling rules. Once per run the whole transcript is scanned for
+  spans of 1–3 words (never across a sentence end) that look or sound like a name: lower case,
+  digit look-alikes mapped (3 1 0 → e i o), difflib ratio and a basic Soundex. Ratio ≥ 0.8 makes
+  a rule (a name shorter than 5 letters also needs the Soundex match); 0.7–0.8 with the same
+  Soundex is a **suggestion only**, listed but not applied (Igor's decision). An explicit
+  `spelling` entry with the same `from` wins, so an identity rule vetoes. A name plus its
+  neighbour is not a second variant. `auto_spelling.json` records every variant with status,
+  count and up to 3 places it was heard; the report lists rules, suggestions and the veto hint.
+- **Word lists (all modes):** `config/wordlists/mask.txt` (51 words, 5 context words, 27 slurs),
+  `flag.txt` (30), `never.txt` (16), from `docs/wordlists.md`. `captions.mask_profanity` (default
+  on) masks caption words and the hook as first letter + `***` at the one point the normal
+  render, campaign mode and the safe-zone preview share; whole word, case kept, common
+  inflections, a doubled consonant, never-list wins for single words, phrases match exactly.
+  Context words (coke, crack, cutting, lean, molly) are masked only within 2 words of another
+  masked word, else flagged. The audio is never changed. Old clip jsons stay valid (the new
+  settings field defaults to the new value, so nothing re-renders).
+- **Campaign:** `hook.sensitive: warn | fail` (flag words, slurs and lone context words in the
+  hook or the post caption; a hook hit fails the moment with `fail`; the hook is never
+  rewritten); the post caption's first line is masked, hashtags and the closer are not;
+  per-campaign `allowed:` and `extra_masked:`; the campaign's names and spelling targets are
+  never masked. Masked and sensitive words go to a local `<clip>.review.txt` (a slur as a dash);
+  jsons and console carry counts only; the report shows the masked count and names the
+  sensitive words.
+- **Watermark format:** a WebP, JPEG, GIF, BMP, AVIF or SVG named `.png` fails with the real
+  format named and the advice to convert.
+- Refactor: the watermark is measured once (`WatermarkAsset`) and placed apart, so a position can
+  be chosen later. `face_rects_timed` keeps the sample time of each face box.
+- Tests: 1886 passed, 3 skipped (Whisper, MediaPipe, a symlink test); the ffmpeg tests ran here,
+  including an auto-position campaign on a generated source. ruff, format, mypy and pip-audit
+  clean. Built by Fable in auto mode, one commit per step, every check run separately.
+
+**Real run** (5 of 35 moments with `--only`, the same 1:37 h source and run folder as Brief 11;
+speaker crop with the real face models; $0, API calls 0)
+- 5 rendered, 0 failed, 0 refused. Whole command 220 s; per clip 19–24 s of render (tracking of
+  the sampled clips happens before, while the position is chosen, and is reused by the render).
+  Lengths 39.1–43.3 s from `end: auto`.
+- Position: x 0.50, y 0.61, face overlap 0.3% of samples, background luminance 23 of 255, score
+  0.038; runner-up x 0.55 at the same height. 588 grid positions, 156 placeable, 124 with room
+  for the hook and captions in every sampled clip. The spot is just above the captions, on dark
+  clothing: where Igor had moved it by hand after Brief 11. Three clips still carry the binary
+  `watermark_over_face` note (a face reaches the box in a few samples).
+- Names: 3 rules applied, 1 suggestion, 1 variant already in the spelling list; none of the
+  variants is spoken in the five rendered clips (0 fixes). Found in the real transcript: a
+  two-word variant and the three-word span containing it were both counted from the same place;
+  fixed (a longer span is not a variant when a shorter span inside it already applies). One
+  applied rule mapped a three-letter ordinary word to a name (ratio 0.86, same sound); Igor's
+  rule since: a span under 4 letters is a suggestion at most. Detection run again without a
+  render (no clip text changed): 1 rule applied, 2 suggestions, 1 already in spelling.
+- Masking: 8 words masked across 4 clips (profanity, inflections included), 0 sensitive words.
+  All eight checks pass on every clip.
+
+**Not done**
+- Igor's phone check of the chosen spot and the masked captions; his veto or OK on the applied
+  name rules (the report lists them).
+- Out of scope, for later: changing the hook mode automatically; Whisper hot words for names;
+  a dictionary to tell a real word from a misspelled name (today the report and the identity
+  veto are the guard).
+
+**Cost:** $0. No API call.
+
 ## 2026-10-12 — Brief 11: campaign mode (built; real run done; Igor's phone check pending)
 
 **Why:** clipping campaigns (D-024) forbid tools that pick the moments, and require a supplied

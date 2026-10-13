@@ -3,12 +3,13 @@ watermark, the real font. Skipped (see conftest) when ffmpeg is not on PATH."""
 
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from campaign_helpers import moment, write_campaign, write_moments, write_run
 from clipmachine import cli
-from clipmachine.campaign.models import CHECKS, CampaignClip
+from clipmachine.campaign.models import CHECKS, AutoPosition, CampaignClip
 from clipmachine.utils import ffmpeg
 from helpers import edit_yaml
 
@@ -51,3 +52,35 @@ def test_a_campaign_run_renders_a_real_clip(project: Path) -> None:
     report = (out / "campaign_report.html").read_text(encoding="utf-8")
     assert report.startswith("<!DOCTYPE html>") and 'src="A01_tiktok.mp4"' in report
     assert not list(out.glob("*.tmp*"))
+
+
+def test_an_auto_position_is_chosen_from_real_frames_and_the_clip_renders(project: Path) -> None:
+    edit_yaml(project / "config" / "default.yaml", lambda d: d["render"].update(preset="ultrafast"))
+    run_dir = write_run(project, sentences=2, width=480, height=270).resolve()
+    make_source(run_dir / "source.mp4")
+
+    def mutate(d: dict[str, Any]) -> None:
+        d.update(clip_length={"min": 2, "max": 10})
+        d["watermark"]["position"] = "auto"
+
+    folder = write_campaign(project, mutate=mutate)
+    write_moments(folder, [moment(start="0:05", end="0:09")])
+
+    code = cli.main(["campaign", str(run_dir), "--campaign", "demo"], root=project)
+
+    assert code == 0
+    out = run_dir / "campaign" / "demo"
+    clip = CampaignClip.model_validate_json((out / "A01_tiktok.json").read_text(encoding="utf-8"))
+    assert clip.status == "rendered" and clip.watermark.position_mode == "auto"
+    assert set(clip.checks.values()) == {"pass"}
+    lock = AutoPosition.model_validate_json(
+        (folder / "auto_position.json").read_text(encoding="utf-8")
+    )
+    assert lock.sampled == ["A01_tiktok"] and 0 < lock.luminance < 255  # testsrc2 is colourful
+    assert lock.face_cost == 0.0  # centre crop: no track
+    assert (
+        not list(out.glob("*.tmp*")) and not list(out.glob("*.rgb")) and not list(out.glob("*.png"))
+    )
+    ffmpeg.verify_clip(
+        ffmpeg.probe(out / "A01_tiktok.mp4"), width=1080, height=1920, duration=clip.duration or 0
+    )
