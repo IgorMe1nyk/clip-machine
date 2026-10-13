@@ -1171,7 +1171,7 @@ def test_a_zoom_in_the_app_config_shows_in_the_json_the_line_the_graph_and_the_c
     clip = rig.clip("A01_tiktok")
     assert clip.zoom_count >= 1 and len(clip.zoom_spans) == clip.zoom_count
     assert clip.settings is not None and clip.settings.zoom_enabled
-    assert clip.settings.zoom_scale == 1.12
+    assert clip.settings.zoom_scale == 1.15
     assert "zooms" in out_of(capsys)
     assert graph_of(rig.args_of("A01_tiktok")).startswith("[0:v:0]sendcmd=")
     assert crop_w_values(rig)
@@ -1231,3 +1231,38 @@ def test_with_zoom_off_everywhere_the_line_and_the_json_say_nothing_about_zooms(
     assert clip.zoom_count == 0 and clip.zoom_spans == []
     assert clip.settings is not None and not clip.settings.zoom_enabled
     assert "zooms" not in out_of(capsys)
+
+
+def test_a_smooth_zoom_puts_its_ramps_in_the_clip_json(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = zoom_rig(project, fake, monkeypatch, app_zoom={"enabled": True})
+
+    assert rig.go() == 0
+
+    clip = rig.clip("A01_tiktok")
+    assert clip.settings is not None
+    assert (clip.settings.zoom_style, clip.settings.zoom_ramp_s) == ("smooth", 0.4)
+    assert clip.zoom_ramps and all(0 <= a < b for a, b in clip.zoom_ramps)
+    assert len(crop_w_values(rig)) > 10  # one line per frame in a ramp
+
+
+def test_a_campaign_can_choose_the_punch_style_and_its_own_ramp_length(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def punch(d: dict[str, Any]) -> None:
+        d["video"] = {"zoom": {"style": "punch"}}
+
+    rig = zoom_rig(project, fake, monkeypatch, app_zoom={"enabled": True}, mutate=punch)
+    assert rig.go() == 0
+    clip = rig.clip("A01_tiktok")
+    assert clip.settings is not None and clip.settings.zoom_style == "punch"
+    assert clip.zoom_ramps == [] and clip.zoom_count >= 1
+
+    def longer(d: dict[str, Any]) -> None:
+        d["video"] = {"zoom": {"ramp_s": 0.8}}
+
+    other = zoom_rig(project, fake, monkeypatch, app_zoom={"enabled": True}, mutate=longer)
+    assert other.go() == 0
+    ramps = other.clip("A01_tiktok").zoom_ramps
+    assert ramps and ramps[0][1] - ramps[0][0] == pytest.approx(0.8)

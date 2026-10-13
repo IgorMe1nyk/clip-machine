@@ -96,9 +96,12 @@ from clipmachine.utils.wordlists import (
     mask_words,
 )
 from clipmachine.utils.zoom import (
+    Ramp,
     SentenceStart,
     ZoomSpan,
+    plan_ramps,
     select_zooms,
+    smooth_path,
     upscale_factor,
     zoomed_path,
 )
@@ -198,6 +201,7 @@ class SpeakerCrop:
     # reason codes of zooms that were skipped; all empty with zoom off
     boxes: tuple[tuple[float, CropBox], ...] = ()
     zooms: tuple[ZoomSpan, ...] = ()
+    ramps: tuple[Ramp, ...] = ()  # Brief R2.1: the eases actually used
     zoom_notes: tuple[str, ...] = ()
 
 
@@ -314,6 +318,8 @@ def _settings_of(app: AppConfig) -> RenderedSettings:
         zoom_min_gap_s=zoom.min_gap_s if on else 0.0,
         zoom_max_hold_s=zoom.max_hold_s if on else 0.0,
         zoom_max_upscale=zoom.max_upscale if on else 0.0,
+        zoom_style=zoom.style if on else "",
+        zoom_ramp_s=zoom.ramp_s if on else 0.0,
     )
 
 
@@ -440,17 +446,19 @@ def _sentence_starts(
 
 def _zoom_spans(
     plan: Plan, clip: ClipLike, track: TrackFile, base: CropBox
-) -> tuple[list[ZoomSpan], list[str]]:
-    """The punch-ins of a clip with a followed face, and reason codes for what was skipped.
+) -> tuple[list[ZoomSpan], list[str], list[float]]:
+    """The zooms of a clip with a followed face, reason codes for what was skipped, and the
+    shot boundaries the choice used (the ramps must stop at the same ones).
 
     Nothing is chosen when the zoomed window would be enlarged more than `max_upscale`. Each
     span is centred vertically on the face of the shot where it starts."""
     zoom = plan.zoom
     if zoom is None or plan.sentences is None:
-        return [], []
+        return [], [], []
     settings = plan.settings
-    if upscale_factor(base, zoom.scale, settings.width, settings.height) > zoom.max_upscale:
-        return [], ["zoom_skipped_upscale"]
+    factor = upscale_factor(base, zoom.scale, settings.width, settings.height, zoom.style)
+    if factor > zoom.max_upscale:
+        return [], ["zoom_skipped_upscale"], []
     starts, notes = _sentence_starts(plan, clip, plan.sentences)
     duration = clip.end - clip.start
     shots = [(s.start, s.end) for s in track.shots]
@@ -464,7 +472,7 @@ def _zoom_spans(
         face_cy = holding[-1].face_cy if holding else None
         if face_cy is not None:
             spans.append(ZoomSpan(start, end, face_cy))
-    return spans, notes
+    return spans, notes, list(boundaries)
 
 
 def _crop_from_track(
@@ -510,9 +518,25 @@ def _crop_from_track(
             box, sendcmd_rel, sha, None, len(path) - 1, reused, cuts, switches, track
         )
 
-    spans, notes = _zoom_spans(plan, clip, track, plan.crop)
+    spans, notes, boundaries = _zoom_spans(plan, clip, track, plan.crop)
     frame_w, frame_h = display_size(plan.video.width, plan.video.height, plan.video.rotation)
-    boxes = zoomed_path(path, plan.crop, spans, plan.zoom.scale, frame_w, frame_h, duration)
+    ramps: list[Ramp] = []
+    if plan.zoom.style == "punch":
+        boxes = zoomed_path(path, plan.crop, spans, plan.zoom.scale, frame_w, frame_h, duration)
+    else:
+        ramps, ramp_notes = plan_ramps(spans, [*boundaries, duration], plan.zoom.ramp_s, duration)
+        notes.extend(ramp_notes)
+        boxes = smooth_path(
+            path,
+            plan.crop,
+            spans,
+            ramps,
+            plan.zoom.scale,
+            frame_w,
+            frame_h,
+            _source_fps(plan.video),
+            duration,
+        )
     sendcmd_rel = None
     if len(boxes) > 1:
         cmd = out_dir / f"{clip.id}{CROP_CMD_SUFFIX}"
@@ -530,6 +554,7 @@ def _crop_from_track(
         track,
         boxes=tuple(boxes),
         zooms=tuple(spans),
+        ramps=tuple(ramps),
         zoom_notes=tuple(notes),
     )
 
@@ -725,6 +750,7 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
     write_text_atomic(ass, captions.text)
     crop = plan.crop if chosen is None else chosen.crop
     zooms = () if chosen is None else chosen.zooms
+    ramps = () if chosen is None else chosen.ramps
     notes = list(captions.notes)
     if chosen is not None:
         notes.extend(chosen.zoom_notes)
@@ -806,6 +832,7 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
             masked_words=len(captions.masked) + len(captions.hook_masked),
             zoom_count=len(zooms),
             zoom_spans=[(round(z.start, 3), round(z.end, 3)) for z in zooms],
+            zoom_ramps=[(round(r.start, 3), round(r.end, 3)) for r in ramps],
         ).model_dump(mode="json"),
     )
     mode = "center" if chosen is None else _speaker_log(chosen, plan.zoom is not None)

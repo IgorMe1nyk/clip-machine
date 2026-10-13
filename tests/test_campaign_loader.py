@@ -618,3 +618,23 @@ def test_a_zoom_range_error_or_an_unknown_zoom_key_is_refused(
 ) -> None:
     with pytest.raises(ConfigError, match=r"video\.zoom"):
         load(project, mutate)
+
+
+def test_style_and_ramp_s_override_and_fall_back_to_the_app(project: Path) -> None:
+    app = app_of(project).video.zoom
+    assert (app.style, app.ramp_s) == ("smooth", 0.4)
+
+    assert load(project, zoom_keys(style="punch")).zoom.style == "punch"
+    assert load(project, zoom_keys(style="punch")).zoom.ramp_s == 0.4
+    merged = load(project, zoom_keys(ramp_s=0.8)).zoom
+    assert (merged.style, merged.ramp_s) == ("smooth", 0.8)
+    assert load(project, zoom_keys()).zoom == app
+
+
+def test_a_bad_style_or_a_ramp_too_long_for_the_gap_is_refused(project: Path) -> None:
+    with pytest.raises(ConfigError, match=r"video\.zoom"):
+        load(project, zoom_keys(style="fast"))
+    with pytest.raises(ConfigError, match=r"video\.zoom"):
+        load(project, zoom_keys(ramp_s=2.5))
+    with pytest.raises(ConfigError, match=r"two ramps"):
+        load(project, zoom_keys(ramp_s=2.0, min_gap_s=3.0))

@@ -1647,6 +1647,9 @@ def test_a_clip_rendered_before_masking_existed_is_not_stale(
 
 BIG = {"width": 2560, "height": 1440}
 BIG_WINDOW = CropBox(w=810, h=1440, x=0, y=0)  # the centre crop of the 2560x1440 source
+# Brief R2's zoom: the punch tests below keep it explicit, as they assume a hard cut at 1.12
+PUNCH = ZoomConfig(enabled=True, style="punch", scale=1.12, max_upscale=2.0)
+SMOOTH = ZoomConfig(enabled=True)  # Brief R2.1: smooth, 1.15, ramps of 0.4 s
 
 
 def zoom_rig(
@@ -1663,7 +1666,7 @@ def zoom_rig(
     ctx, fakes = speaker_ctx(project, monkeypatch, scenario, style=style)
     if big:
         write_inputs(ctx.run_dir, **BIG)
-    ctx.config.app.video.zoom = zoom if zoom is not None else ZoomConfig(enabled=True)
+    ctx.config.app.video.zoom = zoom if zoom is not None else PUNCH
     if audio_file:
         (ctx.run_dir / "audio.wav").write_bytes(b"fake")  # loudness_envelope is faked
     return ctx, fakes
@@ -1684,9 +1687,8 @@ def expected_zoom_commands(
         30.0,
         duration,
     )
-    boxes = zoomed_path(
-        path, BIG_WINDOW, spans, ctx.config.app.video.zoom.scale, 2560, 1440, duration
-    )
+    zoom = ctx.config.app.video.zoom
+    boxes = zoomed_path(path, BIG_WINDOW, spans, zoom.scale, 2560, 1440, duration)
     return ffmpeg.crop_box_commands(boxes)
 
 
@@ -1822,7 +1824,7 @@ def test_a_higher_max_upscale_lets_a_small_source_zoom(
     project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx, _ = zoom_rig(
-        project, monkeypatch, big=False, zoom=ZoomConfig(enabled=True, max_upscale=10.0)
+        project, monkeypatch, big=False, zoom=PUNCH.model_copy(update={"max_upscale": 10.0})
     )
 
     render.run(ctx)
@@ -1899,7 +1901,7 @@ def test_resume_keeps_a_zoomed_clip_and_rerenders_when_zoom_is_toggled_or_tuned(
     render.run(resume(ctx))
     assert fake.ids == ["c01", "c02"]  # same zoom: nothing rendered again
 
-    ctx.config.app.video.zoom = ZoomConfig(enabled=True, scale=1.2)
+    ctx.config.app.video.zoom = PUNCH.model_copy(update={"scale": 1.2})
     render.run(resume(ctx))
     assert fake.ids == ["c01", "c02", "c01", "c02"]  # the scale is part of the settings
 
@@ -1952,3 +1954,126 @@ def test_the_hook_looks_for_faces_in_the_zoomed_windows(
     first = seen[0]
     assert isinstance(first, tuple) and len(first) >= 2  # the zoom-in at 0 s and the out at 6 s
     assert first[0][0] == 0.0 and first[0][1].w == 724  # the window the hook starts under
+
+
+# --- smooth zooms (Brief R2.1) -------------------------------------------------------------
+
+
+def cmd_times(text: str) -> list[float]:
+    return [float(line.split(" ", 1)[0]) for line in text.splitlines()]
+
+
+def test_punch_style_writes_exactly_the_r2_commands_and_no_ramps(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = zoom_rig(project, monkeypatch, zoom=PUNCH)
+
+    render.run(ctx)
+
+    clips = ctx.run_dir / "clips"
+    text = (clips / "c01.crop.cmd").read_text(encoding="utf-8")
+    assert text == expected_zoom_commands(ctx, "c01", 20.0, [ZoomSpan(0.0, 6.0, 0.5)])
+    data = read_json(clips / "c01.json")
+    assert data["zoom_ramps"] == []
+    settings = data["settings"]
+    assert isinstance(settings, dict)
+    assert (settings["zoom_style"], settings["zoom_ramp_s"]) == ("punch", 0.4)
+
+
+def test_a_smooth_zoom_writes_one_line_per_frame_inside_each_ramp(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = zoom_rig(project, monkeypatch, zoom=SMOOTH)
+
+    render.run(ctx)
+
+    clips = ctx.run_dir / "clips"
+    text = (clips / "c01.crop.cmd").read_text(encoding="utf-8")
+    times = cmd_times(text)
+    # 30 fps, ramps [0, 0.4] and [5.6, 6.0]: frames 1..12 and 169..180
+    assert [t for t in times if t <= 0.4 + 1e-6] == pytest.approx(
+        [n / 30 for n in range(1, 13)], abs=1e-6
+    )
+    assert [t for t in times if 5.6 < t <= 6.0 + 1e-6] == pytest.approx(
+        [n / 30 for n in range(169, 181)], abs=1e-6
+    )
+    assert not [t for t in times if 0.4 + 1e-6 < t < 5.6]  # the hold is still
+    assert "10.000000 crop x" in text  # the speaker switch at the boundary
+    data = read_json(clips / "c01.json")
+    assert data["zoom_ramps"] == [[0.0, 0.4], [5.6, 6.0]]
+    assert data["zoom_count"] == 1 and data["zoom_spans"] == [[0.0, 6.0]]
+    assert data["crop_changes"] == len(times)
+    settings = data["settings"]
+    assert isinstance(settings, dict)
+    assert (settings["zoom_style"], settings["zoom_ramp_s"]) == ("smooth", 0.4)
+
+
+def test_a_smooth_opening_zoom_eases_in_from_the_base_window(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = zoom_rig(project, monkeypatch, zoom=SMOOTH)
+
+    render.run(ctx)
+
+    track = TrackFile.model_validate_json(
+        (ctx.run_dir / "clips" / "c01.track.json").read_text(encoding="utf-8")
+    )
+    base = f"crop=810:1440:{track.samples[0].crop_x}:0,scale=1080:1920,setsar=1,"
+    assert vf_of(fake.calls[0][1]).startswith("sendcmd=f=clips/c01.crop.cmd," + base)
+    text = (ctx.run_dir / "clips" / "c01.crop.cmd").read_text(encoding="utf-8")
+    assert cmd_times(text)[0] == pytest.approx(1 / 30, abs=1e-6) and cmd_times(text)[0] > 0.0
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    assert data["crop"]["w"] == 810 and data["crop"]["h"] == 1440  # type: ignore[index]
+
+
+def test_the_hook_looks_for_faces_in_the_per_frame_boxes_of_a_smooth_zoom(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = zoom_rig(project, monkeypatch, zoom=SMOOTH, style="box_karaoke")
+    ctx.config.app.hook = ctx.config.app.hook.model_copy(update={"position": "avoid_faces"})
+    seen: list[object] = []
+    real = render.face_rects
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("boxes"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(render, "face_rects", spy)
+
+    render.run(ctx)
+
+    first = seen[0]
+    assert isinstance(first, tuple) and len(first) > 20  # a box for every ramp frame
+    assert first[0][1].w == 810
+
+
+def test_resume_rerenders_when_the_zoom_style_changes_from_punch_to_smooth(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = zoom_rig(project, monkeypatch, zoom=PUNCH)
+    render.run(ctx)
+    assert fake.ids == ["c01", "c02"]
+
+    ctx.config.app.video.zoom = PUNCH.model_copy(update={"style": "smooth"})
+    render.run(resume(ctx))
+    assert fake.ids == ["c01", "c02", "c01", "c02"]
+    assert read_json(ctx.run_dir / "clips" / "c01.json")["zoom_ramps"] != []
+
+    ctx.config.app.video.zoom = PUNCH.model_copy(update={"style": "smooth", "ramp_s": 0.2})
+    render.run(resume(ctx))
+    assert len(fake.ids) == 6  # the ramp length is part of the settings too
+
+
+def test_a_clip_ending_zoomed_has_no_ramp_out_for_its_last_zoom(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = zoom_rig(project, monkeypatch, audio_file=True, zoom=SMOOTH)
+    punctuate(ctx.run_dir, {4, 12, 22, 32})
+    fake_loudness(monkeypatch, [(24.0, 29.0)])
+
+    render.run(ctx)
+
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    # spans (0, 6) and (14, 20): the second ends with the clip, so it has no ramp-out
+    assert data["zoom_ramps"] == [[0.0, 0.4], [5.6, 6.0], [14.0, 14.4]]
+    assert "zoom_ramp_shortened" not in data["notes"]  # type: ignore[operator]
