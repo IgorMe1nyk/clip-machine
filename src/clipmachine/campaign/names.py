@@ -114,8 +114,9 @@ def find_variants(
 ) -> list[Variant]:
     """Every span of 1..MAX_SPAN adjacent words inside one sentence that is a variant of a name.
     A span written exactly like the name (apart from case) is not a variant, and a longer span is
-    not one when a word in it alone is the name or an applied variant of it ("neon sign" when
-    "neon" already counts). Each distinct span text is one Variant with its count; a span is
+    not one when a shorter span inside it (sharing its first or last word) is the name or an
+    applied variant of it ("neon sign" when "neon" already counts; "i'm curious like" when
+    "curious like" does). Each distinct span text is one Variant with its count; a span is
     counted for the name it fits best. Applied variants come first, then suggestions, each by
     count (most first) then text."""
     if not names:
@@ -124,17 +125,25 @@ def find_variants(
     cores = [_core(w.text) for w in words]
     lower_names = {name.lower() for name in names}
 
-    def alone(core: str) -> bool:
-        """Whether this one word is a name or an applied variant of one by itself."""
-        if core in lower_names:
+    def applies(span: str) -> bool:
+        """Whether this span is a name or an applied variant of one by itself."""
+        if span in lower_names:
             return True
         return any(
-            classify(core, n, apply_threshold=apply_threshold, suggest_threshold=suggest_threshold)[
+            classify(span, n, apply_threshold=apply_threshold, suggest_threshold=suggest_threshold)[
                 2
             ]
             == "apply"
             for n in names
         )
+
+    def holds_a_variant(i: int, j: int) -> bool:
+        """Whether a shorter span inside words i..j (sharing its first or last word) already
+        counts: then the longer span is that variant plus a neighbour, not a variant of its own."""
+        for n in range(1, j - i + 1):
+            if applies(" ".join(cores[i : i + n])) or applies(" ".join(cores[j - n + 1 : j + 1])):
+                return True
+        return False
 
     found: dict[str, tuple[str, int, float, bool, Status]] = {}
     for i in range(len(words)):
@@ -143,7 +152,7 @@ def find_variants(
             j = i + n - 1
             if j >= len(words) or index.sentence_of(j) != sentence or not cores[j]:
                 break
-            if n > 1 and (alone(cores[i]) or alone(cores[j])):
+            if n > 1 and holds_a_variant(i, j):
                 break
             span = " ".join(cores[i : j + 1])
             if span in lower_names:

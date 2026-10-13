@@ -109,6 +109,13 @@ def test_a_name_or_variant_with_its_neighbour_is_not_a_second_variant() -> None:
     assert [(v.text, v.count) for v in variants(index, "Zorb1e")] == [("zorbie", 1)]
 
 
+def test_a_two_word_variant_with_its_neighbour_is_not_a_third_variant() -> None:
+    # found in the real run: "i'm curious like" (0.83) is "curious like" (0.91) plus a word
+    index = index_of("so i'm gorbal twinkel today.", "gorbal twinkel s2.")
+    found = variants(index, "Gorbal Twinkle")
+    assert [(v.text, v.count, v.status) for v in found] == [("gorbal twinkel", 2, "apply")]
+
+
 def test_suggestions_come_after_the_applied_ones_and_a_short_name_needs_the_sound() -> None:
     index = index_of("frab s1 frobs.", "from s4 frab.", "frob s7.")
     found = variants(index, "Frob")

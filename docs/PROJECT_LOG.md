@@ -2,7 +2,7 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
-## 2026-10-12 — Brief 11.1: campaign auto-setup (built; real run pending Igor's OK)
+## 2026-10-12 — Brief 11.1: campaign auto-setup (built; real run done; Igor's phone check pending)
 
 **Why:** after Brief 11's real run two per-campaign settings needed hand-tuning: the watermark
 position (top centre covered the head and, with screen blend, was faint on a light wall) and the
@@ -10,7 +10,7 @@ name spellings (Whisper wrote one name three ways; one was listed). Igor also wa
 post: profanity masked, sensitive words flagged. Goal: a new campaign takes about 2 minutes to set
 up. $0, deterministic, local, no model (D-030).
 
-**Done** (10 commits on the branch `brief-11-1-auto-setup` from `main`; nothing pushed or merged)
+**Done** (11 commits on the branch `brief-11-1-auto-setup` from `main`; nothing pushed or merged)
 - **`watermark.position: auto`.** A grid of centre positions (x 0.5 ± 0.05 steps, y every 0.02)
   is filtered by the geometry checks an explicit position must pass, by the caption envelope (the
   widest, tallest caption box, so no clip's captions can reach the spot) and, per sampled clip,
@@ -53,13 +53,32 @@ up. $0, deterministic, local, no model (D-030).
   format named and the advice to convert.
 - Refactor: the watermark is measured once (`WatermarkAsset`) and placed apart, so a position can
   be chosen later. `face_rects_timed` keeps the sample time of each face box.
-- Tests: 1881 passed, 3 skipped (Whisper, MediaPipe, a symlink test); the ffmpeg tests ran here,
+- Tests: 1882 passed, 3 skipped (Whisper, MediaPipe, a symlink test); the ffmpeg tests ran here,
   including an auto-position campaign on a generated source. ruff, format, mypy and pip-audit
   clean. Built by Fable in auto mode, one commit per step, every check run separately.
 
+**Real run** (5 of 35 moments with `--only`, the same 1:37 h source and run folder as Brief 11;
+speaker crop with the real face models; $0, API calls 0)
+- 5 rendered, 0 failed, 0 refused. Whole command 220 s; per clip 19–24 s of render (tracking of
+  the sampled clips happens before, while the position is chosen, and is reused by the render).
+  Lengths 39.1–43.3 s from `end: auto`.
+- Position: x 0.50, y 0.61, face overlap 0.3% of samples, background luminance 23 of 255, score
+  0.038; runner-up x 0.55 at the same height. 588 grid positions, 156 placeable, 124 with room
+  for the hook and captions in every sampled clip. The spot is just above the captions, on dark
+  clothing: where Igor had moved it by hand after Brief 11. Three clips still carry the binary
+  `watermark_over_face` note (a face reaches the box in a few samples).
+- Names: 3 rules applied, 1 suggestion, 1 variant already in the spelling list; none of the
+  variants is spoken in the five rendered clips (0 fixes). Found in the real transcript: a
+  two-word variant and the three-word span containing it were both counted from the same place;
+  fixed (a longer span is not a variant when a shorter span inside it already applies). One
+  applied rule maps a short ordinary word to a name (ratio 0.86, same sound): Igor to veto or
+  keep.
+- Masking: 8 words masked across 4 clips (profanity, inflections included), 0 sensitive words.
+  All eight checks pass on every clip.
+
 **Not done**
-- The real run (`--only A01,A03,B05` with `position: auto` and `names:` in Igor's local
-  campaign.yaml) waits for Igor's OK; then Igor's phone check of the chosen spot.
+- Igor's phone check of the chosen spot and the masked captions; his veto or OK on the applied
+  name rules (the report lists them).
 - Out of scope, for later: changing the hook mode automatically; Whisper hot words for names;
   a dictionary to tell a real word from a misspelled name (today the report and the identity
   veto are the guard).
