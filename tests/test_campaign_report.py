@@ -417,3 +417,53 @@ def test_the_report_names_the_sensitive_word_and_the_console_does_not(
     assert "<li>WUMP (hook)</li>" in html and "<b>Masked:</b> 1 word</p>" in html
     assert "blorp" not in html
     assert "WUMP" not in out_of(capsys)
+
+
+# --- what the scout said (Brief 12) --------------------------------------------------------------
+
+
+def scout_record(**fields: Any) -> Any:
+    from clipmachine.campaign.models import ScoutRecord
+
+    data: dict[str, Any] = {
+        "id": "A01",
+        "source_sha256": "b" * 64,
+        "source_name": "original.mp4",
+        "start": 24.25,
+        "end": 58.3,
+        "score": 8,
+        "topic": "values_purpose_growth",
+        "platform": "youtube",
+        "host_check": "likely",
+        "reason": "a clear payoff <b>and</b> a setup",
+        "proposed_at": "2026-10-13T00:00:00+00:00",
+        "model": "claude-sonnet-5-5",
+    }
+    data.update(fields)
+    return ScoutRecord(**data)
+
+
+def test_a_scouted_moment_shows_score_topic_host_check_and_reason(project: Path) -> None:
+    html = build_html(
+        campaign=make_campaign(project),
+        run_name="r",
+        moments=[mom(), mom(id="B02")],
+        clips={"A01_tiktok": clip()},
+        posts={"A01_tiktok": POST},
+        scout={"A01": scout_record(), "B02": scout_record(id="B02", host_check="not_checked")},
+    )
+    assert "<b>Scout:</b> score 8 of 10 &middot; topic values_purpose_growth &rarr; youtube" in html
+    assert "host likely" in html and "host not checked" in html  # the unrendered card too
+    assert "<b>Why:</b> a clear payoff &lt;b&gt;and&lt;/b&gt; a setup" in html
+    plain = page(project, [mom()], {"A01_tiktok": clip()})
+    assert "Scout:" not in plain
+
+
+def test_the_command_passes_scout_json_to_the_report(rig: Rig) -> None:
+    from clipmachine.campaign.models import ScoutFile
+    from clipmachine.campaign.scoutlog import save_scout_file
+
+    save_scout_file(rig.folder, ScoutFile(records=[scout_record(id="A01", topic=None)]))
+    assert rig.go() == 0
+    html = (rig.out / REPORT_HTML).read_text(encoding="utf-8")
+    assert "<b>Scout:</b> score 8 of 10 &middot; topic none &rarr; youtube" in html

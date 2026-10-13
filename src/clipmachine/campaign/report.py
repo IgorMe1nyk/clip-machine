@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from clipmachine.campaign.assign import count_by_platform
 from clipmachine.campaign.loader import Campaign
-from clipmachine.campaign.models import CHECKS, AutoSpelling, CampaignClip, Moment
+from clipmachine.campaign.models import CHECKS, AutoSpelling, CampaignClip, Moment, ScoutRecord
 from clipmachine.campaign.plan import PLAN_FILE
 from clipmachine.campaign.render import META_DIR, POST_SUFFIX, REVIEW_SUFFIX
 from clipmachine.runs import write_text_atomic
@@ -144,8 +144,24 @@ def _review_block(clip: CampaignClip, review: str | None) -> str:
     return "".join(parts)
 
 
+def _scout_block(record: ScoutRecord | None) -> str:
+    """What the scout said about a moment it proposed (Brief 12), so Igor can judge it fast."""
+    if record is None:
+        return ""
+    topic = _esc(record.topic) if record.topic is not None else "none"
+    return (
+        f"<p><b>Scout:</b> score {record.score} of 10 &middot; topic {topic} &rarr; "
+        f"{_esc(record.platform)} &middot; host {_esc(record.host_check.replace('_', ' '))}"
+        f"</p>\n<p><b>Why:</b> {_esc(record.reason)}</p>\n"
+    )
+
+
 def _card(
-    moment: Moment, clip: CampaignClip | None, post: str | None, review: str | None = None
+    moment: Moment,
+    clip: CampaignClip | None,
+    post: str | None,
+    review: str | None = None,
+    scout: ScoutRecord | None = None,
 ) -> str:
     heading = f"<h2>{_esc(moment.id)} &middot; {_esc(moment.platform)}</h2>"
     if clip is None:
@@ -155,7 +171,7 @@ def _card(
             f'<div class="info">\n{heading}\n'
             f'<p class="muted">requested {_hms(moment.start)}&ndash;'
             f"{'auto' if moment.end is None else _hms(moment.end)}</p>\n"
-            f"<p><b>Hook:</b> {_esc(moment.hook)}</p>\n</div>\n</section>"
+            f"<p><b>Hook:</b> {_esc(moment.hook)}</p>\n{_scout_block(scout)}</div>\n</section>"
         )
     if clip.status == "rendered":
         src = f"{moment.platform}/{moment.id}.mp4"  # Brief 11.2: the platform folder
@@ -181,6 +197,7 @@ def _card(
         parts.append(f"<p><b>Snapping and warnings</b></p>{notes}\n")
     if clip.status == "rendered":
         parts.append(f"<p><b>Hook:</b> {_esc(moment.hook)}</p>\n")
+        parts.append(_scout_block(scout))
         if post is not None:
             parts.append(
                 f'<p><b>Post caption</b> (copy this)</p><pre class="post">{_esc(post)}</pre>\n'
@@ -341,13 +358,22 @@ def build_html(
     reviews: Mapping[str, str] | None = None,
     auto: AutoSpelling | None = None,
     old_files: Sequence[str] = (),
+    scout: Mapping[str, ScoutRecord] | None = None,
 ) -> str:
     """The whole page. `clips`, `posts` and `reviews` (the .review.txt texts) are keyed by
     Moment.clip_name; a moment with no clip is listed as not rendered yet. `old_files` are the
-    names of flat-layout files from before Brief 11.2 found next to the platform folders."""
+    names of flat-layout files from before Brief 11.2 found next to the platform folders.
+    `scout` holds the scout's records by moment id (Brief 12)."""
     found = reviews or {}
+    records = scout or {}
     cards = [
-        _card(m, clips.get(m.clip_name), posts.get(m.clip_name), found.get(m.clip_name))
+        _card(
+            m,
+            clips.get(m.clip_name),
+            posts.get(m.clip_name),
+            found.get(m.clip_name),
+            records.get(m.id),
+        )
         for m in moments
     ]
     body = "\n".join([_header(campaign, run_name, moments, clips, auto, old_files), *cards])
@@ -367,11 +393,12 @@ def write_report(
     run_name: str,
     *,
     auto: AutoSpelling | None = None,
+    scout: Mapping[str, ScoutRecord] | None = None,
 ) -> Path:
     """Build the page from the jsons and review files in `out_dir/_meta` and the post texts in
     the platform folders, and write it to `out_dir`. A json that is missing or does not validate
     counts as not rendered yet. Clip files lying flat in `out_dir` (the layout before Brief 11.2)
-    are listed as old."""
+    are listed as old. `scout`: the scout's records by moment id (Brief 12)."""
     meta = out_dir / META_DIR
     clips: dict[str, CampaignClip] = {}
     posts: dict[str, str] = {}
@@ -408,6 +435,7 @@ def write_report(
             reviews=reviews,
             auto=auto,
             old_files=old_files,
+            scout=scout,
         ),
     )
     return path

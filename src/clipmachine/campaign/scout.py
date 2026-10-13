@@ -32,7 +32,6 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import ValidationError
 
 from clipmachine import pipeline, tracking
 from clipmachine.campaign.loader import Campaign, campaign_dir, load_campaign, parse_moments
@@ -41,22 +40,21 @@ from clipmachine.campaign.models import (
     Platform,
     RejectedMoment,
     ScoutConfig,
-    ScoutFile,
     ScoutRecord,
 )
 from clipmachine.campaign.run import prepare_run
+from clipmachine.campaign.scoutlog import load_scout_file, save_scout_file
 from clipmachine.campaign.used import load_used, reject, save_used
 from clipmachine.config import ConfigError, ResolvedConfig, load_app_config, merge_client
 from clipmachine.context import RunContext
 from clipmachine.models import AppConfig, CandidatesFile, ClientRules, ScoreBatch, ScoredFile
-from clipmachine.runs import RunError, write_json_atomic, write_text_atomic
+from clipmachine.runs import RunError, write_text_atomic
 from clipmachine.stages import candidates, score
 from clipmachine.stages import render as stage
 from clipmachine.utils import faces
 
 EXIT_OK = 0
 SCOUT_DIR = "scout"  # runs/<run>/scout/<slug>/: candidates.json and scored.json of a scout run
-SCOUT_FILE = "scout.json"
 MOMENTS_FILE = "moments.yaml"
 BACKUP_SUFFIX = ".bak"
 ID_PREFIX = "S"
@@ -291,19 +289,6 @@ def _existing_specs(folder: Path, limit: int) -> list[MomentSpec]:
     return parse_moments(path.read_text(encoding="utf-8"), limit)
 
 
-def _load_scout_file(folder: Path) -> ScoutFile:
-    path = folder / SCOUT_FILE
-    if not path.is_file():
-        return ScoutFile()
-    try:
-        return ScoutFile.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, ValidationError) as exc:
-        raise ConfigError(
-            f"{SCOUT_FILE} in {folder.name} cannot be read ({type(exc).__name__}); fix it by "
-            "hand or remove it"
-        ) from exc
-
-
 def _source_label(root: Path, episode: Path, run_dir: Path) -> str:
     """How `source:` is written: the original file, repo-relative with forward slashes when it is
     inside the repo, else absolute."""
@@ -423,7 +408,7 @@ def run_scout(root: Path, episode: Path, slug: str, *, dry_run: bool = False) ->
             campaign.folder / MOMENTS_FILE, format_entries(proposals, source_label, when), limit
         )
         print(f"moments.yaml: {len(proposals)} entries appended; the old file is {backup.name}")
-        records = _load_scout_file(campaign.folder)
+        records = load_scout_file(campaign.folder)
         records.records.extend(
             ScoutRecord(
                 id=p.id,
@@ -441,7 +426,7 @@ def run_scout(root: Path, episode: Path, slug: str, *, dry_run: bool = False) ->
             )
             for p in proposals
         )
-        write_json_atomic(campaign.folder / SCOUT_FILE, records.model_dump(mode="json"))
+        save_scout_file(campaign.folder, records)
     elif dry_run:
         print("dry run: nothing written")
     by_platform = ", ".join(

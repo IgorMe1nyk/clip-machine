@@ -36,6 +36,7 @@ from clipmachine.campaign.plan import write_posting_plan
 from clipmachine.campaign.post import keep_words
 from clipmachine.campaign.render import META_DIR, MomentContext, MomentResult, render_moment
 from clipmachine.campaign.report import write_report
+from clipmachine.campaign.scoutlog import latest_records, load_scout_file
 from clipmachine.campaign.used import load_used, save_used
 from clipmachine.config import ConfigError, load_app_config
 from clipmachine.models import AppConfig, FetchMeta, RunState
@@ -366,7 +367,10 @@ def run_campaign(
     )
     print(f"output: {out_dir}")
     run_names = ", ".join(dict.fromkeys(s.run_dir.name for s in sources))
-    report = write_report(out_dir, campaign, all_moments, run_names, auto=auto_spelling)
+    scouted = latest_records(load_scout_file(campaign.folder))
+    report = write_report(
+        out_dir, campaign, all_moments, run_names, auto=auto_spelling, scout=scouted
+    )
     print(f"report: {report}")
     plan_path = write_posting_plan(
         out_dir,
