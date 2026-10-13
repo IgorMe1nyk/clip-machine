@@ -24,8 +24,9 @@ caption that ends in an approved closer. Igor picks the moments; the software re
 - **Hook:** `hook.font_size` is now a general setting (default 80) for normal runs too. In
   campaign mode the hook stays for the whole clip, starts below the watermark, and then avoids
   faces as in R1. A hook that would be cut short fails the moment.
-  After the real run: `hook.seconds` is 5 s (was 2) for every run, and a campaign may set its
-  own `hook.seconds` for intro mode (left out, the config value applies).
+  After the real run: `hook.seconds` is 3 s (was 2) for every run, and `hook.position: top |
+  avoid_faces` (default top: the top of the safe area, even over a face, no face note). A
+  campaign may set its own `hook.seconds` and `hook.position` (left out, the config applies).
 - **Watermark:** a PNG drawn on top of video, captions and hook for the whole clip, unmodified
   apart from uniform scale. `watermark.blend: normal | screen` (screen hides an opaque black
   background). Every geometry check uses the visible content box, measured once at load, so the

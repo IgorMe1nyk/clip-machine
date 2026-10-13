@@ -338,6 +338,9 @@ class HookConfig(StrictModel):
     fade_ms: int = Field(default=150, ge=0, le=2000)
     # added in Brief 11; the hook's own size, separate from captions.font_size
     font_size: int = Field(default=80, ge=20, le=200)
+    # top = the top of the safe area, even over a face (no face note); avoid_faces = below
+    # any face seen while the hook is on. Old configs without it read as top.
+    position: Literal["top", "avoid_faces"] = "top"
 
 
 class SafeConfig(StrictModel):
@@ -873,6 +876,8 @@ class RenderedSettings(StrictModel):
     safe_right: int = 0
     # added in Brief 11; old JSON files load as 0, which makes old outputs stale so they re-render
     hook_font_size: int = 0
+    # old JSON files were rendered with faces avoided
+    hook_position: Literal["top", "avoid_faces"] = "avoid_faces"
 
 
 class RenderedOutput(StrictModel):

@@ -772,7 +772,7 @@ def test_the_shipped_default_is_box_karaoke_with_the_hook_on(project: Path) -> N
     assert set(data["safe"]) == set(SafeConfig.model_fields)
     app = load_app_config(project)
     assert (app.captions.style, app.captions.font_size) == ("box_karaoke", 96)
-    assert app.hook == HookConfig(enabled=True, seconds=5.0)  # 5 s since Brief 11's run
+    assert app.hook == HookConfig(enabled=True, seconds=3.0)  # 3 s since Brief 11's run
     assert app.safe == SafeConfig()
     assert app.captions.model_dump(include=set(R1_CAPTION_KEYS)) == CaptionsConfig(
         words_per_line=1, font="x", highlight_color="#FFD400", style="box_karaoke"
@@ -1002,3 +1002,14 @@ def test_a_resolved_file_from_before_brief_11_still_loads(project: Path, tmp_pat
     del data["config"]["campaign"]
     target.write_text(yaml.safe_dump(data), encoding="utf-8")
     assert load_resolved_file(target).app.campaign == CampaignModeConfig()
+
+
+def test_a_config_without_hook_position_reads_as_top(project: Path) -> None:
+    _default(project, lambda d: d["hook"].pop("position"))
+    assert load_app_config(project).hook.position == "top"
+
+
+def test_hook_position_must_be_top_or_avoid_faces(project: Path) -> None:
+    _default(project, lambda d: d["hook"].update(position="bottom"))
+    with pytest.raises(ConfigError, match="position"):
+        load_app_config(project)

@@ -178,7 +178,8 @@ def _header(
         f"<p>Clip length {_esc(f'{cfg.clip_length.min:g}')}&ndash;"
         f"{_esc(f'{cfg.clip_length.max:g}')} s &middot; hook mode {_esc(cfg.hook.mode)}"
         + (f" ({campaign.hook_seconds:g} s)" if cfg.hook.mode == "intro" else "")
-        + f", font size {_esc(campaign.hook_font_size)}</p>",
+        + f", font size {_esc(campaign.hook_font_size)}"
+        + f", position {_esc(campaign.hook_position)}</p>",
         f"<p>Watermark {_esc(cfg.watermark.file)}: "
         f"PNG {_esc(color_type_name(wm.info.color_type))}, alpha {alpha}, "
         f"background {_esc(background)}, "

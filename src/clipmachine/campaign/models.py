@@ -51,6 +51,8 @@ class CampaignHook(StrictModel):
     font_size: int | None = Field(default=None, ge=20, le=200)
     # optional, intro mode only; left out, hook.seconds from the app config is used
     seconds: float | None = Field(default=None, gt=0, le=10)
+    # optional; left out, hook.position from the app config is used
+    position: Literal["top", "avoid_faces"] | None = None
     max_chars: int = Field(default=48, ge=1, le=200)
 
 
@@ -255,6 +257,7 @@ class CampaignClip(StrictModel):
     closer: str | None = None
     hook_mode: str
     hook_font_size: int
+    hook_position: str = "avoid_faces"  # old files: what they did
     watermark: CampaignClipWatermark
     settings: RenderedSettings | None = None
     crop_mode: Literal["center", "speaker"] | None = None

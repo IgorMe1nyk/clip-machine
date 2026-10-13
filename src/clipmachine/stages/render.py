@@ -149,6 +149,7 @@ class HookSpec:
     fade_ms: int
     font_size: int
     avoid: tuple[Rect, ...] = ()
+    position: str = "avoid_faces"  # top: the top of the safe area, faces and avoid ignored
 
 
 @dataclass(frozen=True)
@@ -269,6 +270,7 @@ def _settings_of(app: AppConfig) -> RenderedSettings:
         safe_left=app.safe.left,
         safe_right=app.safe.right,
         hook_font_size=app.hook.font_size,
+        hook_position=app.hook.position,
     )
 
 
@@ -466,10 +468,16 @@ def _karaoke_captions(
     hook_band: Rect | None = None
     shown = moved = False
     if hook is None and settings.hook_enabled:
-        hook = HookSpec(settings.hook_seconds, settings.hook_fade_ms, settings.hook_font_size)
+        hook = HookSpec(
+            settings.hook_seconds,
+            settings.hook_fade_ms,
+            settings.hook_font_size,
+            position=settings.hook_position,
+        )
     if hook is not None:
         # centre-crop mode has no track: faces unknown
-        face_boxes = _face_boxes(plan, chosen, min(hook.seconds, duration))
+        at_top = hook.position == "top"  # faces are not needed then
+        face_boxes = None if at_top else _face_boxes(plan, chosen, min(hook.seconds, duration))
         result = build_hook(
             clip.hook_line,
             karaoke,
@@ -482,6 +490,7 @@ def _karaoke_captions(
             clip_seconds=duration,
             font_size=hook.font_size,
             avoid=hook.avoid,
+            position=hook.position,
         )
         hook_events = result.events
         shown, moved = result.shown, result.moved

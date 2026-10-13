@@ -1175,7 +1175,7 @@ def test_the_hook_events_are_written_when_enabled(project: Path, fake: FakeFfmpe
 
     hooks = hook_lines(ctx.run_dir)
     assert len(hooks) == 2  # the band and one line of text
-    assert all(",0:00:00.00,0:00:05.00," in d for d in hooks)
+    assert all(",0:00:00.00,0:00:03.00," in d for d in hooks)
     assert "\\fad(0,150)" in hooks[0] and HOOK_TEXT.split()[0] in hooks[1]
 
 
@@ -1220,7 +1220,7 @@ def test_the_clip_json_and_log_hold_counts_and_codes_but_never_the_hook(
     assert data["caption_lines"] == 10 and data["caption_max_words"] == 1
     assert data["caption_events"] == 2 * data["caption_lines"]  # a box and a text line each
     assert (data["hook_shown"], data["hook_moved"], data["outside_safe_zone"]) == (True, False, 0)
-    assert data["notes"] == ["hook_faces_unknown"]
+    assert data["notes"] == []  # hook.position top: faces are not looked at
     settings = data["settings"]
     assert settings["caption_style"] == "box_karaoke" and settings["hook_enabled"] is True
     assert (settings["safe_top"], settings["safe_bottom"]) == (290, 560)
@@ -1235,6 +1235,7 @@ def test_speaker_mode_moves_the_hook_below_a_face_in_its_way(
         return [track_fakes.RawFace(0.5, 0.1, 0.1, 0.15, track_fakes.talking(t))]
 
     ctx, _ = speaker_ctx(project, monkeypatch, high_face, style="box_karaoke")
+    ctx.config.app.hook = ctx.config.app.hook.model_copy(update={"position": "avoid_faces"})
 
     render.run(ctx)
 
@@ -1245,6 +1246,25 @@ def test_speaker_mode_moves_the_hook_below_a_face_in_its_way(
     band = next(d for d in dialogues(ctx.run_dir) if d.startswith("Dialogue: 2,"))
     match = re.search(r"\\p1\}m \d+ (\d+)", band)  # the drawing starts at the top edge
     assert match is not None and int(match.group(1)) > 290
+
+
+def test_hook_position_top_ignores_a_face_in_its_way(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def high_face(t: float) -> list[track_fakes.RawFace]:
+        return [track_fakes.RawFace(0.5, 0.1, 0.1, 0.15, track_fakes.talking(t))]
+
+    ctx, _ = speaker_ctx(project, monkeypatch, high_face, style="box_karaoke")
+    assert ctx.config.app.hook.position == "top"  # the shipped default
+
+    render.run(ctx)
+
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    assert data["hook_shown"] is True and data["hook_moved"] is False
+    assert data["notes"] == [] and data["outside_safe_zone"] == 0
+    band = next(d for d in dialogues(ctx.run_dir) if d.startswith("Dialogue: 2,"))
+    assert band.split("p1}m ")[1].split(" ")[1] == "290"  # the drawing starts at the top
+    assert data["settings"]["hook_position"] == "top"
 
 
 def test_speaker_mode_without_a_face_in_the_way_keeps_the_hook_at_the_top(
@@ -1391,7 +1411,12 @@ def test_the_default_hook_spec_is_the_one_built_from_the_settings(project: Path)
         words,
         None,
         duration,
-        render.HookSpec(settings.hook_seconds, settings.hook_fade_ms, settings.hook_font_size),
+        render.HookSpec(
+            settings.hook_seconds,
+            settings.hook_fade_ms,
+            settings.hook_font_size,
+            position=settings.hook_position,
+        ),
     )
 
     assert default == explicit

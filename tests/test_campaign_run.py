@@ -436,7 +436,7 @@ def test_hook_mode_intro_shows_the_hook_only_at_the_start(project: Path, fake: F
     assert rig.go() == 0
     ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
     hooks = [line for line in ass.split("\n") if line.startswith("Dialogue: 2,")]
-    assert hooks and all(",0:00:00.00,0:00:05.00," in line for line in hooks)
+    assert hooks and all(",0:00:00.00,0:00:03.00," in line for line in hooks)
     assert "\\fad(0,150)" in ass
     assert rig.clip("A01_tiktok").hook_mode == "intro"
 
@@ -464,6 +464,42 @@ def test_hook_seconds_is_ignored_in_full_mode(project: Path, fake: FakeFfmpeg) -
     ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
     hooks = [line for line in ass.splitlines() if line.startswith("Dialogue: 2,")]
     assert hooks and not any(",0:00:03.00," in line for line in hooks)
+
+
+def test_hook_position_top_puts_the_band_at_the_top_of_the_safe_area(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    def top(d: dict[str, Any]) -> None:
+        d["hook"]["position"] = "top"
+        d["watermark"]["position"]["y_center"] = 0.62  # out of the hook's way
+
+    rig = make_rig(project, fake, mutate=top)
+    assert rig.go() == 0
+    clip = rig.clip("A01_tiktok")
+    assert clip.hook_position == "top" and "hook_faces_unknown" not in clip.notes
+    assert set(clip.checks.values()) == {"pass"}
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    band = next(line for line in ass.splitlines() if line.startswith("Dialogue: 2,"))
+    assert band.split("p1}m ")[1].split(" ")[1] == "290"
+
+
+def test_hook_position_top_fails_the_moment_when_the_watermark_is_in_the_way(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    rig = make_rig(project, fake, mutate=lambda d: d["hook"].update(position="top"))
+    assert rig.go() != 0
+    failed = rig.clip("A01_tiktok")
+    assert failed.status == "failed" and "the hook overlaps the watermark" in (failed.error or "")
+    assert failed.checks["watermark_full_and_clear"] == "fail"
+
+
+def test_hook_position_avoid_faces_still_notes_unknown_faces(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    rig = make_rig(project, fake)  # the rig's campaign says avoid_faces
+    assert rig.go() == 0
+    clip = rig.clip("A01_tiktok")
+    assert clip.hook_position == "avoid_faces" and "hook_faces_unknown" in clip.notes
 
 
 def test_the_clip_json_records_the_watermark_and_the_settings(rig: Rig) -> None:

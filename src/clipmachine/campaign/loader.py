@@ -51,6 +51,7 @@ class Campaign:
     watermark: Watermark
     hook_font_size: int  # the campaign's own, else hook.font_size from the app config
     hook_seconds: float  # intro mode: the campaign's own, else hook.seconds from the app config
+    hook_position: str  # top | avoid_faces: the campaign's own, else from the app config
     warnings: tuple[str, ...]
 
 
@@ -171,7 +172,8 @@ def load_campaign(root: Path, slug: str, app: AppConfig) -> Campaign:
     watermark, warnings = _place(cfg, app, path)
     font_size = cfg.hook.font_size if cfg.hook.font_size is not None else app.hook.font_size
     seconds = cfg.hook.seconds if cfg.hook.seconds is not None else app.hook.seconds
-    return Campaign(slug, folder, cfg, watermark, font_size, seconds, tuple(warnings))
+    position = cfg.hook.position if cfg.hook.position is not None else app.hook.position
+    return Campaign(slug, folder, cfg, watermark, font_size, seconds, position, tuple(warnings))
 
 
 def load_moments(campaign: Campaign) -> list[Moment]:

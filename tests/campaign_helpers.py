@@ -72,7 +72,8 @@ def base_campaign() -> dict[str, Any]:
         "name": "Demo Campaign",
         "source_note": "invented",
         "clip_length": {"min": 20, "max": 60},
-        "hook": {"mode": "full", "max_chars": 30},
+        # the rig's watermark sits at the top of the safe area, so the hook must go below it
+        "hook": {"mode": "full", "max_chars": 30, "position": "avoid_faces"},
         "watermark": {
             "file": "assets/mark.png",
             "position": {"x_center": 0.5, "y_center": 0.18},

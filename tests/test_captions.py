@@ -1073,3 +1073,61 @@ def test_without_an_avoided_rectangle_the_events_are_unchanged(metrics: FontMetr
     )
     assert elsewhere.events == plain.events and elsewhere.notes == plain.notes == []
     assert band_top(plain) == 290.0
+
+
+HIGH_FACE = Rect(400, 280, 600, 420)  # across the top of the safe area
+
+
+def test_position_top_keeps_the_hook_at_the_top_whatever_is_behind_it(
+    metrics: FontMetrics,
+) -> None:
+    result = build_hook(
+        "synthetic hook line",
+        SETTINGS,
+        metrics,
+        SAFE,
+        [HIGH_FACE],
+        seconds=2.0,
+        fade_ms=150,
+        line_gap_em=0.35,
+        clip_seconds=30.0,
+        avoid=[MARK],
+        position="top",
+    )
+    assert band_top(result) == 290.0 and not result.moved and result.notes == []
+    assert text_tops(result)[0] >= 290
+
+
+def test_position_top_with_unknown_faces_adds_no_note(metrics: FontMetrics) -> None:
+    result = build_hook(
+        "synthetic hook line",
+        SETTINGS,
+        metrics,
+        SAFE,
+        None,
+        seconds=2.0,
+        fade_ms=150,
+        line_gap_em=0.35,
+        clip_seconds=30.0,
+        position="top",
+    )
+    assert band_top(result) == 290.0 and result.notes == []
+
+
+def test_position_avoid_faces_is_the_default_and_moves_below_a_face(metrics: FontMetrics) -> None:
+    implicit = hook(metrics, "synthetic hook line", [HIGH_FACE])
+    explicit = build_hook(
+        "synthetic hook line",
+        SETTINGS,
+        metrics,
+        SAFE,
+        [HIGH_FACE],
+        seconds=2.0,
+        fade_ms=150,
+        line_gap_em=0.35,
+        clip_seconds=30.0,
+        position="avoid_faces",
+    )
+    assert implicit.events == explicit.events
+    assert implicit.notes == explicit.notes == ["hook_moved_for_faces"]
+    assert implicit.moved and band_top(implicit) > 290.0

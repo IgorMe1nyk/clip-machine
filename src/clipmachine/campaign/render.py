@@ -159,6 +159,7 @@ def _clip_json(
         closer=work.closer,
         hook_mode=ctx.campaign.config.hook.mode,
         hook_font_size=ctx.campaign.hook_font_size,
+        hook_position=ctx.campaign.hook_position,
         watermark=CampaignClipWatermark(
             sha256=wm.sha256,
             blend=wm.blend,
@@ -277,7 +278,9 @@ def _render_moment(
         seconds, fade = length, 0
     else:  # intro: the first seconds only; faces are checked over that window
         seconds, fade = campaign.hook_seconds, app.hook.fade_ms
-    spec = stage.HookSpec(seconds, fade, campaign.hook_font_size, (wm.rect,))
+    spec = stage.HookSpec(
+        seconds, fade, campaign.hook_font_size, (wm.rect,), position=campaign.hook_position
+    )
     captions = stage._karaoke_captions(plan, clip, words, chosen, length, spec)
     work.notes.extend(captions.notes)
 

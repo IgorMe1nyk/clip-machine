@@ -246,12 +246,34 @@ def test_the_hook_seconds_range(project: Path, seconds: float) -> None:
 def test_the_hook_seconds_fall_back_to_the_app_config_and_can_be_overridden(
     project: Path,
 ) -> None:
-    assert load(project).hook_seconds == app_of(project).hook.seconds == 5.0
+    assert load(project).hook_seconds == app_of(project).hook.seconds == 3.0
 
     def mutate(d: dict[str, Any]) -> None:
         d["hook"]["seconds"] = 3
 
     assert load(project, mutate).hook_seconds == 3.0
+
+
+def test_the_hook_position_falls_back_to_the_app_config_and_can_be_overridden(
+    project: Path,
+) -> None:
+    def none(d: dict[str, Any]) -> None:
+        d["hook"].pop("position", None)  # an older campaign.yaml without the key
+
+    assert load(project, none).hook_position == app_of(project).hook.position == "top"
+
+    def mutate(d: dict[str, Any]) -> None:
+        d["hook"]["position"] = "avoid_faces"
+
+    assert load(project, mutate).hook_position == "avoid_faces"
+
+
+def test_the_hook_position_must_be_top_or_avoid_faces(project: Path) -> None:
+    def mutate(d: dict[str, Any]) -> None:
+        d["hook"]["position"] = "bottom"
+
+    with pytest.raises(ConfigError, match="hook.position"):
+        load(project, mutate)
 
 
 @pytest.mark.parametrize(
