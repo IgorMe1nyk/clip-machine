@@ -1453,3 +1453,74 @@ def test_old_flat_files_are_left_alone_and_listed_in_the_report(rig: Rig) -> Non
     html = (rig.out / "campaign_report.html").read_text(encoding="utf-8")
     assert "Old files from before the per-platform folders" in html
     assert "<li>A01_tiktok.mp4</li><li>A01_tiktok.post.txt</li>" in html
+
+
+# --- no watermark, no closers (Brief 12) ---------------------------------------------------------
+
+
+def bare(d: dict[str, Any]) -> None:
+    """A campaign that requires neither a watermark nor a closer line."""
+    del d["watermark"]
+    d["post"]["closers"] = []
+    d["post"]["hashtags"] = ["#one"]
+
+
+def test_a_campaign_without_a_watermark_or_closers_renders_with_one_input_and_no_overlay(
+    project: Path, fake: FakeFfmpeg, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig = make_rig(project, fake, mutate=bare)
+    three(rig)
+
+    assert rig.go() == 0
+
+    args = rig.args_of("A01_tiktok")
+    assert [args[i + 1] for i, a in enumerate(args) if a == "-i"] == [
+        ffmpeg.input_url(rig.run_dir / "source.mp4")
+    ]
+    assert "-vf" in args and "-filter_complex" not in args and "overlay=" not in " ".join(args)
+    clip = rig.clip("A01_tiktok")
+    assert clip.watermark is None and clip.closer is None
+    assert clip.checks["watermark_full_and_clear"] == "n/a"
+    assert clip.checks["closer_present"] == "n/a"
+    assert (
+        "watermark_faces_unknown" not in clip.notes and "hook_moved_for_overlay" not in clip.notes
+    )
+    assert post(rig, "A01_tiktok") == [f"@demo {CAPTION}", "#one"]
+    assert post(rig, "A03_youtube") == ["TITLE: An invented hook", "", "a third one.", "#one"]
+    assert all(e.closer is None for e in rig.used().entries)
+    assert rig.used().closers == {}
+    text = out_of(capsys)
+    assert "watermark: none required by this campaign" in text
+    assert "closer" not in text.split("A01 tiktok: rendered")[1].split("\n")[0]
+    html = (rig.out / "campaign_report.html").read_text(encoding="utf-8")
+    assert "No watermark required by this campaign" in html
+    assert html.count("&ndash; not required</span>") == 6  # two checks on three clips
+    assert "Closer:" not in html
+    assert not (rig.folder / "auto_position.json").exists()
+
+
+def test_a_campaign_with_a_watermark_but_no_closers_keeps_the_overlay(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    rig = make_rig(project, fake, mutate=lambda d: d["post"].update(closers=[]))
+    assert rig.go() == 0
+    args = rig.args_of("A01_tiktok")
+    assert "-filter_complex" in args and len([a for a in args if a == "-i"]) == 2
+    clip = rig.clip("A01_tiktok")
+    assert clip.watermark is not None and clip.checks["watermark_full_and_clear"] == "pass"
+    assert clip.checks["closer_present"] == "n/a" and post(rig, "A01_tiktok") == [
+        f"@demo {CAPTION}"
+    ]
+
+
+def test_a_campaign_without_a_watermark_still_fails_a_hook_outside_the_safe_area(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    def big(d: dict[str, Any]) -> None:
+        bare(d)
+        d["hook"]["font_size"] = 200
+
+    rig = make_rig(project, fake, mutate=big)
+    rig.moments(moment(start="0:24", end="0:58", hook="AAAA BBBB CCCC DDDD EEEE FFFF"))
+    assert rig.go() == 1
+    assert "the hook does not fit at font size 200" in (rig.clip("A01_tiktok").error or "")

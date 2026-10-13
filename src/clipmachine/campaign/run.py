@@ -128,10 +128,11 @@ def _line(moment_name: str, result: MomentResult, closers: int) -> str:
     zooms = ""
     if clip.settings is not None and clip.settings.zoom_enabled:
         zooms = f", {clip.zoom_count} zooms"
+    closer = "" if result.closer_number is None else f"closer {result.closer_number} of {closers}, "
     return (
         f"{label}: rendered {clip.start:.2f}-{clip.end:.2f} s ({clip.duration:.2f} s), {start}, "
         f"{end}, {clip.spelling_replacements} spelling fixes{zooms}, "
-        f"closer {result.closer_number} of {closers}, {clip.render_seconds:.1f} s"
+        f"{closer}{clip.render_seconds:.1f} s"
     )
 
 
@@ -160,7 +161,10 @@ def run_campaign(
     moments = select_moments(all_moments, only)
     for warning in campaign.warnings:
         print(f"warning: {warning}")
-    if campaign.config.watermark.position == "auto":
+    wm_cfg = campaign.config.watermark
+    if wm_cfg is None:
+        print("watermark: none required by this campaign")
+    elif wm_cfg.position == "auto":
         if campaign.auto is not None:
             print(f"{describe(campaign.auto)} (locked in auto_position.json)")
         else:
@@ -228,7 +232,7 @@ def run_campaign(
             title_keep=tuple(keep_words(cfg, app.campaign.title_keep_case)),
         )
         heard: dict[str, list[tuple[str, float]]] = {v.text: [] for v in variants}
-        if campaign.watermark is None:  # position: auto, not chosen yet
+        if campaign.has_watermark and campaign.watermark is None:  # auto, not chosen yet
             campaign, lock = choose_position(ctx, moments, used, force_reuse=force_reuse)
             ctx = dataclasses.replace(ctx, campaign=campaign)
             print(describe(lock))

@@ -35,7 +35,13 @@ CHECK_LABELS = {
     "names_listed": "names to check listed",
 }
 # a word and a symbol, never colour alone
-CHECK_WORDS = {"pass": "&#10003; pass", "warn": "&#9650; warning", "fail": "&#10007; FAIL"}
+CHECK_WORDS = {
+    "pass": "&#10003; pass",
+    "warn": "&#9650; warning",
+    "fail": "&#10007; FAIL",
+    "n/a": "&ndash; not required",  # Brief 12: no watermark or no closers in this campaign
+}
+CHECK_CSS = {"pass": "ck-pass", "warn": "ck-warn", "fail": "ck-fail", "n/a": "ck-none"}
 BACKGROUNDS = {
     "transparent": "transparent",
     "opaque_black": "opaque black",
@@ -77,7 +83,7 @@ def _checks(clip: CampaignClip) -> str:
         if status is None:
             word, css = "&ndash; not checked", "ck-none"
         else:
-            word, css = CHECK_WORDS[status], f"ck-{status}"
+            word, css = CHECK_WORDS[status], CHECK_CSS[status]
         items.append(f'<li><span class="ck {css}">{word}</span> {_esc(CHECK_LABELS[name])}</li>')
     return '<ul class="checks">' + "".join(items) + "</ul>"
 
@@ -181,7 +187,8 @@ def _card(
             )
         else:
             parts.append('<p class="muted">The post text file is missing.</p>\n')
-        parts.append(f"<p><b>Closer:</b> {_esc(clip.closer or '')}</p>\n")
+        if clip.closer is not None:
+            parts.append(f"<p><b>Closer:</b> {_esc(clip.closer)}</p>\n")
         parts.append(f"<p>{_esc(clip.spelling_replacements)} spelling fixes</p>\n")
         parts.append(_names(clip.names_to_check) + "\n")
     block = _review_block(clip, review)
@@ -289,8 +296,17 @@ def _header(
         if wm is not None
         else "position not chosen yet"
     )
-    alpha = "yes" if asset.info.has_alpha else "no"
-    background = BACKGROUNDS.get(asset.background, asset.background)
+    if asset is None or cfg.watermark is None:  # Brief 12
+        watermark_line = "<p>No watermark required by this campaign</p>"
+    else:
+        alpha = "yes" if asset.info.has_alpha else "no"
+        background = BACKGROUNDS.get(asset.background, asset.background)
+        watermark_line = (
+            f"<p>Watermark {_esc(cfg.watermark.file)}: "
+            f"format PNG ({_esc(color_type_name(asset.info.color_type))}), alpha {alpha}, "
+            f"background {_esc(background)}, "
+            f"blend {_esc(asset.blend)}; {where}</p>"
+        )
     lines = [
         f"<h1>{_esc(cfg.name)}</h1>",
         f'<p class="muted">{_esc(cfg.source_note)}</p>' if cfg.source_note else "",
@@ -304,12 +320,9 @@ def _header(
         + (f" ({campaign.hook_seconds:g} s)" if cfg.hook.mode == "intro" else "")
         + f", font size {_esc(campaign.hook_font_size)}"
         + f", position {_esc(campaign.hook_position)}</p>",
-        f"<p>Watermark {_esc(cfg.watermark.file)}: "
-        f"format PNG ({_esc(color_type_name(asset.info.color_type))}), alpha {alpha}, "
-        f"background {_esc(background)}, "
-        f"blend {_esc(asset.blend)}; {where}</p>",
+        watermark_line,
     ]
-    if cfg.watermark.position == "auto":
+    if cfg.watermark is not None and cfg.watermark.position == "auto":
         lines.append(_auto_position(campaign))
     if campaign.warnings:
         lines.append("<p><b>Warnings</b></p>" + _list(campaign.warnings))

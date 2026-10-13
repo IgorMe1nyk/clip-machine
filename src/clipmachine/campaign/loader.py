@@ -15,7 +15,13 @@ from typing import Any, TypeVar
 import yaml
 from pydantic import ValidationError
 
-from clipmachine.campaign.models import AutoPosition, CampaignConfig, Moment, MomentSpec
+from clipmachine.campaign.models import (
+    AutoPosition,
+    CampaignConfig,
+    Moment,
+    MomentSpec,
+    WatermarkPosition,
+)
 from clipmachine.config import ConfigError, _read_yaml, _validate
 from clipmachine.models import AppConfig, ZoomConfig
 from clipmachine.utils.image import (
@@ -72,8 +78,8 @@ class Campaign:
     slug: str
     folder: Path
     config: CampaignConfig
-    asset: WatermarkAsset
-    # None only with `position: auto` before the position is chosen (Brief 11.1)
+    asset: WatermarkAsset | None  # None: the campaign has no watermark (Brief 12)
+    # None with no watermark, or with `position: auto` before the position is chosen (Brief 11.1)
     watermark: Watermark | None
     hook_font_size: int  # the campaign's own, else hook.font_size from the app config
     hook_seconds: float  # intro mode: the campaign's own, else hook.seconds from the app config
@@ -83,8 +89,19 @@ class Campaign:
     zoom: ZoomConfig = field(default_factory=ZoomConfig)  # video.zoom with the campaign's keys
 
     @property
+    def has_watermark(self) -> bool:
+        return self.config.watermark is not None
+
+    @property
+    def measured(self) -> WatermarkAsset:
+        """The watermark file as measured; a programming error for a campaign without one."""
+        assert self.asset is not None, "this campaign has no watermark"
+        return self.asset
+
+    @property
     def placed(self) -> Watermark:
-        """The watermark once it has a position; a programming error before that."""
+        """The watermark once it has a position; a programming error before that, or for a
+        campaign without one."""
         assert self.watermark is not None, "the watermark position is not chosen yet"
         return self.watermark
 
@@ -135,6 +152,7 @@ def measure_watermark(
     """Read the file once: PNG facts, pixels, background and the visible box at the campaign's
     scale. Returns the asset and the warnings about it."""
     mark = cfg.watermark
+    assert mark is not None, "measure_watermark needs a campaign with a watermark"
     try:
         info = png_info(path)
         pixels = load_pixels(path)
@@ -240,15 +258,22 @@ def place_watermark(
 def load_campaign(root: Path, slug: str, app: AppConfig) -> Campaign:
     folder = campaign_dir(root, slug)
     cfg = _validate(CampaignConfig, _read_yaml(folder / "campaign.yaml"), "campaign.yaml")
-    path = _watermark_path(folder, cfg.watermark.file)
-    asset, warnings = measure_watermark(cfg, app, path)
     font_size = cfg.hook.font_size if cfg.hook.font_size is not None else app.hook.font_size
     seconds = cfg.hook.seconds if cfg.hook.seconds is not None else app.hook.seconds
     position = cfg.hook.position if cfg.hook.position is not None else app.hook.position
-    where = cfg.watermark.position
+    asset: WatermarkAsset | None = None
+    warnings: list[str] = []
     watermark: Watermark | None = None
     lock: AutoPosition | None = None
-    if where == "auto":
+    if cfg.watermark is None:  # Brief 12: nothing to measure or place
+        where: WatermarkPosition | str = "none"
+    else:
+        path = _watermark_path(folder, cfg.watermark.file)
+        asset, warnings = measure_watermark(cfg, app, path)
+        where = cfg.watermark.position
+    if asset is None:
+        pass
+    elif where == "auto":
         lock, stale = _read_lock(folder, asset, app, position)
         if stale is not None:
             warnings.append(stale)
@@ -261,6 +286,7 @@ def load_campaign(root: Path, slug: str, app: AppConfig) -> Campaign:
                 )
             watermark = place_watermark(asset, lock.x_center, lock.y_center, app)
     else:
+        assert isinstance(where, WatermarkPosition)
         watermark = place_watermark(asset, where.x_center, where.y_center, app)
     own = cfg.video.zoom.model_dump(exclude_none=True)
     zoom = _validate(ZoomConfig, {**app.video.zoom.model_dump(), **own}, "campaign.yaml video.zoom")

@@ -114,13 +114,15 @@ def youtube_title(hook: str, keep: Sequence[str]) -> str:
 def post_text(
     cfg: CampaignConfig,
     moment: Moment,
-    closer: str,
+    closer: str | None,
     lists: WordLists | None,
     *,
     keep: Sequence[str] = (),
 ) -> tuple[str, list[Hit]]:
     """The text of `<id>.txt` for the moment's platform and the words masked in it. Only the
-    title, the prefix and the caption are masked: the hashtags and the closer are fixed text."""
+    title, the prefix and the caption are masked: the hashtags and the closer are fixed text.
+    `closer` None (a campaign without closers, Brief 12) ends the text with the hashtags, or the
+    caption."""
     post = cfg.post
     hits: list[Hit] = []
     lines: list[str] = []
@@ -139,5 +141,6 @@ def post_text(
     lines.append(first)
     if post.hashtags:
         lines.append(" ".join(post.hashtags))
-    lines.append(closer)
+    if closer is not None:
+        lines.append(closer)
     return "\n".join(lines) + "\n", hits

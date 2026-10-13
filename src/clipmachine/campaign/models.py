@@ -104,15 +104,14 @@ class SpellingRule(StrictModel):
 
 class PostConfig(StrictModel):
     prefix: dict[Platform, str] = Field(default_factory=dict)
-    closers: list[str]
+    # Brief 12: optional; a campaign that asks for no closer line leaves it out or empty
+    closers: list[str] = Field(default_factory=list)
     hashtags: list[str] = Field(default_factory=list)
 
     @field_validator("closers")
     @classmethod
     def _closers(cls, value: list[str]) -> list[str]:
         closers = [c.strip() for c in value]
-        if not closers:
-            raise ValueError("at least one closer is needed")
         if any(not c for c in closers):
             raise ValueError("a closer must not be empty")
         if len(set(closers)) != len(closers):
@@ -143,7 +142,8 @@ class CampaignConfig(StrictModel):
     source_note: str = ""
     clip_length: ClipLength
     hook: CampaignHook = Field(default_factory=CampaignHook)
-    watermark: WatermarkConfig
+    # Brief 12: optional; left out, no overlay is drawn and the watermark checks read "n/a"
+    watermark: WatermarkConfig | None = None
     captions: CampaignCaptions = Field(default_factory=CampaignCaptions)
     spelling: list[SpellingRule] = Field(default_factory=list)
     names_to_check: list[str] = Field(default_factory=list)
@@ -354,7 +354,7 @@ class UsedEntry(StrictModel):
     start: float  # final source times
     end: float
     hook: str
-    closer: str
+    closer: str | None = None  # None: the campaign has no closers (Brief 12)
     rendered_at: str  # UTC, ISO 8601
     output: str  # the mp4, relative to the repo root, forward slashes
     source_sha256: str
@@ -431,12 +431,13 @@ class CampaignClip(StrictModel):
     zoom_count: int = 0
     zoom_spans: list[tuple[float, float]] = Field(default_factory=list)
     zoom_ramps: list[tuple[float, float]] = Field(default_factory=list)  # Brief R2.1
-    checks: dict[str, Literal["pass", "warn", "fail"]] = Field(default_factory=dict)
+    # n/a (Brief 12): the campaign does not require it (no watermark, no closers)
+    checks: dict[str, Literal["pass", "warn", "fail", "n/a"]] = Field(default_factory=dict)
     closer: str | None = None
     hook_mode: str
     hook_font_size: int
     hook_position: str = "avoid_faces"  # old files: what they did
-    watermark: CampaignClipWatermark
+    watermark: CampaignClipWatermark | None = None  # None: the campaign has no watermark
     settings: RenderedSettings | None = None
     crop_mode: Literal["center", "speaker"] | None = None
     output: RenderedOutput | None = None
