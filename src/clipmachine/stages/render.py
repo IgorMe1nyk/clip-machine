@@ -78,6 +78,14 @@ from clipmachine.utils.captions import (
 from clipmachine.utils.crop import CropBox, center_crop, display_size, frame_path
 from clipmachine.utils.fontmetrics import FontError, FontMetrics, load_font
 from clipmachine.utils.safezone import Rect, face_rects, outside_count, safe_rect
+from clipmachine.utils.wordlists import (
+    Hit,
+    WordListError,
+    WordLists,
+    load_wordlists,
+    mask_text,
+    mask_words,
+)
 
 if TYPE_CHECKING:  # tracking imports this module, so it is imported inside the speaker branch
     from clipmachine.tracking import TrackPlan
@@ -121,6 +129,7 @@ class Plan:
     metrics: FontMetrics | None = None
     karaoke: KaraokeSettings | None = None
     safe: Rect | None = None
+    wordlists: WordLists | None = None  # None: captions.mask_profanity is off
 
 
 class ClipLike(Protocol):
@@ -271,6 +280,7 @@ def _settings_of(app: AppConfig) -> RenderedSettings:
         safe_right=app.safe.right,
         hook_font_size=app.hook.font_size,
         hook_position=app.hook.position,
+        mask_profanity=app.captions.mask_profanity,
     )
 
 
@@ -401,10 +411,18 @@ class Captions:
     notes: tuple[str, ...] = ()
     caption_boxes: tuple[Rect, ...] = ()  # one per caption line (box_karaoke)
     hook_band: Rect | None = None  # the box behind the hook, when it is shown
+    masked: tuple[Hit, ...] = ()  # caption and hook words masked; shown nowhere but a local report
+
+
+def _masked_words(plan: Plan, words: list[CaptionWord]) -> tuple[list[CaptionWord], list[Hit]]:
+    if plan.wordlists is None:
+        return words, []
+    return mask_words(words, plan.wordlists)
 
 
 def _legacy_captions(plan: Plan, words: list[CaptionWord], duration: float) -> Captions:
     settings = plan.settings
+    words, masked = _masked_words(plan, words)
     groups = group_words(words, settings.words_per_line)
     events = build_events(
         groups, settings.highlight_color, duration, settings.caption_offset_seconds
@@ -417,7 +435,13 @@ def _legacy_captions(plan: Plan, words: list[CaptionWord], duration: float) -> C
         width=settings.width,
         height=settings.height,
     )
-    return Captions(text, len(events), len(groups), max((len(g) for g in groups), default=0))
+    return Captions(
+        text,
+        len(events),
+        len(groups),
+        max((len(g) for g in groups), default=0),
+        masked=tuple(masked),
+    )
 
 
 def _face_boxes(plan: Plan, chosen: SpeakerCrop | None, until: float) -> list[Rect] | None:
@@ -454,6 +478,7 @@ def _karaoke_captions(
     settings = plan.settings
     karaoke, metrics, safe = plan.karaoke, plan.metrics, plan.safe
     assert karaoke is not None and metrics is not None and safe is not None
+    words, masked = _masked_words(plan, words)
     built = build_karaoke(
         words,
         karaoke,
@@ -478,8 +503,12 @@ def _karaoke_captions(
         # centre-crop mode has no track: faces unknown
         at_top = hook.position == "top"  # faces are not needed then
         face_boxes = None if at_top else _face_boxes(plan, chosen, min(hook.seconds, duration))
+        hook_line = clip.hook_line
+        if plan.wordlists is not None:
+            hook_line, hook_hits = mask_text(hook_line, plan.wordlists)
+            masked.extend(hook_hits)
         result = build_hook(
-            clip.hook_line,
+            hook_line,
             karaoke,
             metrics,
             safe,
@@ -517,6 +546,7 @@ def _karaoke_captions(
         tuple(notes),
         caption_boxes=tuple(built.boxes),
         hook_band=hook_band,
+        masked=tuple(masked),
     )
 
 
@@ -530,7 +560,7 @@ def _captions_log(settings: RenderedSettings, captions: Captions) -> str:
         hook = "hook missing"
     else:
         hook = "hook moved" if captions.hook_moved else "hook shown"
-    return f", captions {captions.lines} lines, {hook}"
+    return f", captions {captions.lines} lines, {hook}, {len(captions.masked)} masked"
 
 
 def _render_clip(plan: Plan, clip: ScoredClip) -> None:
@@ -625,6 +655,7 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
             hook_shown=captions.hook_shown,
             hook_moved=captions.hook_moved,
             outside_safe_zone=captions.outside_safe_zone,
+            masked_words=len(captions.masked),
         ).model_dump(mode="json"),
     )
     mode = "center" if chosen is None else _speaker_log(chosen)
@@ -659,6 +690,17 @@ class Inputs:
     source: Path
     segments: list[TranscriptSegment] | None  # set in speaker mode
     track_plan: "TrackPlan | None"
+    wordlists: WordLists | None = None  # None: captions.mask_profanity is off
+
+
+def _load_wordlists(root: Path, app: AppConfig) -> WordLists | None:
+    """The word lists when masking is on; a missing list file is an error, never a silent skip."""
+    if not app.captions.mask_profanity:
+        return None
+    try:
+        return load_wordlists(root)
+    except WordListError as exc:
+        raise RunError(f"{exc} (captions.mask_profanity is on)") from exc
 
 
 def _load_font(root: Path, app: AppConfig) -> tuple[Path, FontMetrics | None]:
@@ -735,7 +777,9 @@ def _load_inputs(run_dir: Path, root: Path, app: AppConfig) -> Inputs:
     segments: list[TranscriptSegment] | None = None
     if app.video.crop == "speaker" and kept:
         segments, track_plan = _load_speaker(run_dir, root, app, meta, video, source)
-    return Inputs(fonts_dir, metrics, kept, video, source, segments, track_plan)
+    return Inputs(
+        fonts_dir, metrics, kept, video, source, segments, track_plan, _load_wordlists(root, app)
+    )
 
 
 def load_source_inputs(run_dir: Path, root: Path, app: AppConfig) -> Inputs:
@@ -747,7 +791,9 @@ def load_source_inputs(run_dir: Path, root: Path, app: AppConfig) -> Inputs:
     segments: list[TranscriptSegment] | None = None
     if app.video.crop == "speaker":
         segments, track_plan = _load_speaker(run_dir, root, app, meta, video, source)
-    return Inputs(fonts_dir, metrics, [], video, source, segments, track_plan)
+    return Inputs(
+        fonts_dir, metrics, [], video, source, segments, track_plan, _load_wordlists(root, app)
+    )
 
 
 def _make_plan(run_dir: Path, clips_dir: Path, app: AppConfig, inputs: Inputs) -> Plan:
@@ -775,6 +821,7 @@ def _make_plan(run_dir: Path, clips_dir: Path, app: AppConfig, inputs: Inputs) -
         speaker=inputs.track_plan,
         preview=app.speaker.debug_preview,
         metrics=metrics,
+        wordlists=inputs.wordlists,
         karaoke=None if metrics is None else KaraokeSettings.from_config(app.captions),
         safe=None
         if metrics is None

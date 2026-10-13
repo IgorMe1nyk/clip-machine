@@ -317,6 +317,9 @@ class CaptionsConfig(StrictModel):
     upcoming_color: str = "#FFFFFF"
     box_opacity: float = Field(default=0.75, ge=0, le=1)
     box_padding_px: int = Field(default=18, ge=0, le=100)
+    # added in Brief 11.1: words on config/wordlists/mask.txt render as first letter + ***
+    # (captions and the hook, every mode); the audio is never changed
+    mask_profanity: bool = True
 
     @model_validator(mode="after")
     def _check_values(self) -> "CaptionsConfig":
@@ -878,6 +881,10 @@ class RenderedSettings(StrictModel):
     hook_font_size: int = 0
     # old JSON files were rendered with faces avoided
     hook_position: Literal["top", "avoid_faces"] = "avoid_faces"
+    # added in Brief 11.1. Unlike the fields above, the default is the new value on purpose: an
+    # old clip with no masked word is not stale, and the chance of one is not worth re-rendering
+    # every run on resume
+    mask_profanity: bool = True
 
 
 class RenderedOutput(StrictModel):
@@ -920,6 +927,7 @@ class RenderedClip(StrictModel):
     hook_shown: bool = False
     hook_moved: bool = False  # moved down to clear a face
     outside_safe_zone: int = 0  # caption/hook boxes not fully inside the safe area
+    masked_words: int = 0  # Brief 11.1: caption and hook words masked (a count, never the words)
 
 
 class TrackSource(StrictModel):

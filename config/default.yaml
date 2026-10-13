@@ -112,6 +112,7 @@ captions:
   words_per_line: 3          # legacy style only
   highlight_color: "#FFD400" # legacy style only
   margin_v: 350              # legacy style only: pixels from the bottom edge, clear of phone UI
+  mask_profanity: true       # words in config/wordlists/mask.txt render as f*** in captions and the hook (Brief 11.1); the audio is never changed
 hook:                        # the clip's hook line as big text at the start (needs captions.style box_karaoke)
   enabled: true
   seconds: 3.0               # shown from 0 to this; a campaign may set its own hook.seconds

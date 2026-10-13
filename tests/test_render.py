@@ -1522,3 +1522,114 @@ def test_source_inputs_keep_the_errors_of_a_missing_font_and_a_missing_source(
     (project / "assets" / "fonts" / "Montserrat-Bold.ttf").unlink()
     with pytest.raises(RunError, match="caption font not found"):
         render.load_source_inputs(run_dir, root, ctx.config.app)
+
+
+# --- profanity masking (Brief 11.1) -------------------------------------------------------------
+
+
+def invented_lists(project: Path) -> None:
+    """Replace the shipped word lists in the project copy with invented words."""
+    folder = project / "config" / "wordlists"
+    (folder / "mask.txt").write_text("blorp\ncontext: zib\nslur: vexor\n", encoding="utf-8")
+    (folder / "flag.txt").write_text("wump\n", encoding="utf-8")
+    (folder / "never.txt").write_text("glimmer\n", encoding="utf-8")
+
+
+def plant_words(run_dir: Path, changes: dict[str, str]) -> None:
+    """Replace transcript words (" w10" -> " blorp") in the run's transcript.json."""
+    path = run_dir / "transcript.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for segment in data["segments"]:
+        for word in segment["words"]:
+            word["word"] = changes.get(word["word"].strip(), word["word"].strip()).join((" ", ""))
+    write_json_atomic(path, data)
+
+
+def set_hook(run_dir: Path, text: str) -> None:
+    scored = ScoredFile.model_validate_json((run_dir / "scored.json").read_text("utf-8"))
+    for clip in scored.clips:
+        clip.hook_line = text
+    write_json_atomic(run_dir / "scored.json", scored.model_dump(mode="json"))
+
+
+def test_masked_words_render_as_first_letter_and_stars_in_captions_and_the_hook(
+    project: Path, fake: FakeFfmpeg, caplog: pytest.LogCaptureFixture
+) -> None:
+    invented_lists(project)
+    ctx = v2_ctx(project)
+    # w16 (a context word) is two words after w12, so it is masked too; w24 is alone
+    plant_words(
+        ctx.run_dir,
+        {"w10": "Blorp,", "w12": "blorping", "w14": "blorpish", "w16": "zib", "w24": "zib"},
+    )
+    set_hook(ctx.run_dir, "WHY BLORP MATTERS")
+
+    with caplog.at_level(logging.INFO):
+        render.run(ctx)
+
+    caps = [d for d in dialogues(ctx.run_dir) if ",Cap,," in d]
+    shown = [d.rsplit("}", 1)[1] for d in caps]
+    assert shown[:4] == ["B***,", "b***", "blorpish", "z***"] and "zib" in shown
+    assert not [w for w in shown if w.lower().startswith("blorp") and w != "blorpish"]
+    hooks = hook_lines(ctx.run_dir)
+    assert "WHY{" in hooks[1] and "B***{" in hooks[1] and "BLORP" not in hooks[1]
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    assert data["masked_words"] == 4 and data["settings"]["mask_profanity"] is True
+    assert "blorp" not in json.dumps(data).lower()  # the json holds a count, never the words
+    assert ", 4 masked" in caplog.text and "blorp" not in caplog.text.lower()
+
+
+def test_masking_off_renders_the_words_as_spoken(project: Path, fake: FakeFfmpeg) -> None:
+    invented_lists(project)
+    ctx = v2_ctx(project)
+    ctx.config.app.captions = ctx.config.app.captions.model_copy(update={"mask_profanity": False})
+    plant_words(ctx.run_dir, {"w10": "blorp"})
+
+    render.run(ctx)
+
+    assert "blorp" in (ctx.run_dir / "clips" / "c01.ass").read_text(encoding="utf-8")
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    assert data["masked_words"] == 0 and data["settings"]["mask_profanity"] is False
+
+
+def test_the_legacy_style_masks_too(project: Path, fake: FakeFfmpeg) -> None:
+    invented_lists(project)
+    ctx = make_ctx(project)  # legacy style
+    write_inputs(ctx.run_dir)
+    plant_words(ctx.run_dir, {"w10": "blorp"})
+
+    render.run(ctx)
+
+    text = (ctx.run_dir / "clips" / "c01.ass").read_text(encoding="utf-8")
+    assert "b***" in text and "blorp" not in text
+    assert read_json(ctx.run_dir / "clips" / "c01.json")["masked_words"] == 1
+
+
+def test_a_missing_word_list_fails_the_render_only_when_masking_is_on(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    (project / "config" / "wordlists" / "flag.txt").unlink()
+    ctx = v2_ctx(project)
+    with pytest.raises(RunError, match="word list not found: config/wordlists/flag.txt"):
+        render.run(ctx)
+    ctx.config.app.captions = ctx.config.app.captions.model_copy(update={"mask_profanity": False})
+    render.run(ctx)
+    assert (ctx.run_dir / "clips" / "c01.mp4").is_file()
+
+
+def test_a_clip_rendered_before_masking_existed_is_not_stale(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    ctx = v2_ctx(project)
+    render.run(ctx)
+    path = ctx.run_dir / "clips" / "c01.json"
+    data = read_json(path)
+    settings = data["settings"]
+    assert isinstance(settings, dict)
+    del settings["mask_profanity"]  # as a json from before Brief 11.1
+    write_json_atomic(path, data)
+    before = len(fake.calls)
+
+    render.run(resume(ctx))
+
+    assert len(fake.calls) == before  # nothing re-rendered
