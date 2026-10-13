@@ -26,7 +26,7 @@ from clipmachine.config import ConfigError
 from clipmachine.runs import write_text_atomic
 
 PLAN_FILE = "posting_plan.csv"
-SLOT_COLUMNS = ("date", "time_et", "platform", "id", "file", "text_file", "posted")
+SLOT_COLUMNS = ("date", "time_et", "platform", "source", "id", "file", "text_file", "posted")
 RESULT_COLUMNS = (
     "views_48h",
     "likes",
@@ -93,6 +93,7 @@ def _posted_row(entry: UsedEntry, root: Path, out_dir: Path) -> Row:
         "date": local_date(entry.posted_at) if entry.posted_at else "",
         "time_et": "",
         "platform": entry.platform,
+        "source": entry.source_name or "",
         "id": entry.id,
         "file": file,
         "text_file": text_file,
@@ -109,11 +110,13 @@ def plan_rows(
     out_dir: Path,
     start: date,
     existing: Mapping[str, Row] | None = None,
+    sources: Mapping[str, str] | None = None,
 ) -> list[Row]:
     """The rows to write: posted clips by date, then the scheduled ones by date, time and the
     campaign's platform order. Values from `existing` win over computed ones, except the slot of
-    an unposted clip."""
+    an unposted clip. `sources` gives the source video's file name by moment id (Brief 12)."""
     old = existing or {}
+    names = sources or {}
     posted_rows: list[Row] = []
     scheduled: list[tuple[date, int, int, Row]] = []
     posted_ids: set[str] = set()
@@ -142,6 +145,7 @@ def plan_rows(
                 "date": day.isoformat(),
                 "time_et": clock_12h(when),
                 "platform": platform,
+                "source": names.get(moment.id, ""),
                 "id": moment.id,
                 "file": f"{platform}/{moment.id}.mp4",
                 "text_file": f"{platform}/{moment.id}.txt",
@@ -181,6 +185,7 @@ def write_posting_plan(
     *,
     root: Path,
     today: date,
+    sources: Mapping[str, str] | None = None,
 ) -> Path:
     """Read the old plan, rebuild the rows with slots from tomorrow on, write it (UTF-8, LF)."""
     path = out_dir / PLAN_FILE
@@ -193,6 +198,7 @@ def write_posting_plan(
         out_dir=out_dir,
         start=today + timedelta(days=1),
         existing=existing,
+        sources=sources,
     )
     extra = [c for r in rows for c in r if c not in PLAN_COLUMNS]
     columns = [*PLAN_COLUMNS, *dict.fromkeys(extra)]

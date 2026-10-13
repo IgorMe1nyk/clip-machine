@@ -55,7 +55,7 @@ class Rig:
 
     @property
     def out(self) -> Path:
-        return self.run_dir / "campaign" / "demo"
+        return self.project / "runs" / "_campaigns" / "demo"
 
     @property
     def meta_dir(self) -> Path:
@@ -654,7 +654,7 @@ def test_a_rendered_moment_is_recorded_unposted(rig: Rig) -> None:
     assert rig.go() == 0
     (entry,) = rig.used().entries
     assert (entry.id, entry.platform, entry.posted_at) == ("A01", "tiktok", None)
-    assert entry.output.startswith("runs/run/campaign/demo/") and entry.output.endswith(".mp4")
+    assert entry.output.startswith("runs/_campaigns/demo/") and entry.output.endswith(".mp4")
     assert entry.closer == "closer one" and entry.source_sha256 == "b" * 64
     assert (entry.start, entry.end) == (sentence_start_cut(5), sentence_end_cut(11))
 
@@ -758,7 +758,7 @@ def test_a_video_file_matching_path_size_and_time_reuses_the_run(
 
     assert find_run(project.resolve(), source) == (run_dir, False)
     assert f"reusing run folder: {run_dir.resolve()}" in capsys.readouterr().out
-    assert (run_dir / "campaign" / "demo" / "tiktok" / "A01.mp4").is_file()
+    assert (project / "runs" / "_campaigns" / "demo" / "tiktok" / "A01.mp4").is_file()
 
 
 @pytest.mark.parametrize("what", ["size", "mtime"])
@@ -835,7 +835,7 @@ def test_a_new_source_makes_a_new_run_with_the_general_client(
     # fetch and transcribe are stubbed in unit tests, so the new run has no inputs to render:
     # the command stops with a clear error, but the run was made for the general client
     assert rig.go(target=source) == 2
-    (created,) = (p for p in (project / "runs").iterdir() if p.name != "run")
+    (created,) = (p for p in (project / "runs").iterdir() if p.name not in ("run", "_campaigns"))
     state = json.loads((created / "run.json").read_text(encoding="utf-8"))
     assert state["client"] == "general" and state["input"] == str(source.resolve())
     assert [s["status"] for s in state["stages"].values()][:2] == ["done", "done"]
@@ -1344,7 +1344,7 @@ def test_platform_folders_hold_only_the_mp4_and_the_text_and_meta_holds_the_rest
         "tiktok",
         "youtube",
     ]
-    assert rig.used().entries[1].output == "runs/run/campaign/demo/instagram/A02.mp4"
+    assert rig.used().entries[1].output == "runs/_campaigns/demo/instagram/A02.mp4"
 
 
 def test_auto_moments_are_spread_over_the_platforms_and_locked(
@@ -1524,3 +1524,65 @@ def test_a_campaign_without_a_watermark_still_fails_a_hook_outside_the_safe_area
     rig.moments(moment(start="0:24", end="0:58", hook="AAAA BBBB CCCC DDDD EEEE FFFF"))
     assert rig.go() == 1
     assert "the hook does not fit at font size 200" in (rig.clip("A01_tiktok").error or "")
+
+
+# --- several source videos in one campaign (Brief 12) --------------------------------------------
+
+
+def second_source(project: Path, rig: Rig) -> Path:
+    """A second source file with its own finished run folder (its words are t<k>w<j>)."""
+    source = make_source(project, "second.mp4", b"other video bytes")
+    write_run(project, name="second", source=source, overrides={(5, 2): "glimmer"})
+    return source
+
+
+def test_moments_from_two_sources_render_into_the_same_campaign_folder(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = second_source(rig.project, rig)
+    rig.moments(
+        moment(id="A01", start="0:24", end="0:58"),
+        moment(id="A02", start="0:24", end="0:58", platform="instagram", source="second.mp4"),
+        moment(id="A03", start="0:34", end="1:04", platform="youtube", source=str(source)),
+    )
+
+    assert rig.go() == 0
+
+    assert rig.fake.ids == ["A01_tiktok", "A02_instagram", "A03_youtube"]
+    assert rig.mp4("A01_tiktok").is_file() and rig.mp4("A02_instagram").is_file()
+    assert rig.mp4("A03_youtube").is_file()
+    text = out_of(capsys)
+    assert "sources: 2 videos" in text
+    assert f"run folder: {rig.run_dir}" in text and "reusing run folder:" in text
+    assert text.index("A01 tiktok: rendered") < text.index("A02 instagram: rendered")
+    cwds = {clip_id: cwd for clip_id, _, cwd in rig.fake.calls}
+    assert cwds["A01_tiktok"] == rig.run_dir and cwds["A02_instagram"].name == "second"
+    entries = {e.id: e for e in rig.used().entries}
+    assert entries["A01"].source_name == "original.mp4" and entries["A02"].source_sha256 == "b" * 64
+    rows = list(
+        csv.DictReader((rig.out / "posting_plan.csv").read_text(encoding="utf-8").splitlines())
+    )
+    assert [(r["id"], r["source"]) for r in rows] == [
+        ("A01", "original.mp4"),
+        ("A02", "original.mp4"),
+        ("A03", "original.mp4"),
+    ]  # both runs were fetched from a file called original.mp4 in this rig
+    assert "run, second" in (rig.out / "campaign_report.html").read_text(encoding="utf-8")
+
+
+def test_a_missing_source_names_the_moment_and_renders_nothing(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig.moments(moment(id="A01", start="0:24", end="0:58", source="nowhere/missing.mp4"))
+    assert rig.go() == 2
+    assert "moment A01: source: input file not found" in capsys.readouterr().err
+    assert rig.fake.calls == []
+
+
+def test_an_unsupported_source_type_is_refused(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (rig.project / "notes.txt").write_text("x", encoding="utf-8")
+    rig.moments(moment(id="A01", start="0:24", end="0:58", source="notes.txt"))
+    assert rig.go() == 2
+    assert "moment A01: source: unsupported input type" in capsys.readouterr().err

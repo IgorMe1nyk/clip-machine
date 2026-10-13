@@ -208,6 +208,9 @@ class _MomentFields(StrictModel):
     end: float | None = None  # None: the tool picks the end (`end: auto` or left out)
     hook: str
     caption: str = ""
+    # Brief 12: this moment's own source video (a path, relative to the repo root or absolute);
+    # left out, the source given on the command line
+    source: str | None = None
 
     @field_validator("id")
     @classmethod
@@ -235,6 +238,16 @@ class _MomentFields(StrictModel):
         if not cleaned:
             raise ValueError("hook must not be empty")
         return cleaned
+
+    @field_validator("source")
+    @classmethod
+    def _source(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("source must be a file path, or left out")
+        return value
 
     @model_validator(mode="after")
     def _order(self) -> "_MomentFields":
@@ -358,6 +371,7 @@ class UsedEntry(StrictModel):
     rendered_at: str  # UTC, ISO 8601
     output: str  # the mp4, relative to the repo root, forward slashes
     source_sha256: str
+    source_name: str | None = None  # the source video's file name as fetched (Brief 12)
     posted_at: str | None = None  # set by campaign-posted; a render is not a post
 
 

@@ -81,6 +81,7 @@ class MomentContext:
     names_to_check: tuple[str, ...] = ()
     # Brief 11.2: words a YouTube title keeps as written (names, acronyms)
     title_keep: tuple[str, ...] = ()
+    source_name: str = ""  # the source video's file name as fetched (Brief 12)
 
     @property
     def meta_dir(self) -> Path:
@@ -472,6 +473,7 @@ def _render_moment(
             rendered_at=rendered_at,
             output=mp4.relative_to(ctx.root).as_posix(),
             source_sha256=ctx.source_sha256,
+            source_name=ctx.source_name or None,
         ),
     )
 

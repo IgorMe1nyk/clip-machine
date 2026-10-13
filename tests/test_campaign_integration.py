@@ -40,7 +40,7 @@ def test_a_campaign_run_renders_a_real_clip(project: Path) -> None:
     code = cli.main(["campaign", str(run_dir), "--campaign", "demo"], root=project)
 
     assert code == 0
-    out = run_dir / "campaign" / "demo"
+    out = project / "runs" / "_campaigns" / "demo"
     clip = CampaignClip.model_validate_json(
         (out / "_meta" / "A01_tiktok.json").read_text(encoding="utf-8")
     )
@@ -73,7 +73,7 @@ def test_an_auto_position_is_chosen_from_real_frames_and_the_clip_renders(projec
     code = cli.main(["campaign", str(run_dir), "--campaign", "demo"], root=project)
 
     assert code == 0
-    out = run_dir / "campaign" / "demo"
+    out = project / "runs" / "_campaigns" / "demo"
     clip = CampaignClip.model_validate_json(
         (out / "_meta" / "A01_tiktok.json").read_text(encoding="utf-8")
     )
