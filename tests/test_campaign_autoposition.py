@@ -271,6 +271,7 @@ def test_the_lock_records_the_geometry_it_was_chosen_for(
     assert rig.go() == 0
     lock = lock_of(rig)
     assert lock.frame == (1080, 1920) and lock.safe == (290, 560, 120, 192)
+    assert lock.button_column == (780, 840)
     assert lock.corner_zone == 0.15 and lock.hook_position == "avoid_faces"
     assert lock.scale == 1.0 and lock.blend == "normal" and lock.schema_version == 1
 
@@ -371,3 +372,70 @@ def test_an_explicit_position_bypasses_auto(
     assert rig.clip("A01_tiktok").watermark.position_mode == "explicit"
     assert "watermark: auto position" not in out_of(capsys)
     assert "Watermark position:" not in (rig.out / "campaign_report.html").read_text("utf-8")
+
+
+# --- TikTok's button column (D-023) ----------------------------------------------------------
+
+
+def dark_right(
+    args: list[str], frame_w: int, frame_h: int, timeout: float, *, scratch_dir: Path | None = None
+) -> Iterator[Any]:
+    """Frames that are white except where the output's x > 800 lands: black there, so of the
+    100 px boxes only the one at x_center 0.75 (x 760..860, the widest the safe area allows) has
+    a dark median. The centre crop of the 640x360 source is 202 px wide from x 218, decoded at
+    480 px (scale 0.75)."""
+    duration = float(args[args.index("-t") + 1])
+    fps = float(args[args.index("-vf") + 1].split(",")[0].removeprefix("fps="))
+    edge = int(np.ceil((800 * 202 / 1080 + 218) * frame_w / 640))
+    for _ in range(int(round(duration * fps))):
+        frame = np.full((frame_h, frame_w, 3), 255, dtype=np.uint8)
+        frame[:, edge:] = 0
+        yield frame
+
+
+def test_the_button_column_is_a_no_go_zone(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig, _ = auto_rig(project, fake, monkeypatch)
+    monkeypatch.setattr(ffmpeg, "read_frames", dark_right)
+
+    assert rig.go() == 0
+
+    lock = lock_of(rig)
+    rect = rect_of(rig)
+    column = Rect(780.0, 840.0, 1080.0, 1920.0)
+    assert lock.luminance == 0.0 and rect.x2 > 780  # the dark strip is the only dark place
+    assert not rect.intersects(column) and rect.y2 <= 840  # so it sits above the column
+
+
+def test_without_the_column_the_same_frames_put_the_mark_lower(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    edit_yaml(
+        project / "config" / "default.yaml",
+        lambda d: d["safe"].update(button_left=1080, button_top=1920),  # an empty column
+    )
+    rig, _ = auto_rig(project, fake, monkeypatch)
+    monkeypatch.setattr(ffmpeg, "read_frames", dark_right)
+
+    assert rig.go() == 0
+
+    rect = rect_of(rig)
+    assert rect.x2 > 780 and rect.intersects(Rect(780.0, 840.0, 1080.0, 1920.0))
+    assert lock_of(rig).button_column == (1080, 1920)
+
+
+def test_a_changed_button_column_makes_the_lock_stale(
+    project: Path,
+    fake: FakeFfmpeg,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rig, _ = auto_rig(project, fake, monkeypatch)
+    assert rig.go() == 0
+    out_of(capsys)
+    edit_yaml(project / "config" / "default.yaml", lambda d: d["safe"].update(button_top=900))
+
+    assert rig.go() == 0
+    assert "warning: auto_position.json is stale" in out_of(capsys)
+    assert lock_of(rig).button_column == (780, 900)

@@ -10,7 +10,7 @@ name spellings (Whisper wrote one name three ways; one was listed). Igor also wa
 post: profanity masked, sensitive words flagged. Goal: a new campaign takes about 2 minutes to set
 up. $0, deterministic, local, no model (D-030).
 
-**Done** (9 commits on the branch `brief-11-1-auto-setup` from `main`; nothing pushed or merged)
+**Done** (10 commits on the branch `brief-11-1-auto-setup` from `main`; nothing pushed or merged)
 - **`watermark.position: auto`.** A grid of centre positions (x 0.5 ± 0.05 steps, y every 0.02)
   is filtered by the geometry checks an explicit position must pass, by the caption envelope (the
   widest, tallest caption box, so no clip's captions can reach the spot) and, per sampled clip,
@@ -23,6 +23,9 @@ up. $0, deterministic, local, no model (D-030).
   geometry it was chosen for) and reused while the watermark file, scale, blend, frame, safe
   margins, corner zone and hook position stay the same; a stale lock is a warning and a new
   choice; a lock that no longer fits is a clear error. Console and report show the choice.
+  TikTok's button column (`safe.button_left: 780`, `safe.button_top: 840`, D-023; the preview
+  draws the same values) is a no-go zone: a candidate touching it is dropped (Igor, before the
+  real run).
 - **`names:`** with automatic spelling rules. Once per run the whole transcript is scanned for
   spans of 1–3 words (never across a sentence end) that look or sound like a name: lower case,
   digit look-alikes mapped (3 1 0 → e i o), difflib ratio and a basic Soundex. Ratio ≥ 0.8 makes
@@ -50,7 +53,7 @@ up. $0, deterministic, local, no model (D-030).
   format named and the advice to convert.
 - Refactor: the watermark is measured once (`WatermarkAsset`) and placed apart, so a position can
   be chosen later. `face_rects_timed` keeps the sample time of each face box.
-- Tests: 1878 passed, 3 skipped (Whisper, MediaPipe, a symlink test); the ffmpeg tests ran here,
+- Tests: 1881 passed, 3 skipped (Whisper, MediaPipe, a symlink test); the ffmpeg tests ran here,
   including an auto-position campaign on a generated source. ruff, format, mypy and pip-audit
   clean. Built by Fable in auto mode, one commit per step, every check run separately.
 

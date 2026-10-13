@@ -124,6 +124,8 @@ safe:                        # pixels the TikTok / Reels / Shorts apps cover (D-
   bottom: 560                # organic posts; the strictest published number is 672. To be checked against the real TikTok UI
   left: 120
   right: 192
+  button_left: 780           # TikTok's button column starts here (x) ...
+  button_top: 840            # ... and here (y); the auto watermark never touches it
 campaign:                    # campaign mode (Brief 11): the rules live in campaigns/<slug>/
   max_snap_seconds: 1.5      # a moment's start or end moves at most this far to a clean sentence edge
   corner_zone: 0.15          # fraction of width and height; a watermark may not touch the four corners

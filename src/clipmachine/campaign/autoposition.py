@@ -9,6 +9,8 @@ rendered:
 
     score = face_weight * face_cost + light_weight * luminance / 255
 
+TikTok's button column (safe.button_left and button_top, D-023) is a no-go zone too.
+
 where face_cost is the share of the clip's face samples whose face boxes overlap the candidate
 (from the track; 0 and a note when the crop is the centre crop, which has no track) and luminance
 is the median grey of the source pixels behind the candidate on a few frames per clip, read
@@ -94,7 +96,7 @@ def candidates(ctx: MomentContext) -> tuple[list[Candidate], int]:
     app, plan, asset = ctx.app, ctx.plan, ctx.campaign.asset
     karaoke, metrics, safe = plan.karaoke, plan.metrics, plan.safe
     assert karaoke is not None and metrics is not None and safe is not None
-    height = app.video.height
+    width, height = app.video.width, app.video.height
     centre = (safe.x1 + safe.x2) / 2
     envelope = Rect(
         centre - karaoke.max_width_px / 2,
@@ -113,13 +115,16 @@ def candidates(ctx: MomentContext) -> tuple[list[Candidate], int]:
     while y <= safe.y2 / height:
         ys.append(round(y, 6))
         y += y_step
+    column = Rect(
+        float(app.safe.button_left), float(app.safe.button_top), float(width), float(height)
+    )
     kept: list[Candidate] = []
     for y_center in ys:
         for x_center in xs:
             if placement_problem(asset, x_center, y_center, app) is not None:
                 continue
             _, _, rect = _rect_at(asset, x_center, y_center, app)
-            if rect.intersects(envelope):
+            if rect.intersects(envelope) or rect.intersects(column):
                 continue
             kept.append(Candidate(x_center, y_center, rect))
     return kept, len(xs) * len(ys)
@@ -419,6 +424,7 @@ def choose_position(
         blend=campaign.asset.blend,
         frame=(app.video.width, app.video.height),
         safe=(app.safe.top, app.safe.bottom, app.safe.left, app.safe.right),
+        button_column=(app.safe.button_left, app.safe.button_top),
         corner_zone=app.campaign.corner_zone,
         hook_position=campaign.hook_position,
         notes=notes,

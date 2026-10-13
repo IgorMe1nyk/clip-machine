@@ -380,12 +380,23 @@ TIKTOK_COLUMN_TOP = 840
 SAFE_LINE_PX = 2
 
 
-def safe_zone_lines(width: int, height: int, top: int, bottom: int, left: int, right: int) -> str:
+def safe_zone_lines(
+    width: int,
+    height: int,
+    top: int,
+    bottom: int,
+    left: int,
+    right: int,
+    *,
+    column_left: int = TIKTOK_COLUMN_LEFT,
+    column_top: int = TIKTOK_COLUMN_TOP,
+) -> str:
     """A `drawbox` chain for the safe-zone preview: four translucent red lines just inside the
-    margins and the outline of TikTok's button column in yellow. Plain integers only."""
+    margins and the outline of TikTok's button column in yellow (`column_left`, `column_top`
+    on a 1080x1920 canvas, from safe.button_left/button_top). Plain integers only."""
     line = SAFE_LINE_PX
-    column_x = round(TIKTOK_COLUMN_LEFT * width / 1080)
-    column_y = round(TIKTOK_COLUMN_TOP * height / 1920)
+    column_x = round(column_left * width / 1080)
+    column_y = round(column_top * height / 1920)
     boxes = [
         (0, top, width, line, "red@0.6", "fill"),
         (0, height - bottom - line, width, line, "red@0.6", "fill"),

@@ -283,6 +283,7 @@ def _read_lock(
         asset.blend,
         (app.video.width, app.video.height),
         (app.safe.top, app.safe.bottom, app.safe.left, app.safe.right),
+        (app.safe.button_left, app.safe.button_top),
         app.campaign.corner_zone,
         hook_position,
     )
@@ -292,13 +293,15 @@ def _read_lock(
         lock.blend,
         lock.frame,
         lock.safe,
+        lock.button_column,
         lock.corner_zone,
         lock.hook_position,
     )
     if current != locked:
         return None, (
             f"{AUTO_POSITION_FILE} is stale (the watermark file, its scale or blend, the frame, "
-            "the safe margins, the corner zone or the hook position changed); choosing again"
+            "the safe margins, the button column, the corner zone or the hook position changed); "
+            "choosing again"
         )
     return lock, None
 

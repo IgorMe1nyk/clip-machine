@@ -353,6 +353,11 @@ class SafeConfig(StrictModel):
     bottom: int = Field(default=560, ge=0)
     left: int = Field(default=120, ge=0)
     right: int = Field(default=192, ge=0)
+    # TikTok's button column (D-023): from this x and this y down to the bottom right
+    # corner. The auto watermark never touches it (Brief 11.1); the safe-zone preview
+    # draws it. Captions may still reach it: Igor judges that on real frames.
+    button_left: int = Field(default=780, ge=0)
+    button_top: int = Field(default=840, ge=0)
 
 
 class CampaignModeConfig(StrictModel):

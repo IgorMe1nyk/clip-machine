@@ -226,6 +226,7 @@ class AutoPosition(StrictModel):
     blend: str
     frame: tuple[int, int]
     safe: tuple[int, int, int, int]  # top, bottom, left, right
+    button_column: tuple[int, int] = (780, 840)  # safe.button_left, safe.button_top
     corner_zone: float
     hook_position: str
     notes: list[str] = Field(default_factory=list)

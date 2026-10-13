@@ -937,6 +937,8 @@ def render_safe_zone_preview(run_dir: Path, root: Path, app: AppConfig, clip_id:
             settings.safe_bottom,
             settings.safe_left,
             settings.safe_right,
+            column_left=app.safe.button_left,
+            column_top=app.safe.button_top,
         ),
     )
     temp = out_dir / f"{clip.id}{TEMP_SUFFIX}"
