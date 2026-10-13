@@ -38,7 +38,10 @@ them behind a hard gate (D-032). The human-picked path of Brief 11 is unchanged.
 - The real run (Igor's OK; a few cents of API credits): Igor creates `campaigns/<slug2>/`
   (`selection: ai`, rules, topics, prefixes, no watermark, no closers) and downloads one episode;
   `scout <episode> --campaign <slug2>`, then `campaign <episode> --campaign <slug2> --only <ids>`.
-- The one-time move of the first campaign's outputs into `runs/_campaigns/<slug>/`.
+
+**One-time move (done, 2026-10-13):** the first campaign's outputs moved from its run folder to
+`runs/_campaigns/<slug>/` (48 used.json output paths repointed, no file missing; the old flat
+files came along and are listed as old in the report).
 
 **Cost:** $0 so far. No API call (the tests fake the client).
 
