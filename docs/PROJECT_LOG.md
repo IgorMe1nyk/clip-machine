@@ -36,11 +36,22 @@ platform, with that platform's text. $0, no API call, no new dependency (D-031).
 - Tests: 2103 passed, 3 skipped (about 60 new across assign, post, plan, used, run, report,
   loader). ruff, format, mypy and pip-audit clean.
 
+**Real run** (Igor's OK; $0, API calls 0; 1252.5 s for 26 clips, 40–52 s each with the tracks reused)
+- Records first: only 3 of the 9 scheduled posts were marked posted in used.json (the handoff said
+  9). The other 6 were marked (`campaign-posted --platform tiktok`, their recorded label), then all
+  wrong labels relabelled with `--fix-platform`: 3 instagram, 3 youtube, 3 stay tiktok. Backups of
+  used.json, moments.yaml and campaign.yaml in `runs/_scratch/backup-11-2/`.
+- `platforms: [tiktok, instagram, youtube]` and `platform: auto` on all 35 moments. Assignment:
+  tiktok 12, instagram 12, youtube 11 (the 9 posted keep their platforms). 26 rendered, 0 failed,
+  9 refused (posted). Per folder: tiktok 9, instagram 9, youtube 8 clips; 61 files of the 9 posted
+  moments unchanged (hash and mtime). posting_plan.csv: 9 posted rows, 26 slots Oct 14–16 plus
+  Oct 17 (3 per platform per day).
+- Three new clips overlap a posted moment by more than half (`not_previously_used` warning):
+  C03 and A04, C09 and A03, C11 and A05. Igor decides whether to post them (the campaign wants
+  each moment once).
+
 **Not done**
-- The real run (Igor's OK first): relabel A03, A07, A04 → instagram and B05, B07, A05 → youtube
-  (A01, A02, A06 stay tiktok); set `platforms` and `platform: auto`; render the 26 unposted
-  moments; report per platform, the first week of the plan, and that the 9 posted are untouched.
-- HANDOFF.md refresh after the real run.
+- HANDOFF.md refresh after Igor's folder check; merge after his OK.
 
 **Cost:** $0. No API call.
 
