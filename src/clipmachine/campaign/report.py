@@ -236,14 +236,20 @@ def _header(
     clips: Mapping[str, CampaignClip],
     auto: AutoSpelling | None = None,
 ) -> str:
-    cfg, wm = campaign.config, campaign.watermark
+    cfg, asset = campaign.config, campaign.asset
     states = [clips.get(m.clip_name) for m in moments]
     rendered = sum(1 for c in states if c is not None and c.status == "rendered")
     failed = sum(1 for c in states if c is not None and c.status == "failed")
     waiting = sum(1 for c in states if c is None)
-    box = wm.rect
-    alpha = "yes" if wm.info.has_alpha else "no"
-    background = BACKGROUNDS.get(wm.background, wm.background)
+    wm = campaign.watermark
+    where = (
+        f"visible box on the frame x {wm.rect.x1:g}&ndash;{wm.rect.x2:g}, "
+        f"y {wm.rect.y1:g}&ndash;{wm.rect.y2:g}"
+        if wm is not None
+        else "position not chosen yet"
+    )
+    alpha = "yes" if asset.info.has_alpha else "no"
+    background = BACKGROUNDS.get(asset.background, asset.background)
     lines = [
         f"<h1>{_esc(cfg.name)}</h1>",
         f'<p class="muted">{_esc(cfg.source_note)}</p>' if cfg.source_note else "",
@@ -256,10 +262,9 @@ def _header(
         + f", font size {_esc(campaign.hook_font_size)}"
         + f", position {_esc(campaign.hook_position)}</p>",
         f"<p>Watermark {_esc(cfg.watermark.file)}: "
-        f"format PNG ({_esc(color_type_name(wm.info.color_type))}), alpha {alpha}, "
+        f"format PNG ({_esc(color_type_name(asset.info.color_type))}), alpha {alpha}, "
         f"background {_esc(background)}, "
-        f"blend {_esc(wm.blend)}; visible box on the frame x {box.x1:g}&ndash;{box.x2:g}, "
-        f"y {box.y1:g}&ndash;{box.y2:g}</p>",
+        f"blend {_esc(asset.blend)}; {where}</p>",
     ]
     if campaign.warnings:
         lines.append("<p><b>Warnings</b></p>" + _list(campaign.warnings))

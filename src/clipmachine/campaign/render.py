@@ -158,7 +158,7 @@ def _clip_json(
     render_seconds: float | None = None,
     rendered_at: str | None = None,
 ) -> CampaignClip:
-    wm = ctx.campaign.watermark
+    wm = ctx.campaign.placed
     moment = work.moment
     known = work.start is not None and work.end is not None
     return CampaignClip(
@@ -309,7 +309,7 @@ def _render_moment(
 ) -> MomentResult:
     name = moment.clip_name
     plan, app, campaign = ctx.plan, ctx.app, ctx.campaign
-    wm = campaign.watermark
+    wm = campaign.placed
     settings = plan.settings
     started = time.perf_counter()
 
