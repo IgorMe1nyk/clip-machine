@@ -2,6 +2,46 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-13 — Brief R2.1: smooth zooms (built; 3-clip real run done; Igor's phone check pending)
+
+**Why:** on the phone the R2 hard punch-in looked like a glitch (Igor, 2026-10-13). An eased zoom
+in and out reads as a camera move. Same branch, same sendcmd path, still deterministic and $0.
+
+**Done** (3 commits on the branch `brief-r2-zooms`, plus this one; nothing pushed or merged)
+- **`video.zoom.style: smooth | punch`** (default smooth; punch is R2 unchanged, byte for byte,
+  with a golden test) and **`ramp_s`** (0.4; two ramps must fit in `min_gap_s`). New defaults
+  `scale` 1.15 and `max_upscale` 2.1: a 1080p source zooms to 528x940, an upscale of 2.05.
+  `zoom_style` and `zoom_ramp_s` join `RenderedSettings`, so the R2 punch clips re-render.
+- **Smooth:** cosine ease-in-out from the base window to the zoomed one over `ramp_s` from the
+  zoom-in time, hold, ease back out ending at the hold end. One crop command per output frame
+  during a ramp (12 lines per 0.4 s at 29.97 fps), even pixels, clamped. The width follows from
+  the height with the base window's own aspect, so the first frame of a ramp is the base window
+  exactly and the aspect stays within 0.5% of the base's (which is the closest even 9:16 the
+  source allows). A clip whose first zoom starts at 0 starts on the base window and eases in.
+- **Cuts:** a hold that ends on a camera cut (or the clip end) switches instantly, no ramp-out;
+  a ramp that would cross a boundary is shortened (note `zoom_ramp_shortened`); with the R2
+  spacing rules a 0.4 s ramp never meets one. The clip json lists `zoom_ramps`.
+- Captions, hook and watermark still draw after the crop; the hook's face avoidance reads the
+  per-frame boxes.
+- Tests: 2043 passed, 3 skipped (51 new); ffmpeg-marked: a ramp shrinks the window frame by
+  frame (the top band's share of the output rows grows strictly over the ramp frames) at a
+  constant output size. ruff, format, mypy and pip-audit clean.
+
+**Real run** (A03, A07, B05; $0, API calls 0; 77.3 s; tracks reused)
+- A03: zooms 0.00–6.00 and 24.12–28.44 s, ramps 0.00–0.40, 5.60–6.00, 24.12–24.52,
+  28.04–28.44 s; 21.1 s.
+- A07: zooms 0.08–5.88 and 15.34–21.34 s, ramps 0.08–0.48, 15.34–15.74, 20.94–21.34 s; the
+  first hold ends on a cut at 5.878 s, so it switches there without a ramp; 22.0 s.
+- B05: zooms 0.10–5.36 and 25.22–31.22 s, ramps 0.10–0.50, 4.96–5.36, 25.22–25.62,
+  30.82–31.22 s; 19.2 s.
+- Render time with the track reused: 19–22 s, as before the zooms.
+
+**Not done**
+- Igor's phone check of the three clips; then the other 32 moments (each analysed once more for
+  track schema 5, ~25 s extra). `ramp_s`, `scale` and `min_gap_s` are the knobs.
+
+**Cost:** $0. No API call.
+
 ## 2026-10-13 — Brief R2: punch-in zooms (built; 5-clip real run done; Igor's phone check pending)
 
 **Why:** talking-head clips look flat. A hard punch-in (an instant jump to a crop 1.12x tighter on
