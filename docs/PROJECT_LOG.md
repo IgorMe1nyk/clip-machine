@@ -2,6 +2,60 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-13 — Brief R2: punch-in zooms (built; 5-clip real run done; Igor's phone check pending)
+
+**Why:** talking-head clips look flat. A hard punch-in (an instant jump to a crop 1.12x tighter on
+some sentence starts, then back out) is the podcast-clip look, and it costs nothing: the zoom is
+extra fields on the lines of the moving-crop `sendcmd` file from Brief 8 Part B. The zoom points
+are picked by a deterministic rule from data the run already has, never by a model (campaign
+Rule 3; D-027).
+
+**Done** (9 commits on the branch `brief-r2-zooms` from `main`, plus this one; nothing pushed or merged)
+- **`video.zoom`** in `config/default.yaml` (`enabled`, `scale` 1.12, `loud_pct` 0.30, `min_gap_s`
+  4.0, `max_hold_s` 6.0, `max_upscale` 2.0; validated, old configs load with zoom off). A campaign
+  profile may override any key under `video.zoom`. `enabled: false` writes the command file and
+  the clip exactly as before (the old code path, byte for byte). The six values go into
+  `RenderedSettings`, so a toggle or a tuning re-renders on resume and an old output is not stale
+  while zoom is off.
+- **Rule** (`utils/zoom.py`): the sentence holding the clip's first spoken line, plus the loudest
+  `loud_pct` of its sentences (mean RMS in dB from the run's WAV, `utils/audio.py`). A pick zooms in
+  when it is `min_gap_s` after the previous zoom-out, at least 0.5 s from every camera cut, and the
+  shot has at least `min_gap_s` left. The hold ends at the next pick that is `min_gap_s` later, at
+  `max_hold_s`, or at the shot boundary (frame-exact at a cut, as the x path already was); an end
+  just before a cut moves onto it. Shots without a face are excluded; a `TODO(Brief 8.3)` hook
+  excludes stacked shots.
+- **Geometry:** the window shrinks by `scale` around the smoothed crop's centre (so the 8.2
+  operator smoothing carries on inside a zoom) and is centred vertically on the shot's face
+  (`face_cy`, now recorded per shot in the track file: `TRACK_SCHEMA_VERSION` 5, so every track
+  is analysed once more). Even pixels, clamped to the frame. Upscale guard: a window that would be
+  enlarged more than `max_upscale` gives no zooms and the note `zoom_skipped_upscale` (a 1080p
+  source sits at 1.99 with scale 1.12; 720p sources never zoom). Other notes: `zoom_no_audio`,
+  `zoom_no_track`. The clip json has `zoom_count` and `zoom_spans`; the console line the count.
+- **Overlays untouched:** captions, hook and watermark are drawn after the crop and scale. The
+  hook's face avoidance now reads the faces through the zoomed windows.
+- **Measured before building:** with the local ffmpeg 9.0.1 a sendcmd line
+  `crop w …, crop h …, crop x …, crop y …` reconfigures the crop filter in place; through
+  `crop -> scale -> setsar` the output size stays constant and a probe pixel flips on the exact
+  frame. Size first when shrinking, position first when growing, so every in-between state fits
+  the frame. An ffmpeg-marked test keeps that check.
+- Tests: 1992 passed, 3 skipped (103 new); ruff, format, mypy and pip-audit clean.
+
+**Real run** (5 of the 35 Brief 11 campaign moments, Igor's pick; $0, API calls 0; 252.9 s)
+- A03: 2 zooms (0.00–6.00, 24.12–28.44 s); A07: 2 (0.08–5.88, 15.34–21.34 s); B05: 2
+  (0.10–5.36, 25.22–31.22 s). A01 and A02: 0 zooms and no note: the source is cut every 1–5 s
+  (11 and 7 cuts) and its editor cuts on sentence starts, so every pick was within 0.5 s of a cut
+  or had under 4 s of shot left. Notes unchanged from the Brief 11.1 render.
+- Render time: 42–53 s per clip, of which the one-off schema-5 track analysis is ~20–25 s; A03
+  rendered again with its track reused took 21.6 s against 24.9 s before, so the zoom itself
+  adds nothing measurable.
+
+**Not done**
+- Igor's check on a phone: natural or too frequent; tune `scale` and `min_gap_s` by config. Then
+  the other 30 moments (each re-analysed once, ~25 s extra). Out of scope, for later: animated
+  or eased zooms, shake, speed ramps, zooms in stacked shots (8.3), model-chosen emphasis words.
+
+**Cost:** $0. No API call.
+
 ## 2026-10-12 — Brief 11.1: campaign auto-setup (built; real run done; Igor's phone check pending)
 
 **Why:** after Brief 11's real run two per-campaign settings needed hand-tuning: the watermark
