@@ -9,15 +9,18 @@ import pytest
 
 from campaign_helpers import moment, write_campaign, write_moments
 from clipmachine import cli
-from clipmachine.campaign.models import UsedEntry, UsedLog
+from clipmachine.campaign.assign import ASSIGNMENTS_FILE
+from clipmachine.campaign.models import Assignments, CloserState, UsedEntry, UsedLog
 from clipmachine.campaign.used import (
     REUSE_OVERLAP,
     USED_FILE,
+    latest_posted,
     load_used,
     mark_posted,
     overlapping_posted,
     posted_entry,
     record_render,
+    relabel_posted,
     save_used,
     take_closer,
 )
@@ -56,10 +59,16 @@ def entry(
 # --- closer rotation -----------------------------------------------------------------------------
 
 
-def draw(log: UsedLog, closers: list[str], times: int) -> tuple[list[str], UsedLog]:
+def state(next_index: int, last: str | None) -> dict[str, CloserState]:
+    return {"tiktok": CloserState(next=next_index, last=last)}
+
+
+def draw(
+    log: UsedLog, closers: list[str], times: int, platform: str = "tiktok", first: int = 0
+) -> tuple[list[str], UsedLog]:
     out = []
     for _ in range(times):
-        closer, log = take_closer(log, closers)
+        closer, log = take_closer(log, closers, platform, first=first)
         out.append(closer)
     return out, log
 
@@ -67,17 +76,40 @@ def draw(log: UsedLog, closers: list[str], times: int) -> tuple[list[str], UsedL
 def test_closers_go_round_robin() -> None:
     drawn, log = draw(UsedLog(), ["a", "b", "c"], 7)
     assert drawn == ["a", "b", "c", "a", "b", "c", "a"]
-    assert log.last_closer == "a" and log.next_closer == 1
+    assert log.closers["tiktok"] == CloserState(next=1, last="a")
+    assert (log.next_closer, log.last_closer) == (0, None)  # the Brief 11 fields are not touched
 
 
 def test_the_same_closer_is_never_used_twice_in_a_row() -> None:
     # the position points at the closer that was just used (as after a reorder)
-    log = UsedLog(next_closer=0, last_closer="a")
-    closer, after = take_closer(log, ["a", "b", "c"])
-    assert closer == "b" and after.next_closer == 2 and after.last_closer == "b"
-    wrapped = UsedLog(next_closer=5, last_closer="c")  # 5 % 3 = 2 -> "c" again
-    closer, after = take_closer(wrapped, ["a", "b", "c"])
-    assert closer == "a" and after.next_closer == 1
+    log = UsedLog(closers=state(0, "a"))
+    closer, after = take_closer(log, ["a", "b", "c"], "tiktok")
+    assert closer == "b" and after.closers["tiktok"] == CloserState(next=2, last="b")
+    wrapped = UsedLog(closers=state(5, "c"))  # 5 % 3 = 2 -> "c" again
+    closer, after = take_closer(wrapped, ["a", "b", "c"], "tiktok")
+    assert closer == "a" and after.closers["tiktok"].next == 1
+
+
+def test_each_platform_has_its_own_rotation_and_may_start_elsewhere() -> None:
+    log = UsedLog()
+    tiktok, log = draw(log, ["a", "b", "c"], 2)
+    youtube, log = draw(log, ["a", "b", "c"], 4, platform="youtube", first=2)
+    assert tiktok == ["a", "b"] and youtube == ["c", "a", "b", "c"]
+    assert set(log.closers) == {"tiktok", "youtube"}
+    assert log.closers["tiktok"].last == "b" and log.closers["youtube"].last == "c"
+
+
+def test_an_old_file_with_the_global_rotation_loads_and_starts_fresh_per_platform(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / USED_FILE).write_text(
+        '{"schema_version": 1, "next_closer": 2, "last_closer": "b", "entries": []}',
+        encoding="utf-8",
+    )
+    log = load_used(tmp_path)
+    assert log.closers == {} and log.next_closer == 2
+    drawn, _ = draw(log, ["a", "b", "c"], 1)
+    assert drawn == ["a"]
 
 
 def test_the_rotation_continues_after_a_restart(tmp_path: Path) -> None:
@@ -90,7 +122,7 @@ def test_the_rotation_continues_after_a_restart(tmp_path: Path) -> None:
 
 def test_one_closer_repeats() -> None:
     drawn, log = draw(UsedLog(), ["only"], 3)
-    assert drawn == ["only"] * 3 and log.last_closer == "only"
+    assert drawn == ["only"] * 3 and log.closers["tiktok"].last == "only"
 
 
 def test_edited_closer_lists_never_repeat_the_last_one() -> None:
@@ -100,15 +132,15 @@ def test_edited_closer_lists_never_repeat_the_last_one() -> None:
     last = None
     for _ in range(300):
         closers = rng.sample(pool, rng.randint(2, 5))  # shorter, longer, reordered every time
-        closer, log = take_closer(log, closers)
+        closer, log = take_closer(log, closers, "instagram")
         assert closer in closers and closer != last
         last = closer
 
 
 def test_the_rotation_does_not_change_the_log_it_was_given() -> None:
-    log = UsedLog(next_closer=1, last_closer="a")
-    take_closer(log, ["a", "b"])
-    assert log == UsedLog(next_closer=1, last_closer="a")
+    log = UsedLog(closers=state(1, "a"))
+    take_closer(log, ["a", "b"], "tiktok")
+    assert log == UsedLog(closers=state(1, "a"))
 
 
 # --- record_render, posted_entry, overlapping_posted ---------------------------------------------
@@ -317,8 +349,8 @@ def test_a_bad_platform_is_an_argument_error(capsys: pytest.CaptureFixture[str])
     assert "invalid choice" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("missing", ["--campaign", "--id", "--platform"])
-def test_every_option_is_required(missing: str) -> None:
+@pytest.mark.parametrize("missing", ["--campaign", "--id"])
+def test_campaign_and_id_are_required(missing: str) -> None:
     full: dict[str, Any] = {"--campaign": "demo", "--id": "A01", "--platform": "tiktok"}
     del full[missing]
     argv = [part for pair in full.items() for part in pair]
@@ -333,3 +365,95 @@ def test_the_command_works_next_to_a_full_campaign_folder(project: Path) -> None
     save_used(folder, record_render(UsedLog(), entry()))
     assert run_cli(project, "--campaign", "demo", "--id", "A01", "--platform", "tiktok") == 0
     assert load_used(folder).entries[0].posted_at is not None
+
+
+# --- the platform may be left out (Brief 11.2) ---------------------------------------------------
+
+
+def lock(folder: Path, **assigned: str) -> None:
+    data = Assignments.model_validate(
+        {"platforms": ["tiktok", "instagram", "youtube"], "assigned": assigned, "written_at": "t"}
+    )
+    (folder / ASSIGNMENTS_FILE).write_text(data.model_dump_json(), encoding="utf-8")
+
+
+def test_without_a_platform_the_assigned_one_is_used(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    folder = rendered_campaign(project)
+    lock(folder, A01="tiktok")
+    assert run_cli(project, "--campaign", "demo", "--id", "A01") == 0
+    assert capsys.readouterr().out.strip() == "A01 tiktok: marked as posted"
+    assert load_used(folder).entries[0].posted_at is not None
+
+
+def test_without_a_platform_and_without_an_assignment_the_command_says_so(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    folder = rendered_campaign(project)
+    assert run_cli(project, "--campaign", "demo", "--id", "A01") == 2
+    assert "no platform assigned yet" in capsys.readouterr().err
+    lock(folder, B02="youtube")  # another id
+    assert run_cli(project, "--campaign", "demo", "--id", "A01") == 2
+    assert "say which with --platform" in capsys.readouterr().err
+    assert load_used(folder).entries[0].posted_at is None
+
+
+# --- --fix-platform (Brief 11.2) -----------------------------------------------------------------
+
+
+def test_relabel_posted_moves_the_latest_posted_entry_and_nothing_else() -> None:
+    log = UsedLog(entries=[entry(posted="x"), entry("A02", posted="y"), entry("A01")])
+    after, before, now = relabel_posted(log, "A01", "instagram")
+    assert (before.platform, now.platform) == ("tiktok", "instagram")
+    assert [(e.id, e.platform, e.posted_at) for e in after.entries] == [
+        ("A01", "instagram", "x"),
+        ("A02", "tiktok", "y"),
+        ("A01", "tiktok", None),
+    ]
+    assert log.entries[0].platform == "tiktok"  # the input is not changed
+    assert latest_posted(after, "A01") is now
+
+
+def test_relabel_posted_errors_are_clear() -> None:
+    with pytest.raises(ConfigError, match="moment A01 has no posted entry to relabel"):
+        relabel_posted(UsedLog(entries=[entry()]), "A01", "youtube")
+    with pytest.raises(ConfigError, match="moment Z9 has no posted entry to relabel"):
+        relabel_posted(UsedLog(entries=[entry(posted="x")]), "Z9", "youtube")
+    two = UsedLog(entries=[entry(posted="x"), entry(platform="youtube", posted="y")])
+    with pytest.raises(ConfigError, match="posted under tiktok, youtube; say which"):
+        relabel_posted(two, "A01", "instagram")
+    with pytest.raises(ConfigError, match="no posted entry under instagram"):
+        relabel_posted(two, "A01", "youtube", "instagram")
+    after, _, now = relabel_posted(two, "A01", "instagram", "youtube")
+    assert [e.platform for e in after.entries] == ["tiktok", "instagram"] and now.platform == (
+        "instagram"
+    )
+
+
+def test_the_fix_platform_option_relabels_and_a_second_call_says_already(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    folder = rendered_campaign(project)
+    run_cli(project, "--campaign", "demo", "--id", "A01", "--platform", "tiktok")
+    capsys.readouterr()
+
+    code = run_cli(project, "--campaign", "demo", "--id", "A01", "--fix-platform", "instagram")
+
+    assert code == 0
+    assert capsys.readouterr().out.strip() == "A01: posted entry relabelled tiktok -> instagram"
+    (saved,) = load_used(folder).entries
+    assert saved.platform == "instagram" and saved.posted_at is not None
+    assert run_cli(project, "--campaign", "demo", "--id", "A01", "--fix-platform", "instagram") == 0
+    assert capsys.readouterr().out.strip() == "A01: posted entry is already instagram"
+    assert posted_entry(load_used(folder), "A01", "tiktok") is None
+
+
+def test_fix_platform_on_an_unknown_or_unposted_id_is_exit_2(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rendered_campaign(project)  # A01 rendered, not posted
+    assert run_cli(project, "--campaign", "demo", "--id", "A01", "--fix-platform", "youtube") == 2
+    assert "moment A01 has no posted entry to relabel" in capsys.readouterr().err
+    assert run_cli(project, "--campaign", "demo", "--id", "Z9", "--fix-platform", "youtube") == 2
+    assert "moment Z9 has no posted entry to relabel" in capsys.readouterr().err

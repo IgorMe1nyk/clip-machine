@@ -8,15 +8,19 @@ ids, platforms, seconds and counts only, never a hook, a caption, a closer, a na
 import dataclasses
 import os
 import time
+from datetime import date
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from clipmachine import pipeline
+from clipmachine.campaign.assign import ASSIGNMENTS_FILE, assign_platforms, count_by_platform
 from clipmachine.campaign.autoposition import choose_position, describe
 from clipmachine.campaign.loader import load_campaign, load_moments, select_moments
 from clipmachine.campaign.names import AUTO_SPELLING_FILE, auto_rules, find_variants, record
-from clipmachine.campaign.render import MomentContext, MomentResult, render_moment
+from clipmachine.campaign.plan import write_posting_plan
+from clipmachine.campaign.post import keep_words
+from clipmachine.campaign.render import META_DIR, MomentContext, MomentResult, render_moment
 from clipmachine.campaign.report import write_report
 from clipmachine.campaign.used import load_used, save_used
 from clipmachine.config import ConfigError, load_app_config
@@ -142,7 +146,17 @@ def run_campaign(
     campaign = load_campaign(root, slug, app)
     # the campaign's video.zoom keys win; everything below reads the merged zoom from `app`
     app = app.model_copy(update={"video": app.video.model_copy(update={"zoom": campaign.zoom})})
-    all_moments = load_moments(campaign)
+    used = load_used(campaign.folder)
+    specs = load_moments(campaign)
+    all_moments, assignments, assignments_changed = assign_platforms(
+        campaign.folder, campaign.config, specs, used
+    )
+    if assignments_changed:
+        write_json_atomic(campaign.folder / ASSIGNMENTS_FILE, assignments.model_dump(mode="json"))
+    counts_by = count_by_platform(all_moments, campaign.config.platforms)
+    shares = ", ".join(f"{platform} {n}" for platform, n in counts_by.items())
+    new = sum(1 for s in specs if s.platform == "auto")
+    print(f"platforms: {shares} ({new} auto; locked in {ASSIGNMENTS_FILE})")
     moments = select_moments(all_moments, only)
     for warning in campaign.warnings:
         print(f"warning: {warning}")
@@ -166,12 +180,15 @@ def run_campaign(
 
         inputs = stage.load_source_inputs(run_dir, root, app)
         out_dir = run_dir / CAMPAIGN_DIR / slug
-        out_dir.mkdir(parents=True, exist_ok=True)
-        if inputs.track_plan is not None:  # track files live with the campaign's clips
+        meta_dir = out_dir / META_DIR
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        for platform in campaign.config.platforms:
+            (out_dir / platform).mkdir(exist_ok=True)
+        if inputs.track_plan is not None:  # track files live with the campaign's meta files
             inputs = dataclasses.replace(
-                inputs, track_plan=dataclasses.replace(inputs.track_plan, clips_dir=out_dir)
+                inputs, track_plan=dataclasses.replace(inputs.track_plan, clips_dir=meta_dir)
             )
-        plan = stage._make_plan(run_dir, out_dir, app, inputs)
+        plan = stage._make_plan(run_dir, meta_dir, app, inputs)
         if plan.wordlists is not None:  # the campaign's own allowed and extra words
             cfg = campaign.config
             fine = [*cfg.allowed, *cfg.names_to_check, *cfg.names]
@@ -208,9 +225,9 @@ def run_campaign(
             spelling_rules=(*cfg.spelling, *auto),
             variant_texts=tuple(v.text for v in variants),
             names_to_check=tuple(listed),
+            title_keep=tuple(keep_words(cfg, app.campaign.title_keep_case)),
         )
         heard: dict[str, list[tuple[str, float]]] = {v.text: [] for v in variants}
-        used = load_used(campaign.folder)
         if campaign.watermark is None:  # position: auto, not chosen yet
             campaign, lock = choose_position(ctx, moments, used, force_reuse=force_reuse)
             ctx = dataclasses.replace(ctx, campaign=campaign)
@@ -261,4 +278,8 @@ def run_campaign(
     print(f"output: {out_dir}")
     report = write_report(out_dir, campaign, all_moments, run_dir.name, auto=auto_spelling)
     print(f"report: {report}")
+    plan_path = write_posting_plan(
+        out_dir, campaign.config, all_moments, used, root=root, today=date.today()
+    )
+    print(f"posting plan: {plan_path}")
     return EXIT_MOMENT_FAILED if counts["failed"] or refused_named else EXIT_OK

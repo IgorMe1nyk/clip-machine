@@ -13,9 +13,11 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from clipmachine.campaign.assign import count_by_platform
 from clipmachine.campaign.loader import Campaign
 from clipmachine.campaign.models import CHECKS, AutoSpelling, CampaignClip, Moment
-from clipmachine.campaign.render import REVIEW_SUFFIX
+from clipmachine.campaign.plan import PLAN_FILE
+from clipmachine.campaign.render import META_DIR, POST_SUFFIX, REVIEW_SUFFIX
 from clipmachine.runs import write_text_atomic
 from clipmachine.stages.report import CSS, _esc, _hms
 from clipmachine.utils.image import color_type_name
@@ -139,7 +141,6 @@ def _review_block(clip: CampaignClip, review: str | None) -> str:
 def _card(
     moment: Moment, clip: CampaignClip | None, post: str | None, review: str | None = None
 ) -> str:
-    name = moment.clip_name
     heading = f"<h2>{_esc(moment.id)} &middot; {_esc(moment.platform)}</h2>"
     if clip is None:
         return (
@@ -151,7 +152,8 @@ def _card(
             f"<p><b>Hook:</b> {_esc(moment.hook)}</p>\n</div>\n</section>"
         )
     if clip.status == "rendered":
-        player = f'<video controls preload="metadata" width="360" src="{_esc(name)}.mp4"></video>'
+        src = f"{moment.platform}/{moment.id}.mp4"  # Brief 11.2: the platform folder
+        player = f'<video controls preload="metadata" width="360" src="{_esc(src)}"></video>'
     else:
         player = f'<div class="missing">Not rendered: {_esc(clip.error or "unknown reason")}</div>'
     badges = "".join(f'<span class="badge">{_esc(note)}</span>' for note in clip.notes)
@@ -254,18 +256,32 @@ def _auto_position(campaign: Campaign) -> str:
     return text
 
 
+def _old_files(old_files: Sequence[str]) -> str:
+    """Files of the flat layout from before Brief 11.2, left where they were."""
+    if not old_files:
+        return ""
+    return (
+        "<p><b>Old files from before the per-platform folders</b> (left untouched; the clips "
+        "in the platform folders are the current ones)</p>" + _list(old_files)
+    )
+
+
 def _header(
     campaign: Campaign,
     run_name: str,
     moments: Sequence[Moment],
     clips: Mapping[str, CampaignClip],
     auto: AutoSpelling | None = None,
+    old_files: Sequence[str] = (),
 ) -> str:
     cfg, asset = campaign.config, campaign.asset
     states = [clips.get(m.clip_name) for m in moments]
     rendered = sum(1 for c in states if c is not None and c.status == "rendered")
     failed = sum(1 for c in states if c is not None and c.status == "failed")
     waiting = sum(1 for c in states if c is None)
+    shares = " &middot; ".join(
+        f"{_esc(platform)} {n}" for platform, n in count_by_platform(moments, cfg.platforms).items()
+    )
     wm = campaign.watermark
     where = (
         f"visible box on the frame x {wm.rect.x1:g}&ndash;{wm.rect.x2:g}, "
@@ -281,6 +297,8 @@ def _header(
         f'<p class="muted">Run folder: {_esc(run_name)}</p>',
         f"<p><b>{rendered} rendered &middot; {failed} failed &middot; {waiting} not rendered "
         f"yet</b> &middot; API calls: 0</p>",
+        f"<p>Platforms: {shares} moments; each platform's folder holds its clips and post "
+        f"texts; the schedule is in <code>{_esc(PLAN_FILE)}</code></p>",
         f"<p>Clip length {_esc(f'{cfg.clip_length.min:g}')}&ndash;"
         f"{_esc(f'{cfg.clip_length.max:g}')} s &middot; hook mode {_esc(cfg.hook.mode)}"
         + (f" ({campaign.hook_seconds:g} s)" if cfg.hook.mode == "intro" else "")
@@ -296,6 +314,7 @@ def _header(
     if campaign.warnings:
         lines.append("<p><b>Warnings</b></p>" + _list(campaign.warnings))
     lines.append(_auto_spelling(auto))
+    lines.append(_old_files(old_files))
     return '<header class="summary">\n' + "\n".join(line for line in lines if line) + "\n</header>"
 
 
@@ -308,15 +327,17 @@ def build_html(
     posts: Mapping[str, str],
     reviews: Mapping[str, str] | None = None,
     auto: AutoSpelling | None = None,
+    old_files: Sequence[str] = (),
 ) -> str:
     """The whole page. `clips`, `posts` and `reviews` (the .review.txt texts) are keyed by
-    Moment.clip_name; a moment with no clip is listed as not rendered yet."""
+    Moment.clip_name; a moment with no clip is listed as not rendered yet. `old_files` are the
+    names of flat-layout files from before Brief 11.2 found next to the platform folders."""
     found = reviews or {}
     cards = [
         _card(m, clips.get(m.clip_name), posts.get(m.clip_name), found.get(m.clip_name))
         for m in moments
     ]
-    body = "\n".join([_header(campaign, run_name, moments, clips, auto), *cards])
+    body = "\n".join([_header(campaign, run_name, moments, clips, auto, old_files), *cards])
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n<head>\n<meta charset="utf-8">\n'
@@ -334,8 +355,11 @@ def write_report(
     *,
     auto: AutoSpelling | None = None,
 ) -> Path:
-    """Build the page from the jsons and post texts in `out_dir` and write it there. A json that
-    is missing or does not validate counts as not rendered yet."""
+    """Build the page from the jsons and review files in `out_dir/_meta` and the post texts in
+    the platform folders, and write it to `out_dir`. A json that is missing or does not validate
+    counts as not rendered yet. Clip files lying flat in `out_dir` (the layout before Brief 11.2)
+    are listed as old."""
+    meta = out_dir / META_DIR
     clips: dict[str, CampaignClip] = {}
     posts: dict[str, str] = {}
     reviews: dict[str, str] = {}
@@ -343,14 +367,22 @@ def write_report(
         name = moment.clip_name
         try:
             clips[name] = CampaignClip.model_validate_json(
-                (out_dir / f"{name}.json").read_text(encoding="utf-8")
+                (meta / f"{name}.json").read_text(encoding="utf-8")
             )
         except (OSError, ValueError, ValidationError):
             continue
+        post = out_dir / moment.platform / f"{moment.id}{POST_SUFFIX}"
         with contextlib.suppress(OSError):
-            posts[name] = (out_dir / f"{name}.post.txt").read_text(encoding="utf-8")
+            posts[name] = post.read_text(encoding="utf-8")
         with contextlib.suppress(OSError):
-            reviews[name] = (out_dir / f"{name}{REVIEW_SUFFIX}").read_text(encoding="utf-8")
+            reviews[name] = (meta / f"{name}{REVIEW_SUFFIX}").read_text(encoding="utf-8")
+    old_files = sorted(
+        p.name
+        for p in out_dir.iterdir()
+        if p.is_file()
+        and p.name not in (REPORT_HTML, PLAN_FILE)
+        and p.suffix in (".mp4", ".txt", ".json", ".ass", ".cmd")
+    )
     path = out_dir / REPORT_HTML
     write_text_atomic(
         path,
@@ -362,6 +394,7 @@ def write_report(
             posts=posts,
             reviews=reviews,
             auto=auto,
+            old_files=old_files,
         ),
     )
     return path

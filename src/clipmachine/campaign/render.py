@@ -29,6 +29,7 @@ from clipmachine.campaign.models import (
     UsedEntry,
     UsedLog,
 )
+from clipmachine.campaign.post import post_text
 from clipmachine.campaign.spelling import apply_spelling, find_names
 from clipmachine.campaign.used import overlapping_posted, posted_entry, record_render, take_closer
 from clipmachine.models import AppConfig, RenderedOutput
@@ -38,7 +39,7 @@ from clipmachine.utils import ffmpeg
 from clipmachine.utils.captions import clip_words
 from clipmachine.utils.image import color_type_name
 from clipmachine.utils.snapping import EPSILON, SentenceIndex, auto_end, snap_near
-from clipmachine.utils.wordlists import Hit, mask_text, sensitive_hits
+from clipmachine.utils.wordlists import Hit, sensitive_hits
 
 Check = Literal["pass", "warn", "fail"]
 Outcome = Literal["rendered", "failed", "refused"]
@@ -46,6 +47,8 @@ Outcome = Literal["rendered", "failed", "refused"]
 # The clip length is compared with this much slack, as the render stage's checks are.
 LENGTH_SLACK = 0.001
 REVIEW_SUFFIX = ".review.txt"  # masked and sensitive words, for the report and Igor; local only
+META_DIR = "_meta"  # Brief 11.2: everything but the mp4 and the post text lives here
+POST_SUFFIX = ".txt"  # the paste-ready post text, next to the mp4 in the platform folder
 
 
 class MomentFailed(Exception):
@@ -64,7 +67,7 @@ class MomentContext:
 
     root: Path
     run_dir: Path
-    out_dir: Path
+    out_dir: Path  # runs/<run>/campaign/<slug>: the platform folders, _meta, report and plan
     plan: stage.Plan
     app: AppConfig
     campaign: Campaign
@@ -76,6 +79,21 @@ class MomentContext:
     spelling_rules: tuple[SpellingRule, ...] = ()
     variant_texts: tuple[str, ...] = ()
     names_to_check: tuple[str, ...] = ()
+    # Brief 11.2: words a YouTube title keeps as written (names, acronyms)
+    title_keep: tuple[str, ...] = ()
+
+    @property
+    def meta_dir(self) -> Path:
+        return self.out_dir / META_DIR
+
+    def platform_dir(self, platform: str) -> Path:
+        return self.out_dir / platform
+
+    def mp4_path(self, moment: Moment) -> Path:
+        return self.platform_dir(moment.platform) / f"{moment.id}.mp4"
+
+    def post_path(self, moment: Moment) -> Path:
+        return self.platform_dir(moment.platform) / f"{moment.id}{POST_SUFFIX}"
 
 
 @dataclass(frozen=True)
@@ -127,15 +145,17 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _outputs(ctx: MomentContext, name: str) -> list[Path]:
-    out = ctx.out_dir
+def _outputs(ctx: MomentContext, moment: Moment) -> list[Path]:
+    """Everything a render of this moment writes, apart from its json."""
+    name = moment.clip_name
+    meta = ctx.meta_dir
     return [
-        out / f"{name}.mp4",
-        out / f"{name}.post.txt",
-        out / f"{name}.ass",
-        out / f"{name}{stage.CROP_CMD_SUFFIX}",
-        out / f"{name}{stage.TEMP_SUFFIX}",
-        out / f"{name}{REVIEW_SUFFIX}",
+        ctx.mp4_path(moment),
+        ctx.post_path(moment),
+        meta / f"{name}.ass",
+        meta / f"{name}{stage.CROP_CMD_SUFFIX}",
+        meta / f"{name}{stage.TEMP_SUFFIX}",
+        meta / f"{name}{REVIEW_SUFFIX}",
     ]
 
 
@@ -273,23 +293,6 @@ def _check_times(ctx: MomentContext, start: float, end: float) -> float:
     return length
 
 
-def _post_text(ctx: MomentContext, moment: Moment, closer: str) -> tuple[str, list[Hit]]:
-    """The post text and the words masked in its first line. Only the prefix and the caption are
-    masked: the hashtags and the closer are fixed text."""
-    post = ctx.campaign.config.post
-    first = " ".join(
-        part for part in (post.prefix.get(moment.platform, ""), moment.caption) if part
-    )
-    hits: list[Hit] = []
-    if ctx.plan.wordlists is not None:
-        first, hits = mask_text(first, ctx.plan.wordlists)
-    lines = [first]
-    if post.hashtags:
-        lines.append(" ".join(post.hashtags))
-    lines.append(closer)
-    return "\n".join(lines) + "\n", hits
-
-
 def _check_sensitive(ctx: MomentContext, moment: Moment, work: _Work) -> None:
     """Flag words and slurs in the hook and the post caption: a note and review lines; with
     hook.sensitive: fail, a hook hit fails the moment. The hook is never rewritten."""
@@ -388,7 +391,7 @@ def _render_moment(
     elif any(face.intersects(wm.rect) for face in faces):
         work.notes.append("watermark_over_face")
 
-    ass = ctx.out_dir / f"{name}.ass"
+    ass = ctx.meta_dir / f"{name}.ass"
     write_text_atomic(ass, captions.text)
     crop = plan.crop if chosen is None else chosen.crop
     chain = ffmpeg.video_filter(
@@ -407,8 +410,8 @@ def _render_moment(
         blend=wm.blend,
         frame=(settings.width, settings.height),
     )
-    temp = ctx.out_dir / f"{name}{stage.TEMP_SUFFIX}"
-    mp4 = ctx.out_dir / f"{name}.mp4"
+    temp = ctx.meta_dir / f"{name}{stage.TEMP_SUFFIX}"
+    mp4 = ctx.mp4_path(moment)
     args = ffmpeg.render_args(
         plan.source,
         temp,
@@ -434,15 +437,19 @@ def _render_moment(
         raise MomentFailed("the output has no video, audio or duration")
 
     closers = campaign.config.post.closers
-    closer, used = take_closer(used, closers)
+    platforms = campaign.config.platforms
+    first = platforms.index(moment.platform) if moment.platform in platforms else 0
+    closer, used = take_closer(used, closers, moment.platform, first=first % len(closers))
     work.closer = closer
-    post_path = ctx.out_dir / f"{name}.post.txt"
-    post_text, post_hits = _post_text(ctx, moment, closer)
-    write_text_atomic(post_path, post_text)
+    post_path = ctx.post_path(moment)
+    text, post_hits = post_text(
+        campaign.config, moment, closer, plan.wordlists, keep=ctx.title_keep
+    )
+    write_text_atomic(post_path, text)
     _review(work, "masked", "post", post_hits)
     work.masked += len(post_hits)
     if work.review:
-        write_text_atomic(ctx.out_dir / f"{name}{REVIEW_SUFFIX}", "\n".join(work.review) + "\n")
+        write_text_atomic(ctx.meta_dir / f"{name}{REVIEW_SUFFIX}", "\n".join(work.review) + "\n")
     rendered_at = _now()
     used = record_render(
         used,
@@ -489,7 +496,7 @@ def _render_moment(
         render_seconds=seconds_taken,
         rendered_at=rendered_at,
     )
-    write_json_atomic(ctx.out_dir / f"{name}.json", record.model_dump(mode="json"))
+    write_json_atomic(ctx.meta_dir / f"{name}.json", record.model_dump(mode="json"))
     return MomentResult(
         "rendered",
         used,
@@ -509,7 +516,9 @@ def render_moment(
     was_posted = posted_entry(used, moment.id, moment.platform) is not None
     if was_posted and not force_reuse:
         return MomentResult("refused", used)  # nothing of this moment is touched
-    (ctx.out_dir / f"{name}.json").unlink(missing_ok=True)  # it must never describe a stale clip
+    ctx.meta_dir.mkdir(parents=True, exist_ok=True)
+    ctx.platform_dir(moment.platform).mkdir(parents=True, exist_ok=True)
+    (ctx.meta_dir / f"{name}.json").unlink(missing_ok=True)  # it must never describe a stale clip
     work = _Work(moment)
     try:
         return _render_moment(ctx, moment, used, was_posted, work)
@@ -517,8 +526,8 @@ def render_moment(
         reason = exc.reason if isinstance(exc, MomentFailed) else str(exc)
         if isinstance(exc, MomentFailed) and exc.check is not None:
             work.checks[exc.check] = "fail"
-        for path in _outputs(ctx, name):
+        for path in _outputs(ctx, moment):
             path.unlink(missing_ok=True)
         record = _clip_json(ctx, work, "failed", error=reason)
-        write_json_atomic(ctx.out_dir / f"{name}.json", record.model_dump(mode="json"))
+        write_json_atomic(ctx.meta_dir / f"{name}.json", record.model_dump(mode="json"))
         return MomentResult("failed", used, record, reason=reason)

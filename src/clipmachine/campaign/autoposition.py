@@ -154,7 +154,7 @@ def _read_frames(
     frames: list[tuple[float, NDArray[np.float32]]] = []
     for k, frame in enumerate(
         ffmpeg.read_frames(
-            args, frame_w, frame_h, ffmpeg.frames_timeout(length), scratch_dir=ctx.out_dir
+            args, frame_w, frame_h, ffmpeg.frames_timeout(length), scratch_dir=ctx.meta_dir
         )
     ):
         frames.append((k / fps, _grey(frame)))

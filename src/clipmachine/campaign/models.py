@@ -10,10 +10,12 @@ from clipmachine.models import ClipLength, RenderedOutput, RenderedSettings, Str
 from clipmachine.utils.captions import clean_word
 
 Platform = Literal["tiktok", "instagram", "youtube"]
+PLATFORMS: tuple[Platform, ...] = ("tiktok", "instagram", "youtube")
 
 MOMENT_ID_RE = re.compile(r"[A-Za-z0-9-]{1,24}")
 _HMS_RE = re.compile(r"(\d+):(\d{1,2}):(\d{1,2}(?:\.\d+)?)")
 _MS_RE = re.compile(r"(\d+):(\d{1,2}(?:\.\d+)?)")
+_CLOCK_RE = re.compile(r"([01]?\d|2[0-3]):([0-5]\d)")  # a posting time, 24-hour HH:MM
 _FORMATS = 'use "h:mm:ss" or "mm:ss" in quotes, or a number of seconds'
 
 
@@ -155,6 +157,10 @@ class CampaignConfig(StrictModel):
     extra_masked: list[str] = Field(default_factory=list)
     # Brief R2: may override video.zoom of the app config
     video: CampaignVideo = Field(default_factory=CampaignVideo)
+    # Brief 11.2: the platforms `platform: auto` spreads the moments over, in this order, and the
+    # posting times (24-hour "HH:MM", Eastern) of posting_plan.csv: one slot each per platform a day
+    platforms: list[Platform] = Field(default_factory=lambda: list(PLATFORMS))
+    posting_times: list[str] = Field(default_factory=lambda: ["12:30", "15:30", "18:30"])
 
     @field_validator("names_to_check", "names", "allowed", "extra_masked")
     @classmethod
@@ -164,6 +170,28 @@ class CampaignConfig(StrictModel):
             raise ValueError("an entry must not be empty")
         return names
 
+    @field_validator("platforms")
+    @classmethod
+    def _platforms(cls, value: list[Platform]) -> list[Platform]:
+        if not value:
+            raise ValueError("at least one platform is needed")
+        if len(set(value)) != len(value):
+            raise ValueError("a platform is listed twice")
+        return value
+
+    @field_validator("posting_times")
+    @classmethod
+    def _posting_times(cls, value: list[str]) -> list[str]:
+        times = [t.strip() for t in value]
+        if not times:
+            raise ValueError("at least one posting time is needed")
+        for text in times:
+            if not _CLOCK_RE.fullmatch(text):
+                raise ValueError(f'bad posting time {text!r}: use 24-hour "HH:MM" in quotes')
+        if len(set(times)) != len(times):
+            raise ValueError("a posting time is listed twice")
+        return times
+
     @model_validator(mode="after")
     def _unique_spelling(self) -> "CampaignConfig":
         sources = [rule.source for rule in self.spelling]
@@ -172,13 +200,14 @@ class CampaignConfig(StrictModel):
         return self
 
 
-class Moment(StrictModel):
+class _MomentFields(StrictModel):
+    """What moments.yaml says about one moment, apart from the platform."""
+
     id: str
     start: float
     end: float | None = None  # None: the tool picks the end (`end: auto` or left out)
     hook: str
     caption: str = ""
-    platform: Platform
 
     @field_validator("id")
     @classmethod
@@ -208,14 +237,46 @@ class Moment(StrictModel):
         return cleaned
 
     @model_validator(mode="after")
-    def _order(self) -> "Moment":
+    def _order(self) -> "_MomentFields":
         if self.end is not None and self.end <= self.start:
             raise ValueError(f"end ({self.end}) must be after start ({self.start})")
         return self
 
+
+class MomentSpec(_MomentFields):
+    """One entry of moments.yaml (Brief 11.2): the platform may be `auto` (or left out), and the
+    assignment then decides it."""
+
+    platform: Platform | Literal["auto"] = "auto"
+
+    @field_validator("platform", mode="before")
+    @classmethod
+    def _platform(cls, value: Any) -> Any:
+        return value.strip().lower() if isinstance(value, str) else value
+
+
+class Moment(_MomentFields):
+    """A moment with its platform decided: what the renderer, the report and the log work with."""
+
+    platform: Platform
+
+    @classmethod
+    def from_spec(cls, spec: MomentSpec, platform: Platform) -> "Moment":
+        return cls.model_validate({**spec.model_dump(exclude={"platform"}), "platform": platform})
+
     @property
     def clip_name(self) -> str:
         return f"{self.id}_{self.platform}"
+
+
+class Assignments(StrictModel):
+    """campaigns/<slug>/assignments.json (Brief 11.2): which platform each moment belongs to.
+    Written on first use and reused, so a re-render never moves a moment; delete it to reassign."""
+
+    schema_version: int = 1
+    platforms: list[Platform]  # the campaign's list when the file was written
+    assigned: dict[str, Platform] = Field(default_factory=dict)  # moment id -> platform
+    written_at: str
 
 
 class AutoCandidate(StrictModel):
@@ -300,10 +361,20 @@ class UsedEntry(StrictModel):
     posted_at: str | None = None  # set by campaign-posted; a render is not a post
 
 
+class CloserState(StrictModel):
+    """Where one platform's closer rotation stands (Brief 11.2)."""
+
+    next: int = Field(default=0, ge=0)
+    last: str | None = None
+
+
 class UsedLog(StrictModel):
     schema_version: int = 1
-    next_closer: int = Field(default=0, ge=0)  # where the closer rotation goes next
+    # Brief 11: one rotation for the whole campaign; kept so old files load, no longer advanced
+    next_closer: int = Field(default=0, ge=0)
     last_closer: str | None = None
+    # Brief 11.2: one rotation per platform, so a platform's posts never repeat a closer in a row
+    closers: dict[str, CloserState] = Field(default_factory=dict)
     entries: list[UsedEntry] = Field(default_factory=list)
 
 

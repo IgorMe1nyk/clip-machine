@@ -80,7 +80,7 @@ def envelope_top(rig: Rig) -> float:
     """The highest edge a caption box can have, minus the hook gap: no candidate goes below it."""
     app = load_app_config(rig.project)
     inputs = stage.load_source_inputs(rig.run_dir, rig.project, app)
-    plan = stage._make_plan(rig.run_dir, rig.out, app, inputs)
+    plan = stage._make_plan(rig.run_dir, rig.meta_dir, app, inputs)
     assert plan.karaoke is not None and plan.metrics is not None and plan.safe is not None
     return caption_top(plan.karaoke, plan.metrics, plan.safe) - HOOK_CAPTION_GAP_PX
 
@@ -162,7 +162,7 @@ def test_a_face_free_spot_beats_one_over_the_face(
     assert rect.y2 > face_top - 0.02 * 1920 - 1  # just above it
     assert "watermark_over_face" not in rig.clip("A01_tiktok").notes
     assert fakes.opened == 1  # the track from the scoring was reused by the render
-    assert (rig.out / "A01_tiktok.track.json").is_file()
+    assert (rig.meta("A01_tiktok.track.json")).is_file()
 
 
 def test_the_face_cost_counts_the_share_of_samples_with_a_face_in_the_way(

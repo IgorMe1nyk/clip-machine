@@ -118,9 +118,31 @@ def test_there_is_one_card_per_moment_in_order(project: Path) -> None:
     assert positions == sorted(positions)
 
 
-def test_the_video_source_is_the_bare_file_name(project: Path) -> None:
+def test_the_video_source_is_the_platform_folder_and_the_id(project: Path) -> None:
     html = page(project, [mom()], {"A01_tiktok": clip()})
-    assert '<video controls preload="metadata" width="360" src="A01_tiktok.mp4">' in html
+    assert '<video controls preload="metadata" width="360" src="tiktok/A01.mp4">' in html
+
+
+def test_the_header_counts_the_moments_per_platform_and_names_the_plan(project: Path) -> None:
+    moments = [mom(id="A01"), mom(id="B02", platform="youtube"), mom(id="C03")]
+    html = page(project, moments, {"A01_tiktok": clip()})
+    assert "Platforms: tiktok 2 &middot; instagram 0 &middot; youtube 1 moments" in html
+    assert "<code>posting_plan.csv</code>" in html
+
+
+def test_old_flat_files_are_listed_when_given(project: Path) -> None:
+    campaign = make_campaign(project)
+    html = build_html(
+        campaign=campaign,
+        run_name="r",
+        moments=[mom()],
+        clips={},
+        posts={},
+        old_files=["A01_tiktok.mp4", "A01_tiktok.post.txt"],
+    )
+    assert "Old files from before the per-platform folders" in html
+    assert "<li>A01_tiktok.post.txt</li>" in html
+    assert "Old files" not in page(project, [mom()], {"A01_tiktok": clip()})
 
 
 def test_all_eight_labels_are_there_in_order(project: Path) -> None:
@@ -256,17 +278,22 @@ def test_it_is_an_offline_page(project: Path) -> None:
 def test_write_report_reads_the_jsons_and_post_files_in_the_folder(project: Path) -> None:
     campaign = make_campaign(project)
     out = project / "out"
-    out.mkdir()
-    (out / "A01_tiktok.json").write_text(clip().model_dump_json(), encoding="utf-8")
-    (out / "A01_tiktok.post.txt").write_text(POST, encoding="utf-8")
-    (out / "B02_tiktok.json").write_text("{not json", encoding="utf-8")  # counts as not rendered
+    (out / "_meta").mkdir(parents=True)
+    (out / "tiktok").mkdir()
+    (out / "_meta" / "A01_tiktok.json").write_text(clip().model_dump_json(), encoding="utf-8")
+    (out / "tiktok" / "A01.txt").write_text(POST, encoding="utf-8")
+    (out / "_meta" / "B02_tiktok.json").write_text("{not json", encoding="utf-8")  # not rendered
+    (out / "C09_tiktok.mp4").write_bytes(b"old")  # the flat layout from before Brief 11.2
+    (out / "C09_tiktok.post.txt").write_text("old\n", encoding="utf-8")
 
     path = write_report(out, campaign, [mom(), mom(id="B02")], "run")
 
     assert path == out / REPORT_HTML
     text = path.read_text(encoding="utf-8")
-    assert "A01_tiktok.mp4" in text and POST.strip().split("\n")[0] in text
+    assert 'src="tiktok/A01.mp4"' in text and POST.strip().split("\n")[0] in text
     assert text.count("Not rendered yet") == 1
+    assert "<li>C09_tiktok.mp4</li><li>C09_tiktok.post.txt</li>" in text
+    assert "campaign_report.html" not in text.split("Old files")[1]
     assert "\r" not in text
 
 
@@ -324,7 +351,7 @@ def test_the_command_writes_the_report_next_to_the_clips(
     assert report.is_file()
     assert f"report: {report}" in capsys.readouterr().out
     text = report.read_text(encoding="utf-8")
-    assert 'src="A01_tiktok.mp4"' in text and 'src="A02_youtube.mp4"' in text
+    assert 'src="tiktok/A01.mp4"' in text and 'src="youtube/A02.mp4"' in text
     assert HOOK in text and "closer one" in text and "2 rendered" in text
 
 
@@ -332,7 +359,7 @@ def test_a_moment_not_selected_this_time_is_listed_as_not_rendered_yet(rig: Rig)
     assert rig.go("--only", "A02") == 0
     text = (rig.out / REPORT_HTML).read_text(encoding="utf-8")
     assert text.count("Not rendered yet") == 1
-    assert 'src="A02_youtube.mp4"' in text and 'src="A01_tiktok.mp4"' not in text
+    assert 'src="youtube/A02.mp4"' in text and 'src="tiktok/A01.mp4"' not in text
 
 
 def test_the_report_is_rewritten_on_every_run(rig: Rig) -> None:
@@ -340,7 +367,7 @@ def test_the_report_is_rewritten_on_every_run(rig: Rig) -> None:
     first = (rig.out / REPORT_HTML).read_text(encoding="utf-8")
     assert rig.go("--only", "A01") == 0
     second = (rig.out / REPORT_HTML).read_text(encoding="utf-8")
-    assert first != second and 'src="A01_tiktok.mp4"' in second and "Not rendered yet" not in second
+    assert first != second and 'src="tiktok/A01.mp4"' in second and "Not rendered yet" not in second
 
 
 def test_the_report_is_written_when_a_moment_failed(rig: Rig) -> None:
@@ -364,7 +391,7 @@ def test_the_report_is_written_when_a_moment_was_refused(rig: Rig) -> None:
     )
     (rig.out / REPORT_HTML).unlink()
     assert rig.go() == 0
-    assert 'src="A01_tiktok.mp4"' in (rig.out / REPORT_HTML).read_text(encoding="utf-8")
+    assert 'src="tiktok/A01.mp4"' in (rig.out / REPORT_HTML).read_text(encoding="utf-8")
 
 
 def test_the_console_still_shows_no_text_from_the_report(

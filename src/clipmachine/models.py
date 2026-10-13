@@ -409,6 +409,11 @@ class CampaignModeConfig(StrictModel):
     auto_watermark_light_weight: float = Field(default=0.4, ge=0, le=1)
     auto_watermark_x_step: float = Field(default=0.05, gt=0, le=0.5)
     auto_watermark_y_step: float = Field(default=0.02, gt=0, le=0.5)
+    # Brief 11.2: words written as given here in a YouTube title (the hook in sentence case),
+    # on top of the campaign's names, spelling targets and allowed words
+    title_keep_case: list[str] = Field(
+        default_factory=lambda: ["NBA", "NFL", "NHL", "MLB", "UFC", "MMA", "MPJ", "US", "UK"]
+    )
 
 
 class RenderConfig(StrictModel):
