@@ -7,14 +7,15 @@ no transcript text, hook or name is ever put in a log line from this module.
 import hashlib
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, TypeVar
 
 import yaml
 from pydantic import ValidationError
 
-from clipmachine.campaign.models import AutoPosition, CampaignConfig, Moment
+from clipmachine.campaign.models import AutoPosition, CampaignConfig, Moment, MomentSpec
 from clipmachine.config import ConfigError, _read_yaml, _validate
 from clipmachine.models import AppConfig, ZoomConfig
 from clipmachine.utils.image import (
@@ -29,6 +30,7 @@ from clipmachine.utils.safezone import Rect, safe_rect
 
 SLUG_RE = re.compile(r"_?[a-z0-9][a-z0-9-]{0,40}")
 AUTO_POSITION_FILE = "auto_position.json"
+M = TypeVar("M", Moment, MomentSpec)
 
 
 @dataclass(frozen=True)
@@ -319,7 +321,9 @@ def _read_lock(
     return lock, None
 
 
-def load_moments(campaign: Campaign) -> list[Moment]:
+def load_moments(campaign: Campaign) -> list[MomentSpec]:
+    """The entries of moments.yaml, in order, platforms not yet decided (assign.py does that).
+    An id may appear once: a moment is posted once, on one platform (Brief 11.2)."""
     path = campaign.folder / "moments.yaml"
     if not path.is_file():
         raise ConfigError(f"moments.yaml not found: {path}")
@@ -332,27 +336,26 @@ def load_moments(campaign: Campaign) -> list[Moment]:
     if not data:
         raise ConfigError("moments.yaml: the list is empty")
     limit = campaign.config.hook.max_chars
-    moments: list[Moment] = []
-    seen: set[tuple[str, str]] = set()
+    moments: list[MomentSpec] = []
+    seen: set[str] = set()
     for number, entry in enumerate(data, start=1):
         if not isinstance(entry, dict):
             raise ConfigError(f"moments.yaml entry {number}: expected a mapping")
         label = f"moments.yaml entry {number} (id {str(entry.get('id'))[:24]})"
-        moment = _validate(Moment, entry, label)
+        moment = _validate(MomentSpec, entry, label)
         if len(moment.hook) > limit:
             raise ConfigError(
                 f"{label}: hook has {len(moment.hook)} characters, more than "
                 f"hook.max_chars ({limit}); shorten the hook"
             )
-        key = (moment.id, moment.platform)
-        if key in seen:
-            raise ConfigError(f"{label}: id and platform ({moment.platform}) are already used")
-        seen.add(key)
+        if moment.id in seen:
+            raise ConfigError(f"{label}: this id is already used; each moment has one entry")
+        seen.add(moment.id)
         moments.append(moment)
     return moments
 
 
-def select_moments(moments: list[Moment], only: str | None) -> list[Moment]:
+def select_moments(moments: Sequence[M], only: str | None) -> list[M]:
     """The moments named in `only` (comma-separated ids), in file order; all when None."""
     if only is None:
         return list(moments)

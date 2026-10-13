@@ -2,6 +2,59 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-13 — Brief 11.2: per-platform outputs and a posting plan (built; real run pending Igor's OK)
+
+**Why:** every moment rendered as "tiktok" into one flat folder: `_tiktok` file names, the TikTok
+prefix in YouTube captions (edited by hand), `campaign-posted` refusing the real platforms, and
+the first 9 posts recorded under "tiktok". The campaign wants each moment posted once, on one
+platform, with that platform's text. $0, no API call, no new dependency (D-031).
+
+**Done** (branch `brief-11-2-platforms` from `main`; nothing pushed or merged)
+- **Layout:** `runs/<run>/campaign/<slug>/tiktok/`, `instagram/`, `youtube/` hold `<id>.mp4` and
+  `<id>.txt` only; jsons, `.ass`, review files, crop commands and tracks moved to `_meta/`
+  (`<id>_<platform>.*`, so `auto_spelling.json` and `auto_position.json` read as before). Old
+  flat files are left untouched and listed in the report.
+- **Assignment** (`campaign/assign.py`): `platform: auto` (or no field) spreads moments over
+  `campaign.platforms` (default all three) by the least-loaded rule in moments.yaml order, locked
+  in `campaigns/<slug>/assignments.json`; posted platform > explicit > lock > rule. Ids are unique
+  now. moments.yaml entries are `MomentSpec`; `Moment` (platform decided) is what the renderer sees.
+- **Post text** (`campaign/post.py`): TikTok/Instagram unchanged in shape; YouTube gets
+  `TITLE: <hook in sentence case>` (names, spelling targets, allowed words and the app config's
+  `campaign.title_keep_case` kept as written; at most 100 characters), a blank line, then the
+  YouTube prefix, caption, hashtags, closer. The title is masked like the hook.
+- **Closers** rotate per platform (`used.json` `closers`; each platform starts at its own place in
+  the list); the Brief 11 counters stay in old files, unused.
+- **Posting plan** (`campaign/plan.py`): `posting_plan.csv` with `date, time_et, platform, id,
+  file, text_file, posted` plus Igor's `views_48h, likes, comments, shares, pct_us_ca_uk,
+  avg_watch_s, pct_completed, notes`. Posted clips keep their row (posted date, platform from
+  `used.json`); unposted rendered clips get `posting_times` (12:30 / 3:30 / 6:30 PM ET) one slot
+  each per platform per day from tomorrow, strongest first. The old file is read first (Excel
+  BOM and CRLF fine); filled values and extra columns are never overwritten; only an unposted
+  clip's slot moves.
+- **campaign-posted:** `--platform` optional (the assigned platform); `--fix-platform` relabels
+  the posted entry; clear errors for an unknown id or an ambiguous platform.
+- Tests: 2103 passed, 3 skipped (about 60 new across assign, post, plan, used, run, report,
+  loader). ruff, format, mypy and pip-audit clean.
+
+**Real run** (Igor's OK; $0, API calls 0; 1252.5 s for 26 clips, 40–52 s each with the tracks reused)
+- Records first: only 3 of the 9 scheduled posts were marked posted in used.json (the handoff said
+  9). The other 6 were marked (`campaign-posted --platform tiktok`, their recorded label), then all
+  wrong labels relabelled with `--fix-platform`: 3 instagram, 3 youtube, 3 stay tiktok. Backups of
+  used.json, moments.yaml and campaign.yaml in `runs/_scratch/backup-11-2/`.
+- `platforms: [tiktok, instagram, youtube]` and `platform: auto` on all 35 moments. Assignment:
+  tiktok 12, instagram 12, youtube 11 (the 9 posted keep their platforms). 26 rendered, 0 failed,
+  9 refused (posted). Per folder: tiktok 9, instagram 9, youtube 8 clips; 61 files of the 9 posted
+  moments unchanged (hash and mtime). posting_plan.csv: 9 posted rows, 26 slots Oct 14–16 plus
+  Oct 17 (3 per platform per day).
+- Three new clips overlap a posted moment by more than half (`not_previously_used` warning):
+  C03 and A04, C09 and A03, C11 and A05. Igor decides whether to post them (the campaign wants
+  each moment once).
+
+**Not done**
+- HANDOFF.md refresh after Igor's folder check; merge after his OK.
+
+**Cost:** $0. No API call.
+
 ## 2026-10-13 — Brief R2.1: smooth zooms (built; 3-clip real run done; Igor's phone check pending)
 
 **Why:** on the phone the R2 hard punch-in looked like a glitch (Igor, 2026-10-13). An eased zoom

@@ -8,9 +8,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from clipmachine import tracking
+from clipmachine.campaign.assign import ASSIGNMENTS_FILE, assigned_platform
 from clipmachine.campaign.loader import campaign_dir
+from clipmachine.campaign.models import PLATFORMS
 from clipmachine.campaign.run import run_campaign
-from clipmachine.campaign.used import load_used, mark_posted, save_used
+from clipmachine.campaign.used import load_used, mark_posted, relabel_posted, save_used
 from clipmachine.config import ConfigError, load_resolved_file
 from clipmachine.pipeline import (
     RESOLVED_CONFIG,
@@ -102,7 +104,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     posted.add_argument("--campaign", required=True, help="the folder name under campaigns/")
     posted.add_argument("--id", required=True, help="the moment id, e.g. A03")
-    posted.add_argument("--platform", required=True, choices=("tiktok", "instagram", "youtube"))
+    posted.add_argument(
+        "--platform",
+        choices=PLATFORMS,
+        help="the platform it went to; left out, the moment's assigned platform "
+        "(campaigns/<name>/assignments.json). With --fix-platform: the label to correct",
+    )
+    posted.add_argument(
+        "--fix-platform",
+        choices=PLATFORMS,
+        metavar="{tiktok,instagram,youtube}",
+        help="relabel the moment's posted entry with the platform it really went to",
+    )
 
     sub.add_parser(
         "fetch-face-model",
@@ -212,16 +225,33 @@ def _cmd_campaign(args: argparse.Namespace, root: Path) -> int:
 
 
 def _cmd_campaign_posted(args: argparse.Namespace, root: Path) -> int:
-    """Mark the latest rendered, unposted entry of a moment as posted in used.json. Needs only
-    the campaign folder: campaign.yaml and the watermark are not read."""
+    """Mark the latest rendered, unposted entry of a moment as posted in used.json, or (Brief
+    11.2, --fix-platform) relabel its posted entry. Needs only the campaign folder: campaign.yaml
+    and the watermark are not read."""
     folder = campaign_dir(root, args.campaign)
+    if args.fix_platform is not None:
+        log, before, after = relabel_posted(
+            load_used(folder), args.id, args.fix_platform, args.platform
+        )
+        if before.platform != after.platform:
+            save_used(folder, log)
+            print(f"{args.id}: posted entry relabelled {before.platform} -> {after.platform}")
+        else:
+            print(f"{args.id}: posted entry is already {after.platform}")
+        return EXIT_OK
+    platform = args.platform or assigned_platform(folder, args.id)
+    if platform is None:
+        raise ConfigError(
+            f"moment {args.id} has no platform assigned yet (no entry in {ASSIGNMENTS_FILE}); "
+            "render it first, or say which with --platform"
+        )
     log, _, changed = mark_posted(
-        load_used(folder), args.id, args.platform, datetime.now(UTC).isoformat()
+        load_used(folder), args.id, platform, datetime.now(UTC).isoformat()
     )
     if changed:
         save_used(folder, log)
     state = "marked as posted" if changed else "already marked as posted"
-    print(f"{args.id} {args.platform}: {state}")
+    print(f"{args.id} {platform}: {state}")
     return EXIT_OK
 
 

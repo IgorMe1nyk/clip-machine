@@ -11,7 +11,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from clipmachine.campaign.models import UsedEntry, UsedLog
+from clipmachine.campaign.models import CloserState, Platform, UsedEntry, UsedLog
 from clipmachine.config import ConfigError
 from clipmachine.runs import write_json_atomic
 
@@ -40,15 +40,21 @@ def save_used(folder: Path, log: UsedLog) -> None:
     write_json_atomic(folder / USED_FILE, log.model_dump(mode="json"))
 
 
-def take_closer(log: UsedLog, closers: Sequence[str]) -> tuple[str, UsedLog]:
-    """The next closer, round-robin, never the one used last when there are two or more. Works
-    when the closers were edited since the last run: the position is taken modulo their count."""
+def take_closer(
+    log: UsedLog, closers: Sequence[str], platform: str, *, first: int = 0
+) -> tuple[str, UsedLog]:
+    """The platform's next closer, round-robin, never the one that platform used last when there
+    are two or more (Brief 11.2: one rotation per platform). A platform with no rotation yet
+    starts at `first`, so the platforms need not all open with the same closer. Works when the
+    closers were edited since the last run: the position is taken modulo their count."""
     count = len(closers)
-    index = log.next_closer % count
-    if count >= 2 and closers[index] == log.last_closer:
+    state = log.closers.get(platform, CloserState(next=first))
+    index = state.next % count
+    if count >= 2 and closers[index] == state.last:
         index = (index + 1) % count
     chosen = closers[index]
-    return chosen, log.model_copy(update={"next_closer": index + 1, "last_closer": chosen})
+    states = {**log.closers, platform: CloserState(next=index + 1, last=chosen)}
+    return chosen, log.model_copy(update={"closers": states})
 
 
 def posted_entry(log: UsedLog, moment_id: str, platform: str) -> UsedEntry | None:
@@ -57,6 +63,46 @@ def posted_entry(log: UsedLog, moment_id: str, platform: str) -> UsedEntry | Non
         if entry.id == moment_id and entry.platform == platform and entry.posted_at:
             return entry
     return None
+
+
+def latest_posted(log: UsedLog, moment_id: str) -> UsedEntry | None:
+    """The latest posted entry for this id on any platform."""
+    for entry in reversed(log.entries):
+        if entry.id == moment_id and entry.posted_at:
+            return entry
+    return None
+
+
+def rendered_platforms(log: UsedLog, moment_id: str) -> list[str]:
+    """The platforms this id has an unposted render on, in the order they were rendered."""
+    return list(
+        dict.fromkeys(e.platform for e in log.entries if e.id == moment_id and not e.posted_at)
+    )
+
+
+def relabel_posted(
+    log: UsedLog, moment_id: str, new_platform: Platform, current: str | None = None
+) -> tuple[UsedLog, UsedEntry, UsedEntry]:
+    """Give the latest posted entry of this id another platform (Brief 11.2, to correct an early
+    record): (log, before, after). `current` names the entry's platform when the id was posted on
+    more than one. No posted entry, or an ambiguous choice, is an error that says so."""
+    posted = [e for e in log.entries if e.id == moment_id and e.posted_at]
+    if not posted:
+        raise ConfigError(f"moment {moment_id} has no posted entry to relabel")
+    if current is not None:
+        posted = [e for e in posted if e.platform == current]
+        if not posted:
+            raise ConfigError(f"moment {moment_id} has no posted entry under {current}")
+    platforms = {e.platform for e in posted}
+    if len(platforms) > 1:
+        raise ConfigError(
+            f"moment {moment_id} is posted under {', '.join(sorted(platforms))}; "
+            "say which with --platform"
+        )
+    before = posted[-1]
+    after = before.model_copy(update={"platform": new_platform})
+    entries = [after if e is before else e for e in log.entries]
+    return log.model_copy(update={"entries": entries}), before, after
 
 
 def overlapping_posted(

@@ -20,7 +20,7 @@ from clipmachine.campaign.loader import (
     load_moments,
     select_moments,
 )
-from clipmachine.campaign.models import Moment, parse_time
+from clipmachine.campaign.models import MomentSpec, parse_time
 from clipmachine.config import ConfigError, load_app_config
 from clipmachine.models import AppConfig
 
@@ -431,7 +431,7 @@ def test_pyyaml_reads_an_unquoted_time_as_an_integer_and_it_still_works(project:
 # --- moments.yaml ------------------------------------------------------------------------------
 
 
-def moments_of(project: Path, entries: list[dict[str, Any]]) -> list[Moment]:
+def moments_of(project: Path, entries: list[dict[str, Any]]) -> list[MomentSpec]:
     campaign = load(project)
     write_moments(campaign.folder, entries)
     return load_moments(campaign)
@@ -453,7 +453,7 @@ def test_moments_parse_with_all_time_forms(project: Path) -> None:
         (100.0, 150.5),
         (10.0, 50.0),
     ]
-    assert got[0].clip_name == "A01_tiktok"
+    assert (got[0].id, got[0].platform) == ("A01", "tiktok")
 
 
 @pytest.mark.parametrize("end", ["auto", "AUTO", " Auto ", None])
@@ -511,11 +511,24 @@ def test_the_hook_error_gives_both_numbers_and_not_the_text(project: Path) -> No
     assert "31" in text and "30" in text and "QQQQ" not in text
 
 
-def test_duplicate_id_and_platform_is_refused_but_two_platforms_are_fine(project: Path) -> None:
+def test_a_duplicate_id_is_refused_even_on_another_platform(project: Path) -> None:
     with pytest.raises(ConfigError, match="entry 2 .*already used"):
         moments_of(project, [moment(), moment(start="20:00", end="20:40")])
-    got = moments_of(project, [moment(platform="tiktok"), moment(platform="youtube")])
-    assert [m.clip_name for m in got] == ["A01_tiktok", "A01_youtube"]
+    with pytest.raises(ConfigError, match="entry 2 .*already used"):
+        moments_of(project, [moment(platform="tiktok"), moment(platform="youtube")])
+
+
+@pytest.mark.parametrize("value", ["auto", "AUTO", " Auto "])
+def test_platform_auto_is_kept_for_the_assignment(project: Path, value: str) -> None:
+    (m,) = moments_of(project, [moment(platform=value)])
+    assert m.platform == "auto"
+
+
+def test_a_missing_platform_means_auto(project: Path) -> None:
+    entry = moment()
+    del entry["platform"]
+    (m,) = moments_of(project, [entry])
+    assert m.platform == "auto"
 
 
 def test_an_empty_or_wrong_shaped_moments_file(project: Path) -> None:
@@ -546,12 +559,12 @@ def test_select_moments_keeps_file_order_and_rejects_unknown_ids(project: Path) 
             moment(id="A01"),
             moment(id="B05"),
             moment(id="A03"),
-            moment(id="A01", platform="youtube"),
+            moment(id="A04", platform="youtube"),
         ],
     )
     assert select_moments(got, None) == got
     picked = select_moments(got, "A03, A01")
-    assert [m.clip_name for m in picked] == ["A01_tiktok", "A03_tiktok", "A01_youtube"]
+    assert [m.id for m in picked] == ["A01", "A03"]
     with pytest.raises(ConfigError, match="no moment with id Z9"):
         select_moments(got, "A01,Z9")
     with pytest.raises(ConfigError, match="at least one id"):
