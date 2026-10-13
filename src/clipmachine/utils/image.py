@@ -45,14 +45,39 @@ def color_type_name(color_type: int) -> str:
     return _COLOR_TYPE_NAMES.get(color_type, f"unknown ({color_type})")
 
 
+def other_format(data: bytes) -> str | None:
+    """The name of a common image format the bytes start with, when it is not PNG; None when the
+    bytes are not recognised. Used to tell a WebP or JPEG named `.png` from a broken file."""
+    head = data[:16].lstrip()
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "WebP"
+    if data[:3] == b"\xff\xd8\xff":
+        return "JPEG"
+    if data[:4] == b"GIF8":
+        return "GIF"
+    if data[:2] == b"BM":
+        return "BMP"
+    if data[4:8] == b"ftyp":
+        return "AVIF/HEIF"
+    if head[:5].lower() == b"<?xml" or head[:4].lower() == b"<svg":
+        return "SVG"
+    return None
+
+
 def png_info(path: Path) -> PngInfo:
     """Width, height, bit depth, colour type and alpha, from the chunks. ImageError when the file
-    is not a PNG, is cut short, or has no size."""
+    is not a PNG (naming the real format when it is a known one), is cut short, or has no size."""
     try:
         data = path.read_bytes()
     except OSError as exc:
         raise ImageError(f"cannot read {path.name}: {exc.strerror or exc}") from exc
     if not data.startswith(PNG_SIGNATURE):
+        other = other_format(data)
+        if other is not None:
+            raise ImageError(
+                f"{path.name} is not a PNG file (it is a {other} image named .png); convert it "
+                "to PNG (the pixels stay the same) and keep the .png name"
+            )
         raise ImageError(f"{path.name} is not a PNG file (bad signature)")
     pos = len(PNG_SIGNATURE)
     header: tuple[int, int, int, int] | None = None

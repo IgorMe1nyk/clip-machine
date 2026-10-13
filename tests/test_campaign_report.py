@@ -226,7 +226,7 @@ def test_the_header_shows_the_watermark_facts_and_zero_api_calls(project: Path) 
     assert "Run folder: 2026-10-12_run" in html
     assert "API calls: 0" in html
     assert "Clip length 20&ndash;60 s" in html and "hook mode full, font size 80" in html
-    assert "PNG RGBA, alpha yes, background transparent, blend normal" in html
+    assert "format PNG (RGBA), alpha yes, background transparent, blend normal" in html
     assert "x 490&ndash;590, y 336&ndash;356" in html
     assert "assets/mark.png" in html
     assert "Warnings" not in html

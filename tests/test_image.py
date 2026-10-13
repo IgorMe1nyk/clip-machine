@@ -12,6 +12,7 @@ from clipmachine.utils.image import (
     background_kind,
     color_type_name,
     load_pixels,
+    other_format,
     png_info,
     visible_box,
 )
@@ -60,8 +61,13 @@ def test_png_info_rejects_bad_files(tmp_path: Path) -> None:
     good = png_bytes(2, 2, 0, 8, b"\x00\x01\x02\x00\x03\x04")
     bad_signature = tmp_path / "sig.png"
     bad_signature.write_bytes(b"GIF89a" + good[6:])
-    with pytest.raises(ImageError, match="not a PNG"):
+    with pytest.raises(ImageError, match=r"not a PNG file \(it is a GIF image named .png\)"):
         png_info(bad_signature)
+
+    unknown = tmp_path / "unknown.png"
+    unknown.write_bytes(b"plain text, not an image at all")
+    with pytest.raises(ImageError, match=r"not a PNG file \(bad signature\)"):
+        png_info(unknown)
 
     truncated = tmp_path / "cut.png"
     truncated.write_bytes(good[: len(good) // 2])
@@ -201,3 +207,32 @@ def test_the_header_is_read_without_decoding(tmp_path: Path) -> None:
     assert ok
     path.write_bytes(buf.tobytes())
     assert (png_info(path).width, png_info(path).height) == (3, 9)
+
+
+@pytest.mark.parametrize(
+    ("head", "name"),
+    [
+        (b"RIFF\x00\x00\x00\x00WEBPVP8 ", "WebP"),
+        (b"\xff\xd8\xff\xe0\x00\x10JFIF", "JPEG"),
+        (b"GIF89a\x01\x00", "GIF"),
+        (b"BM\x00\x00\x00\x00", "BMP"),
+        (b"\x00\x00\x00\x1cftypavif", "AVIF/HEIF"),
+        (b'<?xml version="1.0"?><svg', "SVG"),
+        (b"  <svg xmlns=", "SVG"),
+    ],
+)
+def test_other_format_names_common_image_formats(head: bytes, name: str) -> None:
+    assert other_format(head + b"\x00" * 32) == name
+
+
+def test_other_format_is_none_for_png_and_unknown_bytes() -> None:
+    assert other_format(png_bytes(1, 1, 0, 8, b"\x00\x05")) is None
+    assert other_format(b"plain text") is None
+    assert other_format(b"") is None
+
+
+def test_a_webp_named_png_is_named_in_the_error(tmp_path: Path) -> None:
+    path = tmp_path / "mark.png"
+    path.write_bytes(b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 24)
+    with pytest.raises(ImageError, match="WebP image named .png.*convert it to PNG"):
+        png_info(path)

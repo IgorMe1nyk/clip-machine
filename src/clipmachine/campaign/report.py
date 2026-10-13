@@ -181,7 +181,7 @@ def _header(
         + f", font size {_esc(campaign.hook_font_size)}"
         + f", position {_esc(campaign.hook_position)}</p>",
         f"<p>Watermark {_esc(cfg.watermark.file)}: "
-        f"PNG {_esc(color_type_name(wm.info.color_type))}, alpha {alpha}, "
+        f"format PNG ({_esc(color_type_name(wm.info.color_type))}), alpha {alpha}, "
         f"background {_esc(background)}, "
         f"blend {_esc(wm.blend)}; visible box on the frame x {box.x1:g}&ndash;{box.x2:g}, "
         f"y {box.y1:g}&ndash;{box.y2:g}</p>",
