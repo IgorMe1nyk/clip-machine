@@ -121,9 +121,12 @@ def _line(moment_name: str, result: MomentResult, closers: int) -> str:
         end = f"end auto (target {clip.auto_end_target:g} s, actual {clip.duration:.2f} s)"
     else:
         end = "end kept" if result.end_moved is None else f"end {result.end_moved:+.2f} s"
+    zooms = ""
+    if clip.settings is not None and clip.settings.zoom_enabled:
+        zooms = f", {clip.zoom_count} zooms"
     return (
         f"{label}: rendered {clip.start:.2f}-{clip.end:.2f} s ({clip.duration:.2f} s), {start}, "
-        f"{end}, {clip.spelling_replacements} spelling fixes, "
+        f"{end}, {clip.spelling_replacements} spelling fixes{zooms}, "
         f"closer {result.closer_number} of {closers}, {clip.render_seconds:.1f} s"
     )
 
@@ -137,6 +140,8 @@ def run_campaign(
     if app.captions.style != "box_karaoke":
         raise ConfigError("campaign mode needs captions.style: box_karaoke in config/default.yaml")
     campaign = load_campaign(root, slug, app)
+    # the campaign's video.zoom keys win; everything below reads the merged zoom from `app`
+    app = app.model_copy(update={"video": app.video.model_copy(update={"zoom": campaign.zoom})})
     all_moments = load_moments(campaign)
     moments = select_moments(all_moments, only)
     for warning in campaign.warnings:

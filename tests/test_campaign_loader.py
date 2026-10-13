@@ -563,3 +563,78 @@ def test_a_webp_named_png_fails_with_the_real_format_named(project: Path) -> Non
     (folder / "assets" / "mark.png").write_bytes(b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 24)
     with pytest.raises(ConfigError, match="WebP image named .png"):
         load_campaign(project, "demo", app_of(project))
+
+
+# --- video.zoom (Brief R2) -----------------------------------------------------------------------
+
+
+def zoom_keys(**keys: Any) -> Mutate:
+    def mutate(d: dict[str, Any]) -> None:
+        d["video"] = {"zoom": keys}
+
+    return mutate
+
+
+def test_a_campaign_without_a_video_section_uses_the_app_zoom_exactly(project: Path) -> None:
+    assert load(project).zoom == app_of(project).video.zoom  # an older campaign.yaml
+
+    assert load(project, zoom_keys()).zoom == app_of(project).video.zoom  # all keys left out
+
+
+def test_one_campaign_zoom_key_overrides_and_the_rest_fall_back_to_the_app(
+    project: Path,
+) -> None:
+    app = app_of(project).video.zoom
+
+    zoom = load(project, zoom_keys(scale=1.5)).zoom
+
+    assert zoom.scale == 1.5 and app.scale != 1.5
+    assert zoom == app.model_copy(update={"scale": 1.5})
+
+
+def test_the_campaign_may_switch_zoom_on(project: Path) -> None:
+    assert not app_of(project).video.zoom.enabled
+    assert load(project, zoom_keys(enabled=True)).zoom.enabled
+
+
+def test_a_zoom_that_is_invalid_after_merging_is_a_config_error(project: Path) -> None:
+    assert app_of(project).video.zoom.min_gap_s == 4.0
+
+    with pytest.raises(ConfigError, match=r"video\.zoom"):
+        load(project, zoom_keys(max_hold_s=3))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        zoom_keys(scale=3),
+        zoom_keys(loud_pct=1.5),
+        zoom_keys(max_upscale=0.5),
+        zoom_keys(colour="red"),
+    ],
+)
+def test_a_zoom_range_error_or_an_unknown_zoom_key_is_refused(
+    project: Path, mutate: Mutate
+) -> None:
+    with pytest.raises(ConfigError, match=r"video\.zoom"):
+        load(project, mutate)
+
+
+def test_style_and_ramp_s_override_and_fall_back_to_the_app(project: Path) -> None:
+    app = app_of(project).video.zoom
+    assert (app.style, app.ramp_s) == ("smooth", 0.4)
+
+    assert load(project, zoom_keys(style="punch")).zoom.style == "punch"
+    assert load(project, zoom_keys(style="punch")).zoom.ramp_s == 0.4
+    merged = load(project, zoom_keys(ramp_s=0.8)).zoom
+    assert (merged.style, merged.ramp_s) == ("smooth", 0.8)
+    assert load(project, zoom_keys()).zoom == app
+
+
+def test_a_bad_style_or_a_ramp_too_long_for_the_gap_is_refused(project: Path) -> None:
+    with pytest.raises(ConfigError, match=r"video\.zoom"):
+        load(project, zoom_keys(style="fast"))
+    with pytest.raises(ConfigError, match=r"video\.zoom"):
+        load(project, zoom_keys(ramp_s=2.5))
+    with pytest.raises(ConfigError, match=r"two ramps"):
+        load(project, zoom_keys(ramp_s=2.0, min_gap_s=3.0))

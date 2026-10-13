@@ -218,6 +218,32 @@ class TranscribeConfig(StrictModel):
         return self
 
 
+class ZoomConfig(StrictModel):
+    """Punch-in zooms (Brief R2): an instant jump to a tighter crop on some sentence starts.
+    Every key has a default so configs from before this section existed still load, with
+    zoom off."""
+
+    enabled: bool = False
+    # "smooth" eases to the zoomed window over `ramp_s` (Brief R2.1); "punch" jumps (Brief R2)
+    style: Literal["smooth", "punch"] = "smooth"
+    ramp_s: float = Field(default=0.4, ge=0, le=2)  # length of one ease in or out
+    scale: float = Field(default=1.15, gt=1, le=2)  # the crop window is this much tighter
+    loud_pct: float = Field(default=0.30, ge=0, le=1)  # share of the loudest sentences
+    min_gap_s: float = Field(default=4.0, gt=0)  # least time between two zoom changes
+    max_hold_s: float = Field(default=6.0, gt=0)  # longest a zoom-in lasts
+    # A zoom that would upscale the source more than this is skipped. A key, not a constant:
+    # with a higher scale the guard has to move too, or every zoom of a 1080p source is skipped.
+    max_upscale: float = Field(default=2.1, ge=1)
+
+    @model_validator(mode="after")
+    def _hold_covers_the_gap(self) -> "ZoomConfig":
+        if self.max_hold_s < self.min_gap_s:
+            raise ValueError("max_hold_s must be at least min_gap_s")
+        if 2 * self.ramp_s > self.min_gap_s:
+            raise ValueError("two ramps must fit in the shortest hold: 2 * ramp_s <= min_gap_s")
+        return self
+
+
 class VideoConfig(StrictModel):
     width: int = Field(gt=0)
     height: int = Field(gt=0)
@@ -231,6 +257,8 @@ class VideoConfig(StrictModel):
         if value == "face":
             raise ValueError("'face' was never implemented; use 'center' or 'speaker'")
         return value
+
+    zoom: ZoomConfig = Field(default_factory=ZoomConfig)  # added in Brief R2
 
 
 class SpeakerConfig(StrictModel):
@@ -902,6 +930,17 @@ class RenderedSettings(StrictModel):
     # old clip with no masked word is not stale, and the chance of one is not worth re-rendering
     # every run on resume
     mask_profanity: bool = True
+    # added in Brief R2. Old JSON files were rendered without zoom, so they are not stale while
+    # zoom is off; turning it on makes them stale and they re-render
+    zoom_enabled: bool = False
+    zoom_scale: float = 0.0
+    zoom_loud_pct: float = 0.0
+    zoom_min_gap_s: float = 0.0
+    zoom_max_hold_s: float = 0.0
+    zoom_max_upscale: float = 0.0
+    # added in Brief R2.1; an R2 file (a punch) reads as "" and is stale when zoom is on
+    zoom_style: str = ""
+    zoom_ramp_s: float = 0.0
 
 
 class RenderedOutput(StrictModel):
@@ -945,6 +984,11 @@ class RenderedClip(StrictModel):
     hook_moved: bool = False  # moved down to clear a face
     outside_safe_zone: int = 0  # caption/hook boxes not fully inside the safe area
     masked_words: int = 0  # Brief 11.1: caption and hook words masked (a count, never the words)
+    # added in Brief R2: punch-ins as (in, out) seconds from the clip start; none = zoom off
+    zoom_count: int = 0
+    zoom_spans: list[tuple[float, float]] = []
+    # added in Brief R2.1: the ease windows (start, end) actually used; none for a punch
+    zoom_ramps: list[tuple[float, float]] = []
 
 
 class TrackSource(StrictModel):
@@ -968,6 +1012,7 @@ class TrackShot(StrictModel):
     end: float
     track: int | None  # None: no face was followed in this shot
     face_cx: float | None  # mean face centre, 0..1 of the frame width
+    face_cy: float | None = None  # mean face centre, 0..1 of the frame height
 
 
 class TrackSample(StrictModel):
@@ -1000,9 +1045,9 @@ class TrackSummary(StrictModel):
     unscored_windows: int = 0
 
 
-# 2: cuts_exact. 3: the mix signal. 4: faces. load_valid_track recomputes files of any other
-# version
-TRACK_SCHEMA_VERSION = 4
+# 2: cuts_exact. 3: the mix signal. 4: faces. 5: face_cy. load_valid_track recomputes files of
+# any other version
+TRACK_SCHEMA_VERSION = 5
 
 
 class TrackFile(StrictModel):

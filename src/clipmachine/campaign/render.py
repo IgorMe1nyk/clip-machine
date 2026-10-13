@@ -118,6 +118,9 @@ class _Work:
     review: list[str] = field(default_factory=list)  # lines of <clip>.review.txt
     masked: int = 0
     sensitive: int = 0
+    zoom_count: int = 0
+    zoom_spans: list[tuple[float, float]] = field(default_factory=list)
+    zoom_ramps: list[tuple[float, float]] = field(default_factory=list)
 
 
 def _now() -> str:
@@ -182,6 +185,9 @@ def _clip_json(
         names_to_check=work.names,
         masked_words=work.masked,
         sensitive_words=work.sensitive,
+        zoom_count=work.zoom_count,
+        zoom_spans=work.zoom_spans,
+        zoom_ramps=work.zoom_ramps,
         checks={name: work.checks[name] for name in CHECKS if name in work.checks},
         closer=work.closer,
         hook_mode=ctx.campaign.config.hook.mode,
@@ -333,6 +339,13 @@ def _render_moment(
 
     clip = MomentClipObject(name, start, end, moment.hook)
     chosen = stage._speaker_crop(plan, clip) if plan.speaker is not None else None
+    if chosen is not None:
+        work.notes.extend(chosen.zoom_notes)
+        work.zoom_count = len(chosen.zooms)
+        work.zoom_spans = [(round(z.start, 3), round(z.end, 3)) for z in chosen.zooms]
+        work.zoom_ramps = [(round(r.start, 3), round(r.end, 3)) for r in chosen.ramps]
+    elif plan.zoom is not None:  # centre-crop mode has no followed face
+        work.notes.append("zoom_no_track")
     hook_cfg = campaign.config.hook
     if hook_cfg.mode == "full":
         seconds, fade = length, 0

@@ -207,6 +207,8 @@ def _sample(ctx: MomentContext, moment: Moment) -> _Sample | None:
         except (face_models.FacesError, ffmpeg.MediaError) as exc:
             raise RunError(f"speaker tracking failed for {moment.clip_name}: {exc}") from exc
         source_w, source_h = display_size(plan.video.width, plan.video.height, plan.video.rotation)
+        # No `boxes` here: this runs before any zoom is chosen, and the position score is a
+        # heuristic, so it uses the fixed window and does not apply the punch-in zoom.
         faces = tuple(
             face_rects_timed(
                 track.faces,

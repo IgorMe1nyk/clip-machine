@@ -10,10 +10,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from clipmachine.models import TrackFace, TrackSample
+from clipmachine.utils.crop import CropBox
 
 CAPTION_BOTTOM_GAP_PX = 12  # between a caption box's bottom edge and the bottom of the safe area
 FACE_PAD_FRAC = 0.1  # a face box grows by this fraction of its size on every side
 HOOK_FACE_GAP_PX = 12  # between a face box and the hook band moved below it
+WINDOW_SLACK_S = 1e-9  # a crop window written at the face's own time counts as in force
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,7 @@ def face_rects(
     out_w: float,
     out_h: float,
     until: float,
+    boxes: Sequence[tuple[float, CropBox]] | None = None,
 ) -> list[Rect]:
     """Where the faces up to `until` seconds are in the output frame, grown by FACE_PAD_FRAC.
 
@@ -79,6 +82,11 @@ def face_rects(
     window at that moment: `crop_x` of the sample with the face's own time, else of the latest
     sample before it (a face with no such sample is skipped). Faces that do not reach the output
     frame are dropped. `source_w` and `source_h` are the upright source size.
+
+    With `boxes` (the clip's crop windows as (time, box), as `zoomed_path` gives them) the window
+    in force at the face's time (the latest entry not after it; none: the face is skipped)
+    replaces `crop_x` and the fixed `crop_w`, `crop_h` and `crop_y`, so a face is placed where a
+    punch-in zoom put it.
     """
     return [
         rect
@@ -93,6 +101,7 @@ def face_rects(
             out_w=out_w,
             out_h=out_h,
             until=until,
+            boxes=boxes,
         )
     ]
 
@@ -109,27 +118,41 @@ def face_rects_timed(
     out_w: float,
     out_h: float,
     until: float,
+    boxes: Sequence[tuple[float, CropBox]] | None = None,
 ) -> list[tuple[float, Rect]]:
     """`face_rects` with each rectangle's sample time, for a cost over time (Brief 11.1)."""
     ordered = sorted(samples, key=lambda sample: sample.t)
     times = [sample.t for sample in ordered]
+    windows = sorted(boxes, key=lambda entry: entry[0]) if boxes else []
+    window_times = [t for t, _ in windows]
     frame = Rect(0.0, 0.0, float(out_w), float(out_h))
     found: list[tuple[float, Rect]] = []
     for face in faces:
         if face.t > until:
             continue
-        index = bisect_right(times, face.t) - 1
-        if index < 0:
-            continue
-        crop_x = ordered[index].crop_x
+        crop_x: float
+        window_w: float
+        window_h: float
+        window_y: float
+        if windows:
+            index = bisect_right(window_times, face.t + WINDOW_SLACK_S) - 1
+            if index < 0:
+                continue
+            box = windows[index][1]
+            crop_x, window_w, window_h, window_y = box.x, box.w, box.h, box.y
+        else:
+            index = bisect_right(times, face.t) - 1
+            if index < 0:
+                continue
+            crop_x, window_w, window_h, window_y = ordered[index].crop_x, crop_w, crop_h, crop_y
         left = (face.cx - face.w / 2) * source_w
         right = (face.cx + face.w / 2) * source_w
         top = (face.cy - face.h / 2) * source_h
         bottom = (face.cy + face.h / 2) * source_h
-        x1 = (left - crop_x) * out_w / crop_w
-        x2 = (right - crop_x) * out_w / crop_w
-        y1 = (top - crop_y) * out_h / crop_h
-        y2 = (bottom - crop_y) * out_h / crop_h
+        x1 = (left - crop_x) * out_w / window_w
+        x2 = (right - crop_x) * out_w / window_w
+        y1 = (top - window_y) * out_h / window_h
+        y2 = (bottom - window_y) * out_h / window_h
         pad_x = FACE_PAD_FRAC * (x2 - x1)
         pad_y = FACE_PAD_FRAC * (y2 - y1)
         rect = Rect(x1 - pad_x, y1 - pad_y, x2 + pad_x, y2 + pad_y)

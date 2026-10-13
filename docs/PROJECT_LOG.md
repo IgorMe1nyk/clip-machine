@@ -2,6 +2,100 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-13 — Brief R2.1: smooth zooms (built; 3-clip real run done; Igor's phone check pending)
+
+**Why:** on the phone the R2 hard punch-in looked like a glitch (Igor, 2026-10-13). An eased zoom
+in and out reads as a camera move. Same branch, same sendcmd path, still deterministic and $0.
+
+**Done** (3 commits on the branch `brief-r2-zooms`, plus this one; nothing pushed or merged)
+- **`video.zoom.style: smooth | punch`** (default smooth; punch is R2 unchanged, byte for byte,
+  with a golden test) and **`ramp_s`** (0.4; two ramps must fit in `min_gap_s`). New defaults
+  `scale` 1.15 and `max_upscale` 2.1: a 1080p source zooms to 528x940, an upscale of 2.05.
+  `zoom_style` and `zoom_ramp_s` join `RenderedSettings`, so the R2 punch clips re-render.
+- **Smooth:** cosine ease-in-out from the base window to the zoomed one over `ramp_s` from the
+  zoom-in time, hold, ease back out ending at the hold end. One crop command per output frame
+  during a ramp (12 lines per 0.4 s at 29.97 fps), even pixels, clamped. The width follows from
+  the height with the base window's own aspect, so the first frame of a ramp is the base window
+  exactly and the aspect stays within 0.5% of the base's (which is the closest even 9:16 the
+  source allows). A clip whose first zoom starts at 0 starts on the base window and eases in.
+- **Cuts:** a hold that ends on a camera cut (or the clip end) switches instantly, no ramp-out;
+  a ramp that would cross a boundary is shortened (note `zoom_ramp_shortened`); with the R2
+  spacing rules a 0.4 s ramp never meets one. The clip json lists `zoom_ramps`.
+- Captions, hook and watermark still draw after the crop; the hook's face avoidance reads the
+  per-frame boxes.
+- Tests: 2043 passed, 3 skipped (51 new); ffmpeg-marked: a ramp shrinks the window frame by
+  frame (the top band's share of the output rows grows strictly over the ramp frames) at a
+  constant output size. ruff, format, mypy and pip-audit clean.
+
+**Real run** (A03, A07, B05; $0, API calls 0; 77.3 s; tracks reused)
+- A03: zooms 0.00–6.00 and 24.12–28.44 s, ramps 0.00–0.40, 5.60–6.00, 24.12–24.52,
+  28.04–28.44 s; 21.1 s.
+- A07: zooms 0.08–5.88 and 15.34–21.34 s, ramps 0.08–0.48, 15.34–15.74, 20.94–21.34 s; the
+  first hold ends on a cut at 5.878 s, so it switches there without a ramp; 22.0 s.
+- B05: zooms 0.10–5.36 and 25.22–31.22 s, ramps 0.10–0.50, 4.96–5.36, 25.22–25.62,
+  30.82–31.22 s; 19.2 s.
+- Render time with the track reused: 19–22 s, as before the zooms.
+
+**Not done**
+- Igor's phone check of the three clips; then the other 32 moments (each analysed once more for
+  track schema 5, ~25 s extra). `ramp_s`, `scale` and `min_gap_s` are the knobs.
+
+**Cost:** $0. No API call.
+
+## 2026-10-13 — Brief R2: punch-in zooms (built; 5-clip real run done; Igor's phone check pending)
+
+**Why:** talking-head clips look flat. A hard punch-in (an instant jump to a crop 1.12x tighter on
+some sentence starts, then back out) is the podcast-clip look, and it costs nothing: the zoom is
+extra fields on the lines of the moving-crop `sendcmd` file from Brief 8 Part B. The zoom points
+are picked by a deterministic rule from data the run already has, never by a model (campaign
+Rule 3; D-027).
+
+**Done** (9 commits on the branch `brief-r2-zooms` from `main`, plus this one; nothing pushed or merged)
+- **`video.zoom`** in `config/default.yaml` (`enabled`, `scale` 1.12, `loud_pct` 0.30, `min_gap_s`
+  4.0, `max_hold_s` 6.0, `max_upscale` 2.0; validated, old configs load with zoom off). A campaign
+  profile may override any key under `video.zoom`. `enabled: false` writes the command file and
+  the clip exactly as before (the old code path, byte for byte). The six values go into
+  `RenderedSettings`, so a toggle or a tuning re-renders on resume and an old output is not stale
+  while zoom is off.
+- **Rule** (`utils/zoom.py`): the sentence holding the clip's first spoken line, plus the loudest
+  `loud_pct` of its sentences (mean RMS in dB from the run's WAV, `utils/audio.py`). A pick zooms in
+  when it is `min_gap_s` after the previous zoom-out, at least 0.5 s from every camera cut, and the
+  shot has at least `min_gap_s` left. The hold ends at the next pick that is `min_gap_s` later, at
+  `max_hold_s`, or at the shot boundary (frame-exact at a cut, as the x path already was); an end
+  just before a cut moves onto it. Shots without a face are excluded; a `TODO(Brief 8.3)` hook
+  excludes stacked shots.
+- **Geometry:** the window shrinks by `scale` around the smoothed crop's centre (so the 8.2
+  operator smoothing carries on inside a zoom) and is centred vertically on the shot's face
+  (`face_cy`, now recorded per shot in the track file: `TRACK_SCHEMA_VERSION` 5, so every track
+  is analysed once more). Even pixels, clamped to the frame. Upscale guard: a window that would be
+  enlarged more than `max_upscale` gives no zooms and the note `zoom_skipped_upscale` (a 1080p
+  source sits at 1.99 with scale 1.12; 720p sources never zoom). Other notes: `zoom_no_audio`,
+  `zoom_no_track`. The clip json has `zoom_count` and `zoom_spans`; the console line the count.
+- **Overlays untouched:** captions, hook and watermark are drawn after the crop and scale. The
+  hook's face avoidance now reads the faces through the zoomed windows.
+- **Measured before building:** with the local ffmpeg 9.0.1 a sendcmd line
+  `crop w …, crop h …, crop x …, crop y …` reconfigures the crop filter in place; through
+  `crop -> scale -> setsar` the output size stays constant and a probe pixel flips on the exact
+  frame. Size first when shrinking, position first when growing, so every in-between state fits
+  the frame. An ffmpeg-marked test keeps that check.
+- Tests: 1992 passed, 3 skipped (103 new); ruff, format, mypy and pip-audit clean.
+
+**Real run** (5 of the 35 Brief 11 campaign moments, Igor's pick; $0, API calls 0; 252.9 s)
+- A03: 2 zooms (0.00–6.00, 24.12–28.44 s); A07: 2 (0.08–5.88, 15.34–21.34 s); B05: 2
+  (0.10–5.36, 25.22–31.22 s). A01 and A02: 0 zooms and no note: the source is cut every 1–5 s
+  (11 and 7 cuts) and its editor cuts on sentence starts, so every pick was within 0.5 s of a cut
+  or had under 4 s of shot left. Notes unchanged from the Brief 11.1 render.
+- Render time: 42–53 s per clip, of which the one-off schema-5 track analysis is ~20–25 s; A03
+  rendered again with its track reused took 21.6 s against 24.9 s before, so the zoom itself
+  adds nothing measurable.
+
+**Not done**
+- Igor's check on a phone: natural or too frequent; tune `scale` and `min_gap_s` by config. Then
+  the other 30 moments (each re-analysed once, ~25 s extra). Out of scope, for later: animated
+  or eased zooms, shake, speed ramps, zooms in stacked shots (8.3), model-chosen emphasis words.
+
+**Cost:** $0. No API call.
+
 ## 2026-10-12 — Brief 11.1: campaign auto-setup (built; real run done; Igor's phone check pending)
 
 **Why:** after Brief 11's real run two per-campaign settings needed hand-tuning: the watermark

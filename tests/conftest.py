@@ -92,9 +92,15 @@ def project(tmp_path: Path) -> Path:
     default_yaml = tmp_path / "config" / "default.yaml"
     text = default_yaml.read_text(encoding="utf-8")
     assert "  crop: speaker " in text
-    default_yaml.write_text(
-        text.replace("  crop: speaker ", "  crop: center ", 1), encoding="utf-8"
+    # Likewise zoom is shipped on; tests run with it off, and zoom tests switch it on.
+    assert "    enabled: true            # false = the crop" in text
+    text = text.replace("  crop: speaker ", "  crop: center ", 1)
+    text = text.replace(
+        "    enabled: true            # false = the crop",
+        "    enabled: false           # false = the crop",
+        1,
     )
+    default_yaml.write_text(text, encoding="utf-8")
     shutil.copytree(REPO_ROOT / "clients", tmp_path / "clients")
     shutil.copytree(REPO_ROOT / "prompts", tmp_path / "prompts")
     shutil.copytree(REPO_ROOT / "assets", tmp_path / "assets")

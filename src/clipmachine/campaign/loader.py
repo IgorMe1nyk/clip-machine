@@ -7,7 +7,7 @@ no transcript text, hook or name is ever put in a log line from this module.
 import hashlib
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from clipmachine.campaign.models import AutoPosition, CampaignConfig, Moment
 from clipmachine.config import ConfigError, _read_yaml, _validate
-from clipmachine.models import AppConfig
+from clipmachine.models import AppConfig, ZoomConfig
 from clipmachine.utils.image import (
     ImageError,
     PngInfo,
@@ -78,6 +78,7 @@ class Campaign:
     hook_position: str  # top | avoid_faces: the campaign's own, else from the app config
     warnings: tuple[str, ...]
     auto: AutoPosition | None = None  # the lock, with `position: auto` once it is chosen
+    zoom: ZoomConfig = field(default_factory=ZoomConfig)  # video.zoom with the campaign's keys
 
     @property
     def placed(self) -> Watermark:
@@ -259,8 +260,20 @@ def load_campaign(root: Path, slug: str, app: AppConfig) -> Campaign:
             watermark = place_watermark(asset, lock.x_center, lock.y_center, app)
     else:
         watermark = place_watermark(asset, where.x_center, where.y_center, app)
+    own = cfg.video.zoom.model_dump(exclude_none=True)
+    zoom = _validate(ZoomConfig, {**app.video.zoom.model_dump(), **own}, "campaign.yaml video.zoom")
     return Campaign(
-        slug, folder, cfg, asset, watermark, font_size, seconds, position, tuple(warnings), lock
+        slug,
+        folder,
+        cfg,
+        asset,
+        watermark,
+        font_size,
+        seconds,
+        position,
+        tuple(warnings),
+        lock,
+        zoom,
     )
 
 

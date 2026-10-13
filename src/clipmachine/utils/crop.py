@@ -60,11 +60,12 @@ CUT_MATCH_SECONDS = 1e-6  # a shot start this close to a cut is that cut
 TIME_DIGITS = 6
 
 
-def _even_round(value: float) -> int:
+def even_round(value: float) -> int:
+    """The nearest even integer (ties to the even multiple of two, as round does)."""
     return 2 * round(value / 2)
 
 
-def _effective_boundaries(
+def effective_boundaries(
     shots: Sequence[tuple[float, float]],
     cuts: Sequence[float],
     cuts_exact: Sequence[float],
@@ -138,7 +139,7 @@ def frame_path(
     if fps <= 0:
         raise ValueError("fps must be positive")
     all_shots = list(shots) or [(0.0, duration)]
-    bounds = _effective_boundaries(all_shots, cuts, cuts_exact, duration)
+    bounds = effective_boundaries(all_shots, cuts, cuts_exact, duration)
     anchors = _shot_anchors(samples, all_shots)
 
     times = {0.0}
@@ -150,7 +151,7 @@ def frame_path(
 
     path: list[tuple[float, int]] = []
     for t in sorted(times):
-        x = _even_round(_interpolate(anchors[bisect_right(bounds, t)], t))
+        x = even_round(_interpolate(anchors[bisect_right(bounds, t)], t))
         if not path or x != path[-1][1]:
             path.append((t, x))
     return path

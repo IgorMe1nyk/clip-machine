@@ -190,6 +190,61 @@ def test_crop_commands_are_empty_for_a_path_that_never_moves() -> None:
     assert ffmpeg.crop_commands([]) == ""
 
 
+def test_crop_box_commands_write_size_first_when_the_window_shrinks() -> None:
+    wide = CropBox(w=1080, h=1920, x=100, y=0)
+    tight = CropBox(w=964, h=1714, x=120, y=40)
+    text = ffmpeg.crop_box_commands([(0.0, wide), (1.0, tight)])
+    assert text == "1.000000 crop w 964, crop h 1714, crop x 120, crop y 40;\n"
+
+
+def test_crop_box_commands_write_position_first_when_the_window_grows() -> None:
+    wide = CropBox(w=1080, h=1920, x=100, y=0)
+    tight = CropBox(w=964, h=1714, x=120, y=40)
+    text = ffmpeg.crop_box_commands([(0.0, tight), (2.0165, wide)])
+    assert text == "2.016500 crop x 100, crop y 0, crop w 1080, crop h 1920;\n"
+
+
+def test_crop_box_commands_write_only_the_fields_that_changed() -> None:
+    a = CropBox(w=724, h=1286, x=844, y=76)
+    b = CropBox(w=724, h=1286, x=900, y=76)
+    assert ffmpeg.crop_box_commands([(0.0, a), (1.0, b)]) == "1.000000 crop x 900;\n"
+    c = CropBox(w=724, h=1286, x=900, y=10)
+    assert ffmpeg.crop_box_commands([(0.0, b), (1.5, c)]) == "1.500000 crop y 10;\n"
+
+
+def test_crop_box_commands_for_an_x_only_path_equal_crop_commands() -> None:
+    xs = [(0.0, 218), (1.5, 60), (4.123456789, 380)]
+    boxes = [(t, CropBox(w=202, h=360, x=x, y=0)) for t, x in xs]
+    assert ffmpeg.crop_box_commands(boxes) == ffmpeg.crop_commands(xs)
+
+
+def test_crop_box_commands_are_empty_for_one_box_or_none() -> None:
+    assert ffmpeg.crop_box_commands([(0.0, CROP)]) == ""
+    assert ffmpeg.crop_box_commands([]) == ""
+
+
+def test_crop_box_commands_make_one_line_per_change_in_a_zoom_cycle() -> None:
+    base = CropBox(w=810, h=1440, x=800, y=0)
+    zoomed = CropBox(w=724, h=1286, x=844, y=76)
+    text = ffmpeg.crop_box_commands([(0.0, zoomed), (6.0, base), (10.0, zoomed), (16.0, base)])
+    assert text.splitlines() == [
+        "6.000000 crop x 800, crop y 0, crop w 810, crop h 1440;",
+        "10.000000 crop w 724, crop h 1286, crop x 844, crop y 76;",
+        "16.000000 crop x 800, crop y 0, crop w 810, crop h 1440;",
+    ]
+
+
+def test_crop_box_commands_only_ever_address_the_crop_filter() -> None:
+    # every command targets `crop`: the overlays (subtitles, hook, watermark) come later in the
+    # chain and are never scaled by a zoom
+    base = CropBox(w=810, h=1440, x=800, y=0)
+    zoomed = CropBox(w=724, h=1286, x=844, y=76)
+    text = ffmpeg.crop_box_commands([(0.0, base), (1.0, zoomed), (2.0, base)])
+    for line in text.splitlines():
+        body = line.split(" ", 1)[1].rstrip(";")
+        assert all(part.startswith("crop ") for part in body.split(", "))
+
+
 def test_filter_chain_with_a_command_file_starts_with_sendcmd() -> None:
     plain = ffmpeg.video_filter(CROP, 1080, 1920, "clips/c04.ass", "../../assets/fonts")
     vf = ffmpeg.video_filter(

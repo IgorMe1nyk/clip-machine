@@ -1,6 +1,7 @@
 import pytest
 
 from clipmachine.models import TrackFace, TrackSample
+from clipmachine.utils.crop import CropBox
 from clipmachine.utils.safezone import (
     CAPTION_BOTTOM_GAP_PX,
     FACE_PAD_FRAC,
@@ -218,3 +219,46 @@ def test_with_no_free_place_the_band_returns_the_base_position_over_a_face() -> 
     low = Rect(0, 400, 1080, 1100)  # everything below is a face: the band would end at 1212
     assert place_hook(400, 100, SAFE, [low], 1100, fixed=[mark]) == (412.0, False, True)
     assert place_hook(400, 100, SAFE, [low], 1300, fixed=[mark]) == (1112.0, True, False)
+
+
+# --- face_rects with the crop windows of a zoomed clip (Brief R2) -------------------------------
+
+BASE_BOX = CropBox(w=608, h=1080, x=656, y=0)  # MAPPING's window
+ZOOMED_BOX = CropBox(w=544, h=972, x=688, y=50)  # about 1.12x tighter, lower and to the right
+
+
+def test_a_face_after_a_zoom_starts_is_mapped_through_the_zoomed_window() -> None:
+    samples = [TrackSample(t=0.0, crop_x=656)]  # ignored: the windows decide
+    boxes = [(0.0, BASE_BOX), (0.5, ZOOMED_BOX)]
+    (rect,) = face_rects([face(t=1.0)], samples, until=2.0, boxes=boxes, **MAPPING)
+    # source pixels x 864..1056, y 324..540; then (px - 688) * 1080 / 544, (py - 50) * 1920 / 972
+    x1, x2 = (864 - 688) * 1080 / 544, (1056 - 688) * 1080 / 544
+    y1, y2 = (324 - 50) * 1920 / 972, (540 - 50) * 1920 / 972
+    assert rect.x1 == pytest.approx(x1 - 0.1 * (x2 - x1))
+    assert rect.x2 == pytest.approx(x2 + 0.1 * (x2 - x1))
+    assert rect.y1 == pytest.approx(y1 - 0.1 * (y2 - y1))
+    assert rect.y2 == pytest.approx(y2 + 0.1 * (y2 - y1))
+
+
+def test_a_face_before_the_zoom_starts_uses_the_base_window() -> None:
+    samples = [TrackSample(t=0.0, crop_x=656)]
+    boxes = [(0.0, BASE_BOX), (0.5, ZOOMED_BOX)]
+    (early,) = face_rects([face(t=0.2)], samples, until=2.0, boxes=boxes, **MAPPING)
+    (plain,) = face_rects([face(t=0.2)], samples, until=2.0, **MAPPING)
+    assert early == plain
+    (at_start,) = face_rects([face(t=0.5)], samples, until=2.0, boxes=boxes, **MAPPING)
+    (late,) = face_rects([face(t=1.0)], samples, until=2.0, boxes=boxes, **MAPPING)
+    assert at_start == late  # a window written at the face's own time is in force
+
+
+def test_a_face_before_the_first_window_is_skipped() -> None:
+    samples = [TrackSample(t=0.0, crop_x=656)]
+    boxes = [(0.3, BASE_BOX)]
+    assert face_rects([face(t=0.2)], samples, until=2.0, boxes=boxes, **MAPPING) == []
+
+
+def test_without_boxes_or_with_none_the_samples_decide_as_before() -> None:
+    samples = [TrackSample(t=0.0, crop_x=656)]
+    assert face_rects([face()], samples, until=2.0, boxes=None, **MAPPING) == face_rects(
+        [face()], samples, until=2.0, **MAPPING
+    )

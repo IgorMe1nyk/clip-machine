@@ -82,8 +82,10 @@ def make_rig(
     mutate: Callable[[dict[str, Any]], None] | None = None,
     png: Any = None,
     overrides: dict[tuple[int, int], str] | None = None,
+    width: int = 640,
+    height: int = 360,
 ) -> Rig:
-    run_dir = write_run(project, overrides=overrides)
+    run_dir = write_run(project, overrides=overrides, width=width, height=height)
     folder = write_campaign(project, mutate=mutate, png=png)
     rig = Rig(project, run_dir.resolve(), folder)
     rig.fake = fake
@@ -1124,3 +1126,143 @@ def test_without_names_nothing_is_scanned_or_written(
     assert not (rig.folder / "auto_spelling.json").exists()
     assert "names:" not in out_of(capsys)
     assert "Automatic spelling rules" not in (rig.out / "campaign_report.html").read_text("utf-8")
+
+
+# --- punch-in zooms (Brief R2) -------------------------------------------------------------------
+#
+# A 2560x1440 source: the standard 640x360 one can never zoom (the upscale guard skips it).
+
+
+def zoom_rig(
+    project: Path,
+    fake: FakeFfmpeg,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    app_zoom: dict[str, Any] | None = None,
+    mutate: Callable[[dict[str, Any]], None] | None = None,
+) -> Rig:
+    edit_yaml(project / "config" / "default.yaml", lambda d: d["video"].update(crop="speaker"))
+    if app_zoom is not None:
+        edit_yaml(
+            project / "config" / "default.yaml", lambda d: d["video"]["zoom"].update(app_zoom)
+        )
+    track_fakes.write_model(project)
+    track_fakes.install(
+        monkeypatch, lambda t: [track_fakes.RawFace(0.5, 0.5, 0.1, 0.1, track_fakes.talking(t))]
+    )
+    return make_rig(project, fake, mutate=mutate, width=2560, height=1440)
+
+
+def crop_w_values(rig: Rig) -> list[str]:
+    text = (rig.out / "A01_tiktok.crop.cmd").read_text(encoding="utf-8")
+    return re.findall(r"crop w (\d+)", text)
+
+
+def test_a_zoom_in_the_app_config_shows_in_the_json_the_line_the_graph_and_the_cmd_file(
+    project: Path,
+    fake: FakeFfmpeg,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rig = zoom_rig(project, fake, monkeypatch, app_zoom={"enabled": True})
+
+    assert rig.go() == 0
+
+    clip = rig.clip("A01_tiktok")
+    assert clip.zoom_count >= 1 and len(clip.zoom_spans) == clip.zoom_count
+    assert clip.settings is not None and clip.settings.zoom_enabled
+    assert clip.settings.zoom_scale == 1.15
+    assert "zooms" in out_of(capsys)
+    assert graph_of(rig.args_of("A01_tiktok")).startswith("[0:v:0]sendcmd=")
+    assert crop_w_values(rig)
+
+
+def test_a_campaign_zoom_scale_overrides_the_app_scale_and_changes_the_crop(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = zoom_rig(project, fake, monkeypatch, app_zoom={"enabled": True})
+    assert rig.go() == 0
+    plain = crop_w_values(rig)
+    plain_graph = graph_of(rig.args_of("A01_tiktok"))
+
+    def scale(d: dict[str, Any]) -> None:
+        d["video"] = {"zoom": {"scale": 1.5}}
+
+    other = zoom_rig(project, fake, monkeypatch, app_zoom={"enabled": True}, mutate=scale)
+    assert other.go() == 0
+    clip = other.clip("A01_tiktok")
+    assert clip.settings is not None and clip.settings.zoom_enabled
+    assert clip.settings.zoom_scale == 1.5  # merged: the campaign's scale, the app's other keys
+    assert clip.settings.zoom_loud_pct == 0.30
+    assert crop_w_values(other) != plain or graph_of(other.args_of("A01_tiktok")) != plain_graph
+
+
+def test_the_campaign_can_switch_zoom_on_while_the_app_config_has_it_off(
+    project: Path,
+    fake: FakeFfmpeg,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def on(d: dict[str, Any]) -> None:
+        d["video"] = {"zoom": {"enabled": True}}
+
+    rig = zoom_rig(project, fake, monkeypatch, mutate=on)  # video.zoom.enabled is false in the app
+
+    assert rig.go() == 0
+
+    clip = rig.clip("A01_tiktok")
+    assert clip.zoom_count >= 1 and clip.zoom_spans
+    assert clip.settings is not None and clip.settings.zoom_enabled
+    assert "zooms" in out_of(capsys)
+    assert graph_of(rig.args_of("A01_tiktok")).startswith("[0:v:0]sendcmd=")
+
+
+def test_with_zoom_off_everywhere_the_line_and_the_json_say_nothing_about_zooms(
+    project: Path,
+    fake: FakeFfmpeg,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rig = zoom_rig(project, fake, monkeypatch)
+
+    assert rig.go() == 0
+
+    clip = rig.clip("A01_tiktok")
+    assert clip.zoom_count == 0 and clip.zoom_spans == []
+    assert clip.settings is not None and not clip.settings.zoom_enabled
+    assert "zooms" not in out_of(capsys)
+
+
+def test_a_smooth_zoom_puts_its_ramps_in_the_clip_json(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = zoom_rig(project, fake, monkeypatch, app_zoom={"enabled": True})
+
+    assert rig.go() == 0
+
+    clip = rig.clip("A01_tiktok")
+    assert clip.settings is not None
+    assert (clip.settings.zoom_style, clip.settings.zoom_ramp_s) == ("smooth", 0.4)
+    assert clip.zoom_ramps and all(0 <= a < b for a, b in clip.zoom_ramps)
+    assert len(crop_w_values(rig)) > 10  # one line per frame in a ramp
+
+
+def test_a_campaign_can_choose_the_punch_style_and_its_own_ramp_length(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def punch(d: dict[str, Any]) -> None:
+        d["video"] = {"zoom": {"style": "punch"}}
+
+    rig = zoom_rig(project, fake, monkeypatch, app_zoom={"enabled": True}, mutate=punch)
+    assert rig.go() == 0
+    clip = rig.clip("A01_tiktok")
+    assert clip.settings is not None and clip.settings.zoom_style == "punch"
+    assert clip.zoom_ramps == [] and clip.zoom_count >= 1
+
+    def longer(d: dict[str, Any]) -> None:
+        d["video"] = {"zoom": {"ramp_s": 0.8}}
+
+    other = zoom_rig(project, fake, monkeypatch, app_zoom={"enabled": True}, mutate=longer)
+    assert other.go() == 0
+    ramps = other.clip("A01_tiktok").zoom_ramps
+    assert ramps and ramps[0][1] - ramps[0][0] == pytest.approx(0.8)

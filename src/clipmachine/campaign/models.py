@@ -118,6 +118,24 @@ class PostConfig(StrictModel):
         return closers
 
 
+class CampaignZoom(StrictModel):
+    """A campaign's override of video.zoom (Brief R2): a key left out falls back to the app
+    config. The bounds are those of ZoomConfig."""
+
+    enabled: bool | None = None
+    style: Literal["smooth", "punch"] | None = None
+    ramp_s: float | None = Field(default=None, ge=0, le=2)
+    scale: float | None = Field(default=None, gt=1, le=2)
+    loud_pct: float | None = Field(default=None, ge=0, le=1)
+    min_gap_s: float | None = Field(default=None, gt=0)
+    max_hold_s: float | None = Field(default=None, gt=0)
+    max_upscale: float | None = Field(default=None, ge=1)
+
+
+class CampaignVideo(StrictModel):
+    zoom: CampaignZoom = Field(default_factory=CampaignZoom)
+
+
 class CampaignConfig(StrictModel):
     name: str = Field(min_length=1)
     source_note: str = ""
@@ -135,6 +153,8 @@ class CampaignConfig(StrictModel):
     # a show called "High Stakes") and words to mask on top of config/wordlists/mask.txt
     allowed: list[str] = Field(default_factory=list)
     extra_masked: list[str] = Field(default_factory=list)
+    # Brief R2: may override video.zoom of the app config
+    video: CampaignVideo = Field(default_factory=CampaignVideo)
 
     @field_validator("names_to_check", "names", "allowed", "extra_masked")
     @classmethod
@@ -336,6 +356,10 @@ class CampaignClip(StrictModel):
     # Brief 11.1: counts only; the words are in <clip>.review.txt next to the clip
     masked_words: int = 0  # in the captions, the hook and the post caption
     sensitive_words: int = 0  # flagged in the hook and the post caption
+    # Brief R2: punch-in zooms; counts and times only
+    zoom_count: int = 0
+    zoom_spans: list[tuple[float, float]] = Field(default_factory=list)
+    zoom_ramps: list[tuple[float, float]] = Field(default_factory=list)  # Brief R2.1
     checks: dict[str, Literal["pass", "warn", "fail"]] = Field(default_factory=dict)
     closer: str | None = None
     hook_mode: str

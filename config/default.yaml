@@ -60,6 +60,15 @@ video:                       # the render stage's output size
   width: 1080
   height: 1920
   crop: speaker              # speaker (default): follow the active speaker; needs both face model files, fetched once with clipmachine fetch-face-model | center: a fixed centre crop
+  zoom:                      # punch-in zooms (Brief R2, eased in R2.1): a tighter crop on some sentence starts, then back out
+    enabled: true            # false = the crop is exactly as before
+    style: smooth            # smooth: ease in and out over ramp_s | punch: an instant jump
+    ramp_s: 0.4              # seconds one ease takes (0-2); 2 * ramp_s must not exceed min_gap_s
+    scale: 1.15              # the crop window is this much tighter (1-2)
+    loud_pct: 0.30           # besides the first spoken line, zoom on this share of the loudest sentences (0-1)
+    min_gap_s: 4.0           # least seconds between two zoom changes (also from any camera cut: 0.5)
+    max_hold_s: 6.0          # longest a zoom-in lasts; not below min_gap_s
+    max_upscale: 2.1         # a 1080p source sits at 2.05 with scale 1.15; a zoom that would enlarge the source more than this is skipped (note zoom_skipped_upscale)
 speaker:                     # speaker-following crop analysis: clipmachine track <run-folder>
   sample_fps: 10             # frames analysed per second of clip (0-30)
   detect_width: 960          # pixels; frames are scaled to this width for the YuNet face detector
