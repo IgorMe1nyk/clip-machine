@@ -33,6 +33,7 @@ reason codes).
 
 import hashlib
 import logging
+import math
 import os
 import re
 import time
@@ -56,13 +57,14 @@ from clipmachine.models import (
     TrackFile,
     TranscriptSegment,
     VideoStreamInfo,
+    ZoomConfig,
 )
 from clipmachine.runs import RunError, write_json_atomic, write_text_atomic
 from clipmachine.stages.candidates import _load_transcript
 from clipmachine.stages.fetch import META_FILE
 from clipmachine.stages.score import SCORED_JSON
 from clipmachine.stages.transcribe import REPO_ROOT
-from clipmachine.utils import ffmpeg
+from clipmachine.utils import audio, ffmpeg
 from clipmachine.utils.captions import (
     AssEvent,
     CaptionWord,
@@ -75,9 +77,16 @@ from clipmachine.utils.captions import (
     clip_words,
     group_words,
 )
-from clipmachine.utils.crop import CropBox, center_crop, display_size, frame_path
+from clipmachine.utils.crop import (
+    CropBox,
+    center_crop,
+    display_size,
+    effective_boundaries,
+    frame_path,
+)
 from clipmachine.utils.fontmetrics import FontError, FontMetrics, load_font
 from clipmachine.utils.safezone import Rect, face_rects, outside_count, safe_rect
+from clipmachine.utils.snapping import SentenceIndex, build_index
 from clipmachine.utils.wordlists import (
     Hit,
     WordListError,
@@ -85,6 +94,13 @@ from clipmachine.utils.wordlists import (
     load_wordlists,
     mask_text,
     mask_words,
+)
+from clipmachine.utils.zoom import (
+    SentenceStart,
+    ZoomSpan,
+    select_zooms,
+    upscale_factor,
+    zoomed_path,
 )
 
 if TYPE_CHECKING:  # tracking imports this module, so it is imported inside the speaker branch
@@ -130,6 +146,10 @@ class Plan:
     karaoke: KaraokeSettings | None = None
     safe: Rect | None = None
     wordlists: WordLists | None = None  # None: captions.mask_profanity is off
+    zoom: ZoomConfig | None = None  # None: punch-in zooms are off (Brief R2)
+    sentences: SentenceIndex | None = (
+        None  # the transcript's sentences; set with zoom in speaker mode
+    )
 
 
 class ClipLike(Protocol):
@@ -174,6 +194,11 @@ class SpeakerCrop:
     cuts: int
     switches: int
     track: TrackFile  # the track this crop came from; its faces place the hook
+    # Brief R2: the crop window at every change (the first is `crop`), the punch-ins and the
+    # reason codes of zooms that were skipped; all empty with zoom off
+    boxes: tuple[tuple[float, CropBox], ...] = ()
+    zooms: tuple[ZoomSpan, ...] = ()
+    zoom_notes: tuple[str, ...] = ()
 
 
 def _load_scored(run_dir: Path) -> ScoredFile:
@@ -247,6 +272,8 @@ def _settings(ctx: RunContext) -> RenderedSettings:
 
 
 def _settings_of(app: AppConfig) -> RenderedSettings:
+    zoom = app.video.zoom
+    on = zoom.enabled  # off: the six fields keep their defaults, so older output is not stale
     return RenderedSettings(
         width=app.video.width,
         height=app.video.height,
@@ -281,6 +308,12 @@ def _settings_of(app: AppConfig) -> RenderedSettings:
         hook_font_size=app.hook.font_size,
         hook_position=app.hook.position,
         mask_profanity=app.captions.mask_profanity,
+        zoom_enabled=on,
+        zoom_scale=zoom.scale if on else 0.0,
+        zoom_loud_pct=zoom.loud_pct if on else 0.0,
+        zoom_min_gap_s=zoom.min_gap_s if on else 0.0,
+        zoom_max_hold_s=zoom.max_hold_s if on else 0.0,
+        zoom_max_upscale=zoom.max_upscale if on else 0.0,
     )
 
 
@@ -369,6 +402,71 @@ def _speaker_crop(plan: Plan, clip: ClipLike) -> SpeakerCrop:
     return _crop_from_track(plan, clip, track, reused, plan.clips_dir)
 
 
+def _sentence_starts(
+    plan: Plan, clip: ClipLike, index: SentenceIndex
+) -> tuple[list[SentenceStart], list[str]]:
+    """The clip's sentences as (start, mean loudness), from the one holding its first spoken word
+    through the one holding its last. Starts are seconds from the clip start (the first is
+    clamped to 0), so index 0 is the first-line sentence. The notes say when loudness could not
+    be measured."""
+    assert plan.speaker is not None
+    words = index.words
+    first_word = next((i for i, w in enumerate(words) if w.end > clip.start), None)
+    last_word = next((i for i in range(len(words) - 1, -1, -1) if words[i].start < clip.end), None)
+    if first_word is None or last_word is None or first_word > last_word:
+        return [], []
+
+    notes: list[str] = []
+    envelope: list[float] | None = None
+    if plan.speaker.audio is None:
+        notes.append("zoom_no_audio")
+    else:
+        envelope = audio.loudness_envelope(plan.speaker.audio, clip.start, clip.end)
+    starts: list[SentenceStart] = []
+    for n in range(index.sentence_of(first_word), index.sentence_of(last_word) + 1):
+        sentence = index.sentences[n]
+        values: list[float] = []
+        if envelope is not None:
+            for word in words[sentence.first : sentence.last + 1]:
+                low = max(word.start, clip.start) - clip.start
+                high = min(word.end, clip.end) - clip.start
+                low_hop = int(round(low / audio.HOP_SECONDS, 9))
+                high_hop = math.ceil(round(high / audio.HOP_SECONDS, 9))
+                values.extend(envelope[low_hop:high_hop])
+        loudness = sum(values) / len(values) if values else None
+        starts.append(SentenceStart(max(words[sentence.first].start - clip.start, 0.0), loudness))
+    return starts, notes
+
+
+def _zoom_spans(
+    plan: Plan, clip: ClipLike, track: TrackFile, base: CropBox
+) -> tuple[list[ZoomSpan], list[str]]:
+    """The punch-ins of a clip with a followed face, and reason codes for what was skipped.
+
+    Nothing is chosen when the zoomed window would be enlarged more than `max_upscale`. Each
+    span is centred vertically on the face of the shot where it starts."""
+    zoom = plan.zoom
+    if zoom is None or plan.sentences is None:
+        return [], []
+    settings = plan.settings
+    if upscale_factor(base, zoom.scale, settings.width, settings.height) > zoom.max_upscale:
+        return [], ["zoom_skipped_upscale"]
+    starts, notes = _sentence_starts(plan, clip, plan.sentences)
+    duration = clip.end - clip.start
+    shots = [(s.start, s.end) for s in track.shots]
+    boundaries = effective_boundaries(shots, track.cuts, track.cuts_exact, duration)
+    cuts = track.cuts_exact if len(track.cuts_exact) == len(track.cuts) else track.cuts
+    excluded = [(s.start, s.end) for s in track.shots if s.face_cy is None]
+    chosen = select_zooms(starts, 0, boundaries, cuts, duration, zoom, excluded=excluded)
+    spans: list[ZoomSpan] = []
+    for start, end in chosen:
+        holding = [s for s in track.shots if s.start <= start + 1e-6]
+        face_cy = holding[-1].face_cy if holding else None
+        if face_cy is not None:
+            spans.append(ZoomSpan(start, end, face_cy))
+    return spans, notes
+
+
 def _crop_from_track(
     plan: Plan, clip: ClipLike, track: TrackFile, reused: bool, out_dir: Path
 ) -> SpeakerCrop:
@@ -378,23 +476,62 @@ def _crop_from_track(
     sha = _file_sha256(tracking.track_path(plan.clips_dir, clip.id))
     cuts = track.summary.cuts
     if track.fallback_reason is not None:  # exactly the centre crop
-        return SpeakerCrop(plan.crop, None, sha, track.fallback_reason, 0, reused, cuts, 0, track)
+        no_track: tuple[str, ...] = () if plan.zoom is None else ("zoom_no_track",)
+        return SpeakerCrop(
+            plan.crop,
+            None,
+            sha,
+            track.fallback_reason,
+            0,
+            reused,
+            cuts,
+            0,
+            track,
+            zoom_notes=no_track,
+        )
+    duration = clip.end - clip.start
     path = frame_path(
         [(s.t, s.crop_x) for s in track.samples],
         [(s.start, s.end) for s in track.shots],
         track.cuts,
         track.cuts_exact,
         _source_fps(plan.video),
-        clip.end - clip.start,
+        duration,
     )
-    box = CropBox(w=plan.crop.w, h=plan.crop.h, x=path[0][1], y=plan.crop.y)
-    sendcmd_rel = None
-    if len(path) > 1:
-        cmd = out_dir / f"{clip.id}{CROP_CMD_SUFFIX}"
-        write_text_atomic(cmd, ffmpeg.crop_commands(path))
-        sendcmd_rel = _relative(plan.run_dir, cmd)
     switches = track.summary.switches
-    return SpeakerCrop(box, sendcmd_rel, sha, None, len(path) - 1, reused, cuts, switches, track)
+    if plan.zoom is None:
+        box = CropBox(w=plan.crop.w, h=plan.crop.h, x=path[0][1], y=plan.crop.y)
+        sendcmd_rel = None
+        if len(path) > 1:
+            cmd = out_dir / f"{clip.id}{CROP_CMD_SUFFIX}"
+            write_text_atomic(cmd, ffmpeg.crop_commands(path))
+            sendcmd_rel = _relative(plan.run_dir, cmd)
+        return SpeakerCrop(
+            box, sendcmd_rel, sha, None, len(path) - 1, reused, cuts, switches, track
+        )
+
+    spans, notes = _zoom_spans(plan, clip, track, plan.crop)
+    frame_w, frame_h = display_size(plan.video.width, plan.video.height, plan.video.rotation)
+    boxes = zoomed_path(path, plan.crop, spans, plan.zoom.scale, frame_w, frame_h, duration)
+    sendcmd_rel = None
+    if len(boxes) > 1:
+        cmd = out_dir / f"{clip.id}{CROP_CMD_SUFFIX}"
+        write_text_atomic(cmd, ffmpeg.crop_box_commands(boxes))
+        sendcmd_rel = _relative(plan.run_dir, cmd)
+    return SpeakerCrop(
+        boxes[0][1],
+        sendcmd_rel,
+        sha,
+        None,
+        len(boxes) - 1,
+        reused,
+        cuts,
+        switches,
+        track,
+        boxes=tuple(boxes),
+        zooms=tuple(spans),
+        zoom_notes=tuple(notes),
+    )
 
 
 @dataclass(frozen=True)
@@ -586,6 +723,12 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
         captions = _karaoke_captions(plan, clip, words, chosen, duration)
     write_text_atomic(ass, captions.text)
     crop = plan.crop if chosen is None else chosen.crop
+    zooms = () if chosen is None else chosen.zooms
+    notes = list(captions.notes)
+    if chosen is not None:
+        notes.extend(chosen.zoom_notes)
+    elif plan.zoom is not None:  # centre-crop mode has no followed face
+        notes.append("zoom_no_track")
 
     vf = ffmpeg.video_filter(
         crop,
@@ -653,16 +796,18 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
             track_sha256=None if chosen is None else chosen.track_sha256,
             track_fallback=None if chosen is None else chosen.fallback,
             crop_changes=0 if chosen is None else chosen.changes,
-            notes=list(captions.notes),
+            notes=notes,
             caption_lines=captions.lines,
             caption_max_words=captions.max_words,
             hook_shown=captions.hook_shown,
             hook_moved=captions.hook_moved,
             outside_safe_zone=captions.outside_safe_zone,
             masked_words=len(captions.masked) + len(captions.hook_masked),
+            zoom_count=len(zooms),
+            zoom_spans=[(round(z.start, 3), round(z.end, 3)) for z in zooms],
         ).model_dump(mode="json"),
     )
-    mode = "center" if chosen is None else _speaker_log(chosen)
+    mode = "center" if chosen is None else _speaker_log(chosen, plan.zoom is not None)
     log.info(
         f"render: {clip.id} {clip.start:.2f}-{clip.end:.2f} s, crop {crop.w}x{crop.h}"
         f"+{crop.x}+{crop.y} ({mode}){_captions_log(settings, captions)}, "
@@ -670,12 +815,13 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
     )
 
 
-def _speaker_log(chosen: SpeakerCrop) -> str:
+def _speaker_log(chosen: SpeakerCrop, zoom_on: bool = False) -> str:
     """Numbers and a reason code only: no file names or text."""
     text = f"speaker, track {'reused' if chosen.reused else 'analysed'}"
     if chosen.fallback is not None:
         text += f", fallback {chosen.fallback}"
-    return f"{text}, {chosen.cuts} cuts, {chosen.switches} switches, {chosen.changes} crop changes"
+    text += f", {chosen.cuts} cuts, {chosen.switches} switches, {chosen.changes} crop changes"
+    return f"{text}, {len(chosen.zooms)} zooms" if zoom_on else text
 
 
 def _crop_json(crop: CropBox) -> ClipCropBox:
@@ -813,6 +959,15 @@ def _make_plan(run_dir: Path, clips_dir: Path, app: AppConfig, inputs: Inputs) -
     segments = (
         inputs.segments if inputs.segments is not None else _load_transcript(run_dir).segments
     )
+    zoom = app.video.zoom if app.video.zoom.enabled else None
+    sentences = None
+    if zoom is not None and inputs.track_plan is not None:
+        sentences = build_index(
+            segments,
+            app.candidates.fallback_max_words,
+            min_pause=app.snap.min_pause_seconds,
+            min_cut_gap=app.snap.min_cut_gap,
+        )
     return Plan(
         run_dir=run_dir,
         clips_dir=clips_dir,
@@ -826,6 +981,8 @@ def _make_plan(run_dir: Path, clips_dir: Path, app: AppConfig, inputs: Inputs) -
         preview=app.speaker.debug_preview,
         metrics=metrics,
         wordlists=inputs.wordlists,
+        zoom=zoom,
+        sentences=sentences,
         karaoke=None if metrics is None else KaraokeSettings.from_config(app.captions),
         safe=None
         if metrics is None
