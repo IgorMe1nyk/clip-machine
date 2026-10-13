@@ -1,3 +1,4 @@
+import math
 import re
 from dataclasses import replace
 from pathlib import Path
@@ -6,6 +7,7 @@ import pytest
 
 from clipmachine.models import CaptionsConfig, TranscriptSegment, TranscriptWord
 from clipmachine.utils.captions import (
+    HOOK_SIZE_FRACTIONS,
     AssEvent,
     CaptionWord,
     HookResult,
@@ -754,6 +756,7 @@ def hook(
     seconds: float = 2.0,
     clip: float = 30.0,
     fade_ms: int = 150,
+    font_size: int | None = None,
 ) -> HookResult:
     return build_hook(
         text,
@@ -765,6 +768,7 @@ def hook(
         fade_ms=fade_ms,
         line_gap_em=0.35,
         clip_seconds=clip,
+        font_size=font_size,
     )
 
 
@@ -865,6 +869,56 @@ def test_a_hook_too_wide_for_one_line_at_full_size_is_shrunk(metrics: FontMetric
     assert result.band is not None and result.band.inside(SAFE)
 
 
+# --- the hook's own base size (Brief 11); the caption size in these tests is 64 -------------------
+
+
+def test_no_hook_font_size_means_the_caption_size(metrics: FontMetrics) -> None:
+    default = hook(metrics, "synthetic hook line", [])
+    explicit = hook(metrics, "synthetic hook line", [], font_size=SETTINGS.font_size)
+    assert default.events == explicit.events and default.notes == explicit.notes
+    (event,) = hook_text_events(default)
+    assert not re.search(r"\\fs\d", event.text)  # the Hook style already has the caption size
+
+
+@pytest.mark.parametrize("base", [40, 100])
+def test_a_hook_font_size_other_than_the_caption_size_gets_a_size_tag(
+    metrics: FontMetrics, base: int
+) -> None:
+    result = hook(metrics, "synthetic hook line", [], font_size=base)
+    (event,) = hook_text_events(result)
+    assert hook_size(event) == base and f"\\fs{base}}}" in event.text
+    assert result.notes == []  # smaller than the caption size is not "shrunk"
+
+
+def test_the_hook_shrinks_in_fractions_of_its_own_base_size(metrics: FontMetrics) -> None:
+    for base in (40, 100):
+        count = next(
+            n for n in range(1, 200) if metrics.text_width("m" * n, base, 1.0) > HOOK_LIMIT
+        )
+        result = hook(metrics, "m" * count, [], font_size=base)
+        (event,) = hook_text_events(result)
+        assert result.notes == ["hook_shrunk"]
+        assert hook_size(event) in {math.floor(base * f) for f in HOOK_SIZE_FRACTIONS[1:]}
+        assert result.band is not None and result.band.inside(SAFE)
+
+
+def test_a_truncated_hook_is_shrunk_to_seventy_percent_of_the_base_size(
+    metrics: FontMetrics,
+) -> None:
+    result = hook(metrics, "w" * 400, [], font_size=100)
+    (event,) = hook_text_events(result)
+    assert {"hook_truncated", "hook_shrunk"} <= set(result.notes)
+    assert hook_size(event) == 70
+
+
+def test_a_hook_at_its_base_size_is_not_shrunk_even_below_the_caption_size(
+    metrics: FontMetrics,
+) -> None:
+    result = hook(metrics, "alpha beta", [], font_size=20)
+    (event,) = hook_text_events(result)
+    assert hook_size(event) == 20 and result.notes == []
+
+
 def test_a_60_word_hook_is_truncated_to_two_lines_inside_the_safe_area(
     metrics: FontMetrics,
 ) -> None:
@@ -933,3 +987,147 @@ def test_the_hook_band_is_always_inside_the_safe_area_and_above_the_caption(
             assert result.band.y2 <= top_of_caption - 12
             assert not result.band.intersects(normal)
             assert len(hook_text_events(result)) <= 2
+
+
+# --- hook that avoids a rectangle (Brief 11: the campaign watermark) ------------------------------
+
+MARK = Rect(0, 280, 1080, 400)  # across the top of the safe area
+
+
+def band_top(result: HookResult) -> float:
+    assert result.band is not None
+    return result.band.y1
+
+
+def text_tops(result: HookResult) -> list[int]:
+    return [int(re.search(r"pos\(504,(\d+)\)", e.text).group(1)) for e in hook_text_events(result)]  # type: ignore[union-attr]
+
+
+def test_the_hook_goes_below_an_avoided_rectangle(metrics: FontMetrics) -> None:
+    result = build_hook(
+        "alpha beta gamma delta omega sigma",
+        SETTINGS,
+        metrics,
+        SAFE,
+        [],
+        seconds=2.0,
+        fade_ms=150,
+        line_gap_em=0.35,
+        clip_seconds=30.0,
+        avoid=[MARK],
+    )
+    assert band_top(result) == 412.0 and not result.moved
+    assert result.notes == ["hook_moved_for_overlay"]
+    assert all(top >= 412 for top in text_tops(result)) and len(text_tops(result)) == 2
+    assert result.band is not None and result.band.inside(SAFE)
+
+
+def test_an_avoided_rectangle_also_works_when_faces_are_unknown(metrics: FontMetrics) -> None:
+    result = build_hook(
+        "synthetic hook line",
+        SETTINGS,
+        metrics,
+        SAFE,
+        None,
+        seconds=2.0,
+        fade_ms=150,
+        line_gap_em=0.35,
+        clip_seconds=30.0,
+        avoid=[MARK],
+    )
+    assert band_top(result) == 412.0
+    assert result.notes == ["hook_faces_unknown", "hook_moved_for_overlay"]
+    assert text_tops(result)[0] >= 412
+
+
+def test_faces_below_the_avoided_rectangle_still_move_the_hook(metrics: FontMetrics) -> None:
+    result = build_hook(
+        "synthetic hook line",
+        SETTINGS,
+        metrics,
+        SAFE,
+        [Rect(400, 420, 600, 520)],
+        seconds=2.0,
+        fade_ms=150,
+        line_gap_em=0.35,
+        clip_seconds=30.0,
+        avoid=[MARK],
+    )
+    assert result.moved and band_top(result) == 532.0
+    assert result.notes == ["hook_moved_for_faces", "hook_moved_for_overlay"]
+
+
+def test_without_an_avoided_rectangle_the_events_are_unchanged(metrics: FontMetrics) -> None:
+    plain = hook(metrics, "synthetic hook line", [])
+    elsewhere = build_hook(
+        "synthetic hook line",
+        SETTINGS,
+        metrics,
+        SAFE,
+        [],
+        seconds=2.0,
+        fade_ms=150,
+        line_gap_em=0.35,
+        clip_seconds=30.0,
+        avoid=[Rect(0, 1500, 100, 1600)],
+    )
+    assert elsewhere.events == plain.events and elsewhere.notes == plain.notes == []
+    assert band_top(plain) == 290.0
+
+
+HIGH_FACE = Rect(400, 280, 600, 420)  # across the top of the safe area
+
+
+def test_position_top_keeps_the_hook_at_the_top_whatever_is_behind_it(
+    metrics: FontMetrics,
+) -> None:
+    result = build_hook(
+        "synthetic hook line",
+        SETTINGS,
+        metrics,
+        SAFE,
+        [HIGH_FACE],
+        seconds=2.0,
+        fade_ms=150,
+        line_gap_em=0.35,
+        clip_seconds=30.0,
+        avoid=[MARK],
+        position="top",
+    )
+    assert band_top(result) == 290.0 and not result.moved and result.notes == []
+    assert text_tops(result)[0] >= 290
+
+
+def test_position_top_with_unknown_faces_adds_no_note(metrics: FontMetrics) -> None:
+    result = build_hook(
+        "synthetic hook line",
+        SETTINGS,
+        metrics,
+        SAFE,
+        None,
+        seconds=2.0,
+        fade_ms=150,
+        line_gap_em=0.35,
+        clip_seconds=30.0,
+        position="top",
+    )
+    assert band_top(result) == 290.0 and result.notes == []
+
+
+def test_position_avoid_faces_is_the_default_and_moves_below_a_face(metrics: FontMetrics) -> None:
+    implicit = hook(metrics, "synthetic hook line", [HIGH_FACE])
+    explicit = build_hook(
+        "synthetic hook line",
+        SETTINGS,
+        metrics,
+        SAFE,
+        [HIGH_FACE],
+        seconds=2.0,
+        fade_ms=150,
+        line_gap_em=0.35,
+        clip_seconds=30.0,
+        position="avoid_faces",
+    )
+    assert implicit.events == explicit.events
+    assert implicit.notes == explicit.notes == ["hook_moved_for_faces"]
+    assert implicit.moved and band_top(implicit) > 290.0

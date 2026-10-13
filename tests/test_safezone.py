@@ -7,6 +7,7 @@ from clipmachine.utils.safezone import (
     Rect,
     caption_anchor,
     face_rects,
+    hook_base_top,
     outside_count,
     place_hook,
     safe_rect,
@@ -168,3 +169,52 @@ def test_a_hook_that_cannot_clear_the_faces_stays_at_the_top_over_one() -> None:
     low = Rect(0, 250, 1080, 1100)
     assert place_hook(400, 100, SAFE, [low], 1100) == (290.0, False, True)
     assert place_hook(400, 100, SAFE, [low], 1300) == (1112.0, True, False)  # room: fits below
+
+
+# --- place_hook with fixed rectangles (Brief 11: the campaign watermark) -------------------------
+
+
+def test_fixed_rectangles_none_change_nothing() -> None:
+    cases = [
+        ([], 1100),
+        ([Rect(400, 250, 600, 400)], 1100),
+        ([Rect(400, 250, 600, 400), Rect(400, 420, 600, 600)], 1100),
+        ([Rect(0, 250, 1080, 1100)], 1100),
+        ([Rect(0, 250, 1080, 1100)], 1300),
+    ]
+    for faces, lowest in cases:
+        assert place_hook(400, 100, SAFE, faces, lowest, fixed=()) == place_hook(
+            400, 100, SAFE, faces, lowest
+        )
+
+
+def test_the_band_starts_under_a_fixed_rectangle_at_the_top() -> None:
+    mark = Rect(300, 280, 700, 400)  # band spans x 304..704, y 290..390
+    assert hook_base_top(400, 100, SAFE, [mark]) == 412.0  # ceil(400 + 12)
+    assert place_hook(400, 100, SAFE, [], 1100, fixed=[mark]) == (412.0, False, False)
+    assert place_hook(400, 100, SAFE, [], 1100, fixed=[Rect(300, 280, 700, 400.2)])[0] == 413.0
+
+
+def test_a_fixed_rectangle_elsewhere_changes_nothing() -> None:
+    beside = Rect(0, 290, 100, 500)
+    below = Rect(400, 390, 600, 600)  # only touches the band's bottom edge
+    assert hook_base_top(400, 100, SAFE, [beside, below]) == 290.0
+    assert place_hook(400, 100, SAFE, [], 1100, fixed=[beside, below]) == (290.0, False, False)
+
+
+def test_faces_under_the_base_position_move_the_band_further() -> None:
+    mark = Rect(300, 280, 700, 400)
+    face_box = Rect(400, 420, 600, 600)  # the band at 412 would hit it
+    assert place_hook(400, 100, SAFE, [face_box], 1100, fixed=[mark]) == (612.0, True, False)
+
+
+def test_a_fixed_rectangle_is_an_obstacle_below_the_base_position_too() -> None:
+    first, second = Rect(300, 280, 700, 400), Rect(300, 420, 700, 500)
+    assert place_hook(400, 100, SAFE, [], 1100, fixed=[first, second]) == (512.0, False, False)
+
+
+def test_with_no_free_place_the_band_returns_the_base_position_over_a_face() -> None:
+    mark = Rect(300, 280, 700, 400)  # base 412
+    low = Rect(0, 400, 1080, 1100)  # everything below is a face: the band would end at 1212
+    assert place_hook(400, 100, SAFE, [low], 1100, fixed=[mark]) == (412.0, False, True)
+    assert place_hook(400, 100, SAFE, [low], 1300, fixed=[mark]) == (1112.0, True, False)

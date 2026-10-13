@@ -7,6 +7,11 @@
 runs/*
 !runs/.gitkeep
 
+# Campaign data (local only; the synthetic example is kept)
+campaigns/*
+!campaigns/_example/
+campaigns/_example/used.json
+
 # Media
 *.mp4
 *.mov

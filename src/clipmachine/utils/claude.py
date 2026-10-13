@@ -17,7 +17,8 @@ import logging
 import math
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,6 +47,23 @@ COSTS_FILE = "costs.json"
 LEDGER_PATH = Path("runs") / "_ledger" / "costs.jsonl"
 API_URL = "https://api.anthropic.com"
 REQUEST_TIMEOUT_SECONDS = 120.0
+
+
+@contextmanager
+def no_api() -> Iterator[None]:
+    """Inside the block the kill switch is on, so every Claude call is refused before anything
+    else happens (no key is read, no client is built). The variable is put back as it was
+    afterwards, also when the block raises. Campaign mode runs inside it."""
+    before = os.environ.get(KILL_SWITCH_ENV)
+    os.environ[KILL_SWITCH_ENV] = "1"
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop(KILL_SWITCH_ENV, None)
+        else:
+            os.environ[KILL_SWITCH_ENV] = before
+
 
 MAX_ATTEMPTS = 3
 BACKOFF_SECONDS = (2.0, 8.0)  # before attempt 2 and 3 after a 5xx without retry-after

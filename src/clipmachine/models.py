@@ -336,6 +336,11 @@ class HookConfig(StrictModel):
     enabled: bool = False
     seconds: float = Field(default=2.0, gt=0, le=10)
     fade_ms: int = Field(default=150, ge=0, le=2000)
+    # added in Brief 11; the hook's own size, separate from captions.font_size
+    font_size: int = Field(default=80, ge=20, le=200)
+    # top = the top of the safe area, even over a face (no face note); avoid_faces = below
+    # any face seen while the hook is on. Old configs without it read as top.
+    position: Literal["top", "avoid_faces"] = "top"
 
 
 class SafeConfig(StrictModel):
@@ -345,6 +350,17 @@ class SafeConfig(StrictModel):
     bottom: int = Field(default=560, ge=0)
     left: int = Field(default=120, ge=0)
     right: int = Field(default=192, ge=0)
+
+
+class CampaignModeConfig(StrictModel):
+    """Campaign mode (Brief 11): the app-wide settings; the rules live in campaigns/<slug>/."""
+
+    # a moment's start and end may move at most this far to a clean sentence edge
+    max_snap_seconds: float = Field(default=1.5, ge=0, le=10)
+    # fraction of width and height: a watermark may not touch these four corners
+    corner_zone: float = Field(default=0.15, gt=0, lt=0.5)
+    # `end: auto` aims for this clip length in seconds
+    auto_end_target_s: float = Field(default=40, gt=0)
 
 
 class RenderConfig(StrictModel):
@@ -406,6 +422,8 @@ class AppConfig(StrictModel):
     speaker: SpeakerConfig = Field(default_factory=SpeakerConfig)
     hook: HookConfig = Field(default_factory=HookConfig)
     safe: SafeConfig = Field(default_factory=SafeConfig)
+    # added in Brief 11; old resolved files load with the defaults
+    campaign: CampaignModeConfig = Field(default_factory=CampaignModeConfig)
 
     @model_validator(mode="after")
     def _check_safe_area(self) -> "AppConfig":
@@ -524,6 +542,9 @@ class FetchMeta(StrictModel):
     ffmpeg_version: str
     fetched_at: str  # UTC, ISO 8601
     fetch_seconds: float
+    # added in Brief 11: the input file's last-modified time (ns) when it was fetched, used to
+    # recognise the same source again; old meta.json files load as None
+    source_mtime_ns: int | None = None
 
 
 class TranscriptWord(StrictModel):
@@ -853,6 +874,10 @@ class RenderedSettings(StrictModel):
     safe_bottom: int = 0
     safe_left: int = 0
     safe_right: int = 0
+    # added in Brief 11; old JSON files load as 0, which makes old outputs stale so they re-render
+    hook_font_size: int = 0
+    # old JSON files were rendered with faces avoided
+    hook_position: Literal["top", "avoid_faces"] = "avoid_faces"
 
 
 class RenderedOutput(StrictModel):

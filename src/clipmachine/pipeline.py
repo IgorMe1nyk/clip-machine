@@ -119,8 +119,15 @@ def start_new_run(root: Path, input_path: Path, client: str, today: date | None 
 
 
 def run_pipeline(
-    run_dir: Path, from_stage: str | None = None, project_root: Path | None = None
+    run_dir: Path,
+    from_stage: str | None = None,
+    project_root: Path | None = None,
+    until: str | None = None,
 ) -> PipelineOutcome:
+    """Run the stages that are not done. With `until` the loop stops after that stage (also when
+    it was already done): later stages are neither started nor changed."""
+    if until is not None and until not in STAGE_NAMES:
+        raise RunError(f"unknown stage {until!r}; choose from: {', '.join(STAGE_NAMES)}")
     state = load_state(run_dir)
     resolved = load_resolved_file(run_dir / RESOLVED_CONFIG)
     check_ffmpeg()
@@ -142,6 +149,8 @@ def run_pipeline(
     for name, stage_fn in STAGES.items():
         stage = state.stages[name]
         if stage.status == "done":
+            if name == until:
+                break
             continue
         # "failed" here means an earlier run died in this stage; "pending" is a first run or a
         # forced redo (--from-stage), which must not reuse old outputs.
@@ -165,4 +174,6 @@ def run_pipeline(
         stage.finished_at = _now()
         save_state(run_dir, state)
         outcome.ran.append(name)
+        if name == until:
+            break
     return outcome

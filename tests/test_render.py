@@ -1175,7 +1175,7 @@ def test_the_hook_events_are_written_when_enabled(project: Path, fake: FakeFfmpe
 
     hooks = hook_lines(ctx.run_dir)
     assert len(hooks) == 2  # the band and one line of text
-    assert all(",0:00:00.00,0:00:02.00," in d for d in hooks)
+    assert all(",0:00:00.00,0:00:03.00," in d for d in hooks)
     assert "\\fad(0,150)" in hooks[0] and HOOK_TEXT.split()[0] in hooks[1]
 
 
@@ -1220,7 +1220,7 @@ def test_the_clip_json_and_log_hold_counts_and_codes_but_never_the_hook(
     assert data["caption_lines"] == 10 and data["caption_max_words"] == 1
     assert data["caption_events"] == 2 * data["caption_lines"]  # a box and a text line each
     assert (data["hook_shown"], data["hook_moved"], data["outside_safe_zone"]) == (True, False, 0)
-    assert data["notes"] == ["hook_faces_unknown"]
+    assert data["notes"] == []  # hook.position top: faces are not looked at
     settings = data["settings"]
     assert settings["caption_style"] == "box_karaoke" and settings["hook_enabled"] is True
     assert (settings["safe_top"], settings["safe_bottom"]) == (290, 560)
@@ -1235,6 +1235,7 @@ def test_speaker_mode_moves_the_hook_below_a_face_in_its_way(
         return [track_fakes.RawFace(0.5, 0.1, 0.1, 0.15, track_fakes.talking(t))]
 
     ctx, _ = speaker_ctx(project, monkeypatch, high_face, style="box_karaoke")
+    ctx.config.app.hook = ctx.config.app.hook.model_copy(update={"position": "avoid_faces"})
 
     render.run(ctx)
 
@@ -1245,6 +1246,25 @@ def test_speaker_mode_moves_the_hook_below_a_face_in_its_way(
     band = next(d for d in dialogues(ctx.run_dir) if d.startswith("Dialogue: 2,"))
     match = re.search(r"\\p1\}m \d+ (\d+)", band)  # the drawing starts at the top edge
     assert match is not None and int(match.group(1)) > 290
+
+
+def test_hook_position_top_ignores_a_face_in_its_way(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def high_face(t: float) -> list[track_fakes.RawFace]:
+        return [track_fakes.RawFace(0.5, 0.1, 0.1, 0.15, track_fakes.talking(t))]
+
+    ctx, _ = speaker_ctx(project, monkeypatch, high_face, style="box_karaoke")
+    assert ctx.config.app.hook.position == "top"  # the shipped default
+
+    render.run(ctx)
+
+    data = read_json(ctx.run_dir / "clips" / "c01.json")
+    assert data["hook_shown"] is True and data["hook_moved"] is False
+    assert data["notes"] == [] and data["outside_safe_zone"] == 0
+    band = next(d for d in dialogues(ctx.run_dir) if d.startswith("Dialogue: 2,"))
+    assert band.split("p1}m ")[1].split(" ")[1] == "290"  # the drawing starts at the top
+    assert data["settings"]["hook_position"] == "top"
 
 
 def test_speaker_mode_without_a_face_in_the_way_keeps_the_hook_at_the_top(
@@ -1275,6 +1295,45 @@ def test_a_changed_caption_setting_makes_the_old_output_stale(
     assert read_json(ctx.run_dir / "clips" / "c01.json")["settings"]["word_gap_em"] == 0.6
 
 
+def test_the_hook_is_drawn_at_its_own_configured_size_not_the_caption_size(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    ctx = v2_ctx(project)
+    assert ctx.config.app.captions.font_size == 96  # the caption size, unchanged by the hook
+
+    render.run(ctx)
+
+    text = hook_lines(ctx.run_dir)[1]
+    assert "\\fs80}" in text  # the shipped hook size; the Hook style itself is the caption size
+    assert read_json(ctx.run_dir / "clips" / "c01.json")["settings"]["hook_font_size"] == 80
+
+
+def test_a_changed_hook_font_size_reaches_the_ass_file_and_makes_the_output_stale(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    ctx = v2_ctx(project)
+    render.run(ctx)
+    fake.calls.clear()
+
+    ctx.config.app.hook = ctx.config.app.hook.model_copy(update={"font_size": 60})
+    render.run(resume(ctx))
+
+    assert fake.ids == ["c01", "c02"]
+    assert "\\fs60}" in hook_lines(ctx.run_dir)[1]
+    assert read_json(ctx.run_dir / "clips" / "c01.json")["settings"]["hook_font_size"] == 60
+
+
+def test_a_hook_font_size_equal_to_the_caption_size_needs_no_size_tag(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    ctx = v2_ctx(project)
+    ctx.config.app.hook = ctx.config.app.hook.model_copy(update={"font_size": 96})
+
+    render.run(ctx)
+
+    assert not re.search(r"\\fs\d", hook_lines(ctx.run_dir)[1])  # \fsp is letter spacing
+
+
 def test_an_unreadable_font_file_fails_before_anything_is_deleted(
     project: Path, fake: FakeFfmpeg
 ) -> None:
@@ -1301,3 +1360,165 @@ def test_the_legacy_style_does_not_read_the_font_file(project: Path, fake: FakeF
     data = read_json(ctx.run_dir / "clips" / "c01.json")
     assert data["settings"]["caption_style"] == "legacy" and data["notes"] == []
     assert data["caption_lines"] == 4 and data["caption_max_words"] == 3
+
+
+# --- seams for campaign mode (Brief 11) ---------------------------------------------------------
+
+
+def take_id(clip: render.ClipLike) -> str:
+    return f"{clip.id}:{clip.start}:{clip.end}:{clip.hook_line}"
+
+
+def test_a_scored_clip_is_a_clip_like() -> None:
+    assert take_id(scored_clip("c01", 1, 10.0, 30.0)) == "c01:10.0:30.0:synthetic hook"
+
+
+def v2_plan(project: Path) -> tuple[render.Plan, ScoredClip, list[Any]]:
+    from clipmachine.utils.captions import clip_words
+
+    ctx = v2_ctx(project)
+    run_dir = ctx.run_dir.resolve()
+    inputs = render._load_inputs(run_dir, project.resolve(), ctx.config.app)
+    plan = render._make_plan(run_dir, run_dir / "clips", ctx.config.app, inputs)
+    clip = inputs.kept[0]
+    return plan, clip, clip_words(plan.segments, clip.start, clip.end)
+
+
+def test_a_hook_spec_for_the_whole_clip_has_no_fade_and_lasts_the_clip(project: Path) -> None:
+    plan, clip, words = v2_plan(project)
+    duration = clip.end - clip.start
+
+    whole = render._karaoke_captions(
+        plan, clip, words, None, duration, render.HookSpec(duration, 0, 80)
+    )
+
+    hooks = [d for d in whole.text.split("\n") if d.startswith(HOOK_LAYERS)]
+    assert len(hooks) == 2
+    assert all(",0:00:00.00,0:00:20.00," in d for d in hooks)
+    assert "\fad" not in "".join(hooks)
+    assert whole.hook_shown and whole.hook_band is not None
+
+
+def test_the_default_hook_spec_is_the_one_built_from_the_settings(project: Path) -> None:
+    plan, clip, words = v2_plan(project)
+    duration = clip.end - clip.start
+    settings = plan.settings
+
+    default = render._karaoke_captions(plan, clip, words, None, duration)
+    explicit = render._karaoke_captions(
+        plan,
+        clip,
+        words,
+        None,
+        duration,
+        render.HookSpec(
+            settings.hook_seconds,
+            settings.hook_fade_ms,
+            settings.hook_font_size,
+            position=settings.hook_position,
+        ),
+    )
+
+    assert default == explicit
+
+
+def test_a_given_hook_spec_shows_the_hook_even_when_the_settings_turn_it_off(
+    project: Path,
+) -> None:
+    ctx = v2_ctx(project)
+    ctx.config.app.hook = ctx.config.app.hook.model_copy(update={"enabled": False})
+    run_dir = ctx.run_dir.resolve()
+    inputs = render._load_inputs(run_dir, project.resolve(), ctx.config.app)
+    plan = render._make_plan(run_dir, run_dir / "clips", ctx.config.app, inputs)
+    clip = inputs.kept[0]
+    words = render.clip_words(plan.segments, clip.start, clip.end)
+
+    off = render._karaoke_captions(plan, clip, words, None, 20.0)
+    on = render._karaoke_captions(plan, clip, words, None, 20.0, render.HookSpec(2.0, 150, 80))
+
+    assert not off.hook_shown and off.hook_band is None
+    assert on.hook_shown and on.hook_band is not None
+
+
+def test_captions_report_the_caption_boxes_and_the_hook_band(project: Path) -> None:
+    plan, clip, words = v2_plan(project)
+
+    captions = render._karaoke_captions(plan, clip, words, None, clip.end - clip.start)
+
+    assert len(captions.caption_boxes) == captions.lines == 10
+    assert all(isinstance(box, render.Rect) for box in captions.caption_boxes)
+    assert captions.hook_band is not None
+    assert not any(captions.hook_band.intersects(box) for box in captions.caption_boxes)
+
+
+def test_the_hook_spec_avoid_moves_the_hook_below_the_rectangle(project: Path) -> None:
+    plan, clip, words = v2_plan(project)
+    assert plan.safe is not None
+    mark = render.Rect(0.0, plan.safe.y1 - 10, 1080.0, plan.safe.y1 + 100)
+
+    captions = render._karaoke_captions(
+        plan, clip, words, None, 20.0, render.HookSpec(20.0, 0, 80, (mark,))
+    )
+
+    assert captions.hook_band is not None and captions.hook_band.y1 == plan.safe.y1 + 112
+    assert "hook_moved_for_overlay" in captions.notes
+    assert not captions.hook_band.intersects(mark)
+
+
+def test_the_legacy_captions_leave_the_new_fields_empty(project: Path) -> None:
+    ctx = make_ctx(project)  # legacy
+    write_inputs(ctx.run_dir)
+    run_dir = ctx.run_dir.resolve()
+    inputs = render._load_inputs(run_dir, project.resolve(), ctx.config.app)
+    plan = render._make_plan(run_dir, run_dir / "clips", ctx.config.app, inputs)
+
+    captions = render._legacy_captions(plan, [], 20.0)
+
+    assert captions.caption_boxes == () and captions.hook_band is None
+
+
+def test_source_inputs_load_without_scored_json_in_centre_mode(project: Path) -> None:
+    ctx = v2_ctx(project)
+    (ctx.run_dir / "scored.json").unlink()
+    run_dir, root = ctx.run_dir.resolve(), project.resolve()
+
+    inputs = render.load_source_inputs(run_dir, root, ctx.config.app)
+
+    assert inputs.kept == [] and inputs.track_plan is None and inputs.segments is None
+    assert inputs.source == run_dir / "source.mp4" and inputs.video.width == 640
+    assert inputs.metrics is not None
+    with pytest.raises(RunError, match=r"scored\.json not found"):
+        render._load_inputs(run_dir, root, ctx.config.app)
+
+
+def test_source_inputs_in_speaker_mode_always_build_the_track_plan(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = speaker_ctx(project, monkeypatch, style="box_karaoke")
+    (ctx.run_dir / "scored.json").unlink()
+
+    inputs = render.load_source_inputs(ctx.run_dir.resolve(), project.resolve(), ctx.config.app)
+
+    assert inputs.kept == [] and inputs.track_plan is not None
+    assert inputs.segments is not None and inputs.segments
+
+
+def test_source_inputs_in_speaker_mode_still_need_the_models(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = speaker_ctx(project, monkeypatch, style="box_karaoke", models=False)
+    with pytest.raises(RunError):
+        render.load_source_inputs(ctx.run_dir.resolve(), project.resolve(), ctx.config.app)
+
+
+def test_source_inputs_keep_the_errors_of_a_missing_font_and_a_missing_source(
+    project: Path,
+) -> None:
+    ctx = v2_ctx(project)
+    run_dir, root = ctx.run_dir.resolve(), project.resolve()
+    (run_dir / "source.mp4").unlink()
+    with pytest.raises(RunError, match="source video not found"):
+        render.load_source_inputs(run_dir, root, ctx.config.app)
+    (project / "assets" / "fonts" / "Montserrat-Bold.ttf").unlink()
+    with pytest.raises(RunError, match="caption font not found"):
+        render.load_source_inputs(run_dir, root, ctx.config.app)

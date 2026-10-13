@@ -10,15 +10,21 @@ from clipmachine.utils.snapping import (
     EDGE_END_NOTE,
     EDGE_START_NOTE,
     END_EDGE,
+    END_KEPT_NOTE,
     END_PAUSE,
+    START_KEPT_NOTE,
+    AutoEnd,
     Dropped,
+    NearSnap,
     Sentence,
     SentenceIndex,
     Snapped,
+    auto_end,
     build_index,
     dedupe,
     ends_sentence,
     snap,
+    snap_near,
     words_text,
 )
 
@@ -1032,3 +1038,211 @@ def test_a_moment_inside_an_uncuttable_stretch_is_dropped_when_the_stretch_is_to
     assert isinstance(result, Dropped)
     assert "no clean cut point" in result.reason
     assert "longer than the 5 s maximum" in result.reason
+
+
+# --- snap_near and auto_end (Brief 11, campaign mode) ---------------------------------------------
+
+NEAR_PADS = {"start_pad": 0.25, "end_pad": 0.5, "duration": 100.0}
+# Three sentences, each a unit; the cut times (mid-gap, capped at the pads) worked out by hand:
+#   a b.  0-1.25   | c d.  2.25-3.5   | e f.  4.5-5.75   (gap 1.0 after each full stop)
+#   starts 0, 2.0, 4.25 and ends 1.75, 4.0, 6.25
+THREE = [
+    ("a", 0.25),
+    ("b.", 1.0),
+    ("c", 0.25),
+    ("d.", 1.0),
+    ("e", 0.25),
+    ("f.", 1.0),
+]
+# A full stop inside continuous speech (gap 0.125 < min_cut_gap) is a weak end: b. is not a cut.
+# Units are a..d. (cuts 0 and 3.125) and e..f. (cuts 3.375 and 5.375).
+WEAK = [
+    ("a", 0.25),
+    ("b.", 0.125),
+    ("c", 0.25),
+    ("d.", 1.0),
+    ("e", 0.25),
+    ("f.", 1.0),
+]
+
+
+def near(
+    items: list[tuple[str, float]], start: float, end: float | None, max_move: float
+) -> NearSnap:
+    return snap_near(make_index(items).units(), start, end, max_move=max_move, **NEAR_PADS)
+
+
+def test_a_start_moves_to_the_nearest_clean_cut_in_both_directions() -> None:
+    forward = near(THREE, 1.5, 4.0, 1.0)  # candidates 0 (1.5 away) and 2.0 (0.5 away)
+    assert forward.start == 2.0 and forward.start_moved == pytest.approx(0.5)
+    assert forward.notes[0] == "start moved +0.50 s to a clean sentence edge"
+    backward = near(THREE, 2.4, 4.0, 1.0)
+    assert backward.start == 2.0 and backward.start_moved == pytest.approx(-0.4)
+    assert backward.notes[0] == "start moved -0.40 s to a clean sentence edge"
+
+
+def test_a_start_exactly_at_the_limit_moves_and_just_beyond_it_is_kept() -> None:
+    at_limit = near(THREE, 3.0, 6.0, 1.0)  # 2.0 is exactly 1.0 away, 4.25 is 1.25 away
+    assert at_limit.start == 2.0 and at_limit.start_moved == pytest.approx(-1.0)
+    beyond = near(THREE, 3.0, 6.0, 0.99)
+    assert beyond.start == 3.0 and beyond.start_moved is None
+    assert beyond.notes[0] == f"{START_KEPT_NOTE} 0.99 s"
+
+
+def test_start_and_end_are_decided_on_their_own() -> None:
+    result = near(THREE, 2.4, 5.0, 0.5)  # the start reaches 2.0; no end cut within 0.5 of 5.0
+    assert (result.start, result.end) == (2.0, 5.0)
+    assert result.start_moved == pytest.approx(-0.4) and result.end_moved is None
+    assert result.notes == (
+        "start moved -0.40 s to a clean sentence edge",
+        f"{END_KEPT_NOTE} 0.5 s",
+    )
+    other = near(THREE, 1.0, 4.2, 0.5)  # no start cut within 0.5 of 1.0; the end reaches 4.0
+    assert (other.start, other.end) == (1.0, 4.0)
+    assert other.start_moved is None and other.end_moved == pytest.approx(-0.2)
+    assert other.notes == (f"{START_KEPT_NOTE} 0.5 s", "end moved -0.20 s to a clean sentence edge")
+
+
+def test_the_end_moves_to_the_nearest_end_cut_in_both_directions() -> None:
+    assert near(THREE, 2.0, 4.4, 1.0).end == 4.0
+    assert near(THREE, 2.0, 3.8, 1.0).end == 4.0
+    assert near(THREE, 2.0, 6.0, 1.0).end == 6.25
+
+
+def test_a_tie_goes_to_the_earlier_cut() -> None:
+    # 3.125 is 1.125 from both start cuts (2.0 and 4.25) and from both end cuts (4.0 and 2.25...)
+    result = near(THREE, 3.125, 5.125, 1.125)  # end cuts 4.0 and 6.25 are both 1.125 away
+    assert result.start == 2.0 and result.end == 4.0
+
+
+def test_the_end_never_lands_at_or_before_the_start() -> None:
+    # the start goes to 4.25; the end cut at 4.0 is before it, and 6.25 is too far
+    kept = near(THREE, 4.1, 4.2, 0.5)
+    assert kept.start == 4.25 and kept.end == 4.2 and kept.end_moved is None
+    assert kept.notes[-1] == f"{END_KEPT_NOTE} 0.5 s"
+    far = near(THREE, 4.1, 4.2, 3.0)
+    assert far.start == 4.25 and far.end == 6.25
+
+
+def test_a_weak_boundary_is_not_a_cut() -> None:
+    index = make_index(WEAK).units()
+    assert spans(index) == [(0, 3), (4, 5)]
+    start = near(WEAK, 1.375, None, 0.5)  # c starts here, after the weak full stop
+    assert start.start == 1.375 and start.start_moved is None
+    end = near(WEAK, 0.0, 1.3, 0.5)  # b. ends at 1.25, but that is not a cut
+    assert end.end == 1.3 and end.end_moved is None
+    assert near(WEAK, 3.4, 5.4, 0.5).start == 3.375
+
+
+def test_no_end_leaves_the_end_alone() -> None:
+    result = near(THREE, 2.4, None, 1.0)
+    assert result.end is None and result.end_moved is None
+    assert result.start == 2.0
+    assert result.notes == ("start moved -0.40 s to a clean sentence edge",)
+    kept = near(THREE, 3.0, None, 0.1)
+    assert kept.end is None and kept.notes == (f"{START_KEPT_NOTE} 0.1 s",)
+
+
+def test_an_empty_transcript_keeps_both_times() -> None:
+    result = snap_near(build_index([]).units(), 5.0, 9.0, max_move=2.0, **NEAR_PADS)
+    assert (result.start, result.end) == (5.0, 9.0)
+    assert result.start_moved is None and result.end_moved is None
+    assert result.notes == (f"{START_KEPT_NOTE} 2 s", f"{END_KEPT_NOTE} 2 s")
+
+
+def test_a_move_under_five_milliseconds_has_no_note_but_is_recorded() -> None:
+    result = near(THREE, 2.002, 4.001, 0.5)
+    assert result.start == 2.0 and result.start_moved == pytest.approx(-0.002)
+    assert result.end == 4.0 and result.end_moved == pytest.approx(-0.001)
+    assert result.notes == ()
+
+
+def test_a_limit_of_zero_only_moves_onto_an_exact_edge() -> None:
+    exact = near(THREE, 2.0, 4.0, 0)
+    assert (exact.start, exact.end) == (2.0, 4.0)
+    assert exact.start_moved == 0 and exact.end_moved == 0 and exact.notes == ()
+    off = near(THREE, 2.1, 4.1, 0)
+    assert (off.start, off.end) == (2.1, 4.1)
+    assert off.start_moved is None and off.end_moved is None
+    assert off.notes == (f"{START_KEPT_NOTE} 0 s", f"{END_KEPT_NOTE} 0 s")
+
+
+def auto(
+    items: list[tuple[str, float]],
+    start: float,
+    target: float,
+    *,
+    min_length: float = 1.0,
+    max_length: float = 100.0,
+    duration: float = 100.0,
+) -> AutoEnd | None:
+    return auto_end(
+        make_index(items).units(),
+        start,
+        target=target,
+        min_length=min_length,
+        max_length=max_length,
+        start_pad=0.25,
+        end_pad=0.5,
+        duration=duration,
+    )
+
+
+def test_auto_end_picks_the_end_nearest_to_the_target_before_or_after_it() -> None:
+    before = auto(THREE, 2.0, 3.0)  # target end 5.0: 4.0 is 1.0 away, 6.25 is 1.25 away
+    assert before == AutoEnd(end=4.0, target_end=5.0, length=2.0)
+    after = auto(THREE, 2.0, 3.5)  # target end 5.5: 4.0 is 1.5 away, 6.25 is 0.75 away
+    assert after == AutoEnd(end=6.25, target_end=5.5, length=4.25)
+
+
+def test_auto_end_skips_an_end_below_the_minimum_even_when_it_is_nearer() -> None:
+    result = auto(THREE, 2.0, 2.0, min_length=3.0)  # 4.0 would be the target, but is 2.0 long
+    assert result is not None and result.end == 6.25
+
+
+def test_auto_end_skips_an_end_above_the_maximum_even_when_it_is_nearer() -> None:
+    result = auto(THREE, 2.0, 4.25, max_length=3.0)  # 6.25 would be the target; it is 4.25 long
+    assert result is not None and result.end == 4.0
+
+
+def test_auto_end_length_limits_are_inclusive() -> None:
+    assert auto(THREE, 2.0, 2.0, min_length=2.0, max_length=2.0) == AutoEnd(4.0, 4.0, 2.0)
+
+
+def test_auto_end_tie_goes_to_the_earlier_end() -> None:
+    result = auto(THREE, 2.0, 3.125)  # target end 5.125 is 1.125 from 4.0 and from 6.25
+    assert result is not None and result.end == 4.0
+
+
+def test_auto_end_is_none_when_no_end_is_in_range() -> None:
+    assert auto(THREE, 2.0, 3.0, min_length=5.0, max_length=6.0) is None
+    assert auto(THREE, 2.0, 3.0, min_length=0.5, max_length=1.5) is None
+    assert auto(THREE, 100.0, 3.0) is None  # nothing ends after this start
+    assert (
+        auto_end(
+            build_index([]).units(),
+            0.0,
+            target=3.0,
+            min_length=1.0,
+            max_length=9.0,
+            start_pad=0.25,
+            end_pad=0.5,
+            duration=10.0,
+        )
+        is None
+    )
+
+
+def test_auto_end_never_uses_a_weak_boundary() -> None:
+    # b. ends at 1.25, exactly the target end, but it is not a cut: the nearest cut is 3.125
+    result = auto(WEAK, 0.0, 1.25, min_length=0.5)
+    assert result is not None and result.end == 3.125
+
+
+def test_auto_end_can_pick_the_last_sentence_and_its_cut_stays_inside_the_audio() -> None:
+    # f. ends at 5.75; with the audio ending at 5.8 the pause after it is 0.05 s, so the cut is
+    # 0.025 s after the word (never past the audio), not the 0.5 s cap
+    result = auto(THREE, 4.25, 2.0, min_length=1.0, max_length=3.0, duration=5.8)
+    assert result is not None
+    assert result.end == pytest.approx(5.775) and result.end <= 5.8
+    assert result.target_end == 6.25 and result.length == pytest.approx(1.525)

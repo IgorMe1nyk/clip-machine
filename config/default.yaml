@@ -114,10 +114,16 @@ captions:
   margin_v: 350              # legacy style only: pixels from the bottom edge, clear of phone UI
 hook:                        # the clip's hook line as big text at the start (needs captions.style box_karaoke)
   enabled: true
-  seconds: 2.0               # shown from 0 to this
+  seconds: 3.0               # shown from 0 to this; a campaign may set its own hook.seconds
   fade_ms: 150               # fade-out at the end
+  font_size: 80              # the hook's own ASS font size, separate from captions.font_size; 20-200
+  position: top              # top = the top of the safe area, even over a face; avoid_faces = below faces seen while it is on
 safe:                        # pixels the TikTok / Reels / Shorts apps cover (D-023)
   top: 290
   bottom: 560                # organic posts; the strictest published number is 672. To be checked against the real TikTok UI
   left: 120
   right: 192
+campaign:                    # campaign mode (Brief 11): the rules live in campaigns/<slug>/
+  max_snap_seconds: 1.5      # a moment's start or end moves at most this far to a clean sentence edge
+  corner_zone: 0.15          # fraction of width and height; a watermark may not touch the four corners
+  auto_end_target_s: 40      # "end: auto" aims for this clip length in seconds

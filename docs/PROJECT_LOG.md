@@ -2,6 +2,88 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-12 — Brief 11: campaign mode (built; real run done; Igor's phone check pending)
+
+**Why:** clipping campaigns (D-024) forbid tools that pick the moments, and require a supplied
+watermark on screen for the whole clip, names spelled correctly in the captions, and a post
+caption that ends in an approved closer. Igor picks the moments; the software renders them
+(D-026). Campaign mode makes no Claude API call.
+
+**Done** (11 commits on the branch `brief-11-campaign-mode`, plus this one; nothing pushed or merged)
+- **`clipmachine campaign <source-video | run-folder> --campaign <slug> [--only ids] [--force-reuse]`**
+  and **`clipmachine campaign-posted --campaign <slug> --id <id> --platform <p>`**.
+- **Campaign folder** `campaigns/<slug>/` (git-ignored; only the synthetic `_example` is tracked):
+  `campaign.yaml`, `moments.yaml`, `used.json`, `assets/`. Both YAML files are validated; an
+  error names the entry and stops the command before anything is rendered.
+- **Times:** each end of a moment moves to the nearest clean sentence edge within 1.5 s
+  (`campaign.max_snap_seconds`), on its own; otherwise the given time is kept with a warning.
+  `end: auto` picks the clean edge nearest to start + 40 s (`campaign.auto_end_target_s`) inside
+  the campaign's clip length. A moment outside the length range fails alone; the others render.
+- **Captions:** the R1 karaoke captions with the campaign's spelling fixes (whole word, any case,
+  a multi-word entry merged into one caption word). The transcript files are never touched.
+- **Hook:** `hook.font_size` is now a general setting (default 80) for normal runs too. In
+  campaign mode the hook stays for the whole clip, starts below the watermark, and then avoids
+  faces as in R1. A hook that would be cut short fails the moment.
+  After the real run: `hook.seconds` is 3 s (was 2) for every run, and `hook.position: top |
+  avoid_faces` (default top: the top of the safe area, even over a face, no face note). A
+  campaign may set its own `hook.seconds` and `hook.position` (left out, the config applies).
+- **Watermark:** a PNG drawn on top of video, captions and hook for the whole clip, unmodified
+  apart from uniform scale. `watermark.blend: normal | screen` (screen hides an opaque black
+  background). Every geometry check uses the visible content box, measured once at load, so the
+  canvas may reach outside the frame. Frame, corner zones (15%), safe area, captions and hook are
+  hard checks; a face under the watermark is a note.
+- **Audio:** the source's own audio with the existing fades; the ffmpeg arguments are checked for
+  exactly one audio stream before every render.
+- **Outputs** in `runs/<run>/campaign/<slug>/`: `<id>_<platform>.mp4`, `.post.txt` (prefix and
+  caption, hashtags if any, the closer last), `.json` (requested and final times, notes, counts,
+  the eight checks) and `campaign_report.html` (a card and a checklist per moment).
+- **Used log:** every render is recorded; closers rotate round-robin and never repeat back to
+  back; a posted moment is refused unless `--force-reuse`; a new moment that overlaps a posted
+  one by more than half its length renders with a warning.
+- **Run reuse:** a source file reuses the run made from the same file (path, size, modified
+  time). Fetch now records the modified time in `meta.json`; an older run is matched on path and
+  size with a printed warning. The reused folder is always printed.
+- **Zero API:** the command runs with the kill switch on, the pipeline stops after transcribe,
+  and the cost files are compared before and after.
+- Built by a Sonnet 5.5 (Medium) subagent one step at a time; each diff reviewed by the planner,
+  who re-ran every check separately before each commit. **Review caught two things:** the audio
+  check matched filter names inside file paths (a campaign folder whose name contains "sine"
+  would have failed every render), and the run lookup compared paths case-sensitively on Windows.
+- Tests: 1785 passed, 3 skipped (Whisper, MediaPipe, a symlink test that needs privileges). The
+  ffmpeg tests ran here: both blends and a whole campaign render from a generated source. ruff,
+  format, mypy and pip-audit clean.
+
+**Measured before building** (a generated source, this machine's ffmpeg)
+- A screen blend of a 1600×534 black-background PNG onto a 1080×1920 frame leaves the area under
+  the black margin within 1 level of 255 on average of a render without it; the mark is drawn at
+  full brightness in the first and the last second; frame count and the single audio stream match
+  a plain render.
+
+**Real run** (3 of 35 moments with `--only`, a 1:37 h source whose run folder already held the
+transcript; speaker crop with the real face models; $0, API calls 0, checked by the ledger and
+cost files)
+- 3 rendered, 0 failed, 0 refused. Whole command 158 s; per clip 62, 50 and 46 s (tracking plus
+  encode). Lengths 41.2, 43.3 and 39.1 s from `end: auto` (target 40 s); starts moved 0, 0
+  (no clean edge within 1.5 s, kept with a note) and +0.15 s.
+- All eight checks pass on every clip. Every clip carries the note "watermark over a face"
+  (the mark sits at the top centre, where the head is in a speaker crop) and the hook moved
+  below the watermark and away from faces; one hook shrank to fit.
+- 0 spelling fixes: none of the listed names is spoken in these three stretches. Across the
+  whole transcript Whisper writes the streamer's name in three different ways, two of which were
+  not in the spelling list yet.
+- The supplied watermark was a WebP with a `.png` name and no alpha, on an opaque black
+  background; the loader rejected it (bad PNG signature). Converted locally to a real RGB PNG
+  with OpenCV (pixels identical), `blend: screen`, `scale: 0.6`. The mark's brightest pixel is
+  118 of 255, so with screen blend it is faint on light backgrounds; Igor's phone check decides.
+
+**Not done**
+- Igor's check of the three clips at phone size (watermark legible, hook from frame 1, captions).
+- Out of scope, for later: skip moments whose clip is already rendered and unchanged (today every
+  run renders all selected, unposted moments again; `--only` limits it); Whisper hot words for
+  names; the AI scout command.
+
+**Cost:** $0. No API call.
+
 ## 2026-10-12 — Brief R1: captions v2 (karaoke box), hook overlay, safe zones (built; real run done; style approved; MVP re-rating pending)
 
 **Why:** make clips more watchable at $0: captions that read at a glance and do not feel cramped,

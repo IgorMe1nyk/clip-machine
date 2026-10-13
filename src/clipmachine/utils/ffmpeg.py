@@ -398,25 +398,74 @@ def safe_zone_lines(width: int, height: int, top: int, bottom: int, left: int, r
     )
 
 
+def overlay_graph(
+    chain: str,
+    *,
+    x: int,
+    y: int,
+    size: tuple[int, int] | None,
+    blend: str,
+    frame: tuple[int, int],
+) -> str:
+    """The `-filter_complex` text that puts the watermark image on the video.
+
+    `chain` is what video_filter() returns: crop, scale, subtitles. Draw order: video, then the
+    subtitles (the captions, and the hook on higher ASS layers), then the watermark, so the
+    watermark is on top of both. The image stays for the whole clip: there is no `enable=`, and
+    `eof_action=repeat` holds its one frame. `size` is the scaled image size, or None to use the
+    image as it is (no scale filter). `x` and `y` are where its top-left corner goes and may be
+    negative. `frame` is the output size.
+
+    blend "normal": a plain overlay, the PNG's alpha honoured. blend "screen": the image is first
+    drawn on a black picture of the frame size, then screen-blended onto the video, so black adds
+    nothing (an opaque black background disappears) and a PNG's alpha is honoured as well.
+    """
+    if blend not in ("normal", "screen"):
+        raise MediaError(f"unknown watermark blend {blend!r}; use normal or screen")
+    if size is None:
+        wm, scaled = "[1:v:0]", ""
+    else:
+        wm, scaled = "[wm]", f"[1:v:0]scale={size[0]}:{size[1]}[wm];"
+    place = f"overlay=x={x}:y={y}:eof_action=repeat"
+    if blend == "normal":
+        return f"[0:v:0]{chain}[base];{scaled}[base]{wm}{place}[v]"
+    return (
+        f"[0:v:0]{chain},format=gbrp[base];"
+        f"color=black:s={frame[0]}x{frame[1]}[blk];{scaled}"
+        f"[blk]{wm}{place},format=gbrp[mark];"
+        "[base][mark]blend=all_mode=screen:shortest=1[v]"
+    )
+
+
 def render_args(
     source: Path,
     temp_out: Path,
     *,
     start: float,
     duration: float,
-    vf: str,
+    vf: str | None = None,
     crf: int,
     preset: str,
     audio_bitrate: str,
     log_level: str = "error",
     audio_fade: float = 0.0,
+    filter_complex: str | None = None,
+    overlay_image: Path | None = None,
 ) -> list[str]:
     """One re-encoding pass: seek before the input (accurate when re-encoding), first video and
     first audio stream only, H.264 + AAC in MP4. Never a stream copy.
 
     `audio_fade` (seconds) adds a fade-in at the clip start and a fade-out at its end so a tight
     cut never clicks. Audio timestamps start at 0 after the input seek, so the fade times are
-    seconds from the clip start. With 0, or a clip shorter than two fades, there is no `-af`."""
+    seconds from the clip start. With 0, or a clip shorter than two fades, there is no `-af`.
+
+    Exactly one of `vf` and `filter_complex` is given. `filter_complex` (see overlay_graph) goes
+    with `overlay_image`, a PNG that becomes the second input; the output is its `[v]` pad and
+    the source's own audio, `0:a:0`."""
+    if (vf is None) == (filter_complex is None):
+        raise MediaError("render_args needs exactly one of vf and filter_complex")
+    if (overlay_image is None) != (filter_complex is None):
+        raise MediaError("an overlay image goes with filter_complex, and only with it")
     fade = (
         [
             "-af",
@@ -426,6 +475,12 @@ def render_args(
         if audio_fade > 0 and duration > 2 * audio_fade
         else []
     )
+    image_input = (
+        []
+        if overlay_image is None
+        else ["-protocol_whitelist", "file", "-i", input_url(overlay_image)]
+    )
+    graph = ["-vf", vf] if filter_complex is None else ["-filter_complex", filter_complex]
     return [
         "ffmpeg",
         "-nostdin",
@@ -438,14 +493,14 @@ def render_args(
         f"{start:.3f}",
         "-i",
         input_url(source),
+        *image_input,
         "-t",
         f"{duration:.3f}",
         "-map",
-        "0:v:0",
+        "0:v:0" if filter_complex is None else "[v]",
         "-map",
         "0:a:0",
-        "-vf",
-        vf,
+        *graph,
         *fade,
         "-c:v",
         "libx264",
@@ -466,6 +521,38 @@ def render_args(
         "-y",
         str(temp_out.resolve()),
     ]
+
+
+# an audio source or mixer as a filter name (at the start of a filter, never inside a file path),
+# or an audio pad of an input
+_AUDIO_FILTER_RE = re.compile(
+    r"(?:^|[;,\]])\s*(?:amix|amerge|amovie|anullsrc|aevalsrc|sine)(?![A-Za-z0-9_])|:a\]|:a:"
+)
+_AUDIO_MAP_RE = re.compile(r"-?\d+:a(?::|$)|\[(?!v\])")
+
+
+def _values(args: Sequence[str], flag: str) -> list[str]:
+    return [args[i + 1] for i, a in enumerate(args[:-1]) if a == flag]
+
+
+def assert_source_audio_only(args: Sequence[str]) -> None:
+    """Campaign clips carry the source's own audio and nothing else: exactly one mapped audio
+    stream, `0:a:0`; at most two inputs, the second a PNG; only afade filters on the audio; and
+    no audio source or mixer inside the filter graph. MediaError otherwise."""
+    inputs = _values(args, "-i")
+    if len(inputs) > 2:
+        raise MediaError("a campaign render has more than two inputs")
+    if len(inputs) == 2 and not inputs[1].lower().endswith(".png"):
+        raise MediaError("the second input of a campaign render must be a PNG image")
+    audio_maps = [m for m in _values(args, "-map") if _AUDIO_MAP_RE.match(m)]
+    if audio_maps != ["0:a:0"]:
+        raise MediaError("a campaign render must map exactly the source's audio, 0:a:0")
+    for value in _values(args, "-af"):
+        if any(not part.startswith("afade=") for part in value.split(",")):
+            raise MediaError("the audio of a campaign render may only be faded")
+    for graph in _values(args, "-filter_complex"):
+        if _AUDIO_FILTER_RE.search(graph):
+            raise MediaError("the filter graph of a campaign render must not touch audio")
 
 
 def render_timeout(duration_seconds: float) -> float:

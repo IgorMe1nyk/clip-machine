@@ -1,0 +1,887 @@
+"""The `campaign` command end to end with ffmpeg faked (Brief 11). Invented words only."""
+
+import hashlib
+import json
+import os
+import re
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+import track_fakes
+from campaign_helpers import (
+    black_mark,
+    moment,
+    sentence_end_cut,
+    sentence_start_cut,
+    write_campaign,
+    write_moments,
+    write_run,
+)
+from clipmachine import cli
+from clipmachine.campaign.models import CHECKS, CampaignClip
+from clipmachine.campaign.run import find_run
+from clipmachine.campaign.used import USED_FILE, load_used
+from clipmachine.utils import claude, ffmpeg
+from clipmachine.utils.captions import ass_time
+from clipmachine.utils.snapping import START_KEPT_NOTE
+from helpers import edit_yaml
+from test_render import FakeFfmpeg
+
+HOOK = "AN INVENTED HOOK"
+CAPTION = "says something invented."
+SECRET_TEXTS = (HOOK, CAPTION, "closer one", "closer two", "closer three", "Zorb1e", "QXV")
+
+
+@pytest.fixture
+def fake(monkeypatch: pytest.MonkeyPatch) -> FakeFfmpeg:
+    fake = FakeFfmpeg()
+    monkeypatch.setattr(ffmpeg, "render_clip", fake.render_clip)
+    monkeypatch.setattr(ffmpeg, "probe", fake.probe)
+    return fake
+
+
+@dataclass
+class Rig:
+    project: Path
+    run_dir: Path
+    folder: Path
+
+    @property
+    def out(self) -> Path:
+        return self.run_dir / "campaign" / "demo"
+
+    def go(self, *extra: str, target: Path | None = None) -> int:
+        argv = ["campaign", str(target or self.run_dir), "--campaign", "demo", *extra]
+        return cli.main(argv, root=self.project)
+
+    def moments(self, *entries: dict[str, Any]) -> None:
+        write_moments(self.folder, list(entries))
+
+    def clip(self, name: str) -> CampaignClip:
+        return CampaignClip.model_validate_json(
+            (self.out / f"{name}.json").read_text(encoding="utf-8")
+        )
+
+    def used(self) -> Any:
+        return load_used(self.folder)
+
+    def args_of(self, name: str) -> list[str]:
+        return next(args for clip_id, args, _ in self.fake.calls if clip_id == name)
+
+    fake: FakeFfmpeg = None  # type: ignore[assignment]
+
+
+def make_rig(
+    project: Path,
+    fake: FakeFfmpeg,
+    *,
+    mutate: Callable[[dict[str, Any]], None] | None = None,
+    png: Any = None,
+    overrides: dict[tuple[int, int], str] | None = None,
+) -> Rig:
+    run_dir = write_run(project, overrides=overrides)
+    folder = write_campaign(project, mutate=mutate, png=png)
+    rig = Rig(project, run_dir.resolve(), folder)
+    rig.fake = fake
+    rig.moments(moment(id="A01", start="0:24", end="0:58"))
+    return rig
+
+
+@pytest.fixture
+def rig(project: Path, fake: FakeFfmpeg) -> Rig:
+    return make_rig(project, fake)
+
+
+def out_of(capsys: pytest.CaptureFixture[str]) -> str:
+    captured = capsys.readouterr()
+    return captured.out + captured.err
+
+
+# --- snapping and lengths ------------------------------------------------------------------------
+
+
+def test_a_moment_near_clean_edges_moves_to_them(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert rig.go() == 0
+
+    clip = rig.clip("A01_tiktok")
+    start, end = sentence_start_cut(5), sentence_end_cut(11)  # 24.25 and 58.3
+    assert (clip.requested_start, clip.requested_end) == (24.0, 58.0)
+    assert (clip.start, clip.end) == (start, end)
+    assert clip.duration == pytest.approx(end - start)
+    assert clip.snap_notes == [
+        "start moved +0.25 s to a clean sentence edge",
+        "end moved +0.30 s to a clean sentence edge",
+    ]
+    assert clip.status == "rendered" and clip.end_mode == "given" and clip.api_calls == 0
+    for suffix in ("mp4", "json", "post.txt", "ass"):
+        assert (rig.out / f"A01_tiktok.{suffix}").is_file()
+    ffmpeg_start = rig.args_of("A01_tiktok")[rig.args_of("A01_tiktok").index("-ss") + 1]
+    assert float(ffmpeg_start) == pytest.approx(start)
+    text = out_of(capsys)
+    assert "A01 tiktok: rendered 24.25-58.30 s (34.05 s), start +0.25 s, end +0.30 s" in text
+
+
+def test_a_time_with_no_clean_edge_in_reach_is_kept_with_a_warning_note(rig: Rig) -> None:
+    rig.moments(moment(start="0:22", end="0:58"))  # the nearest start edges are 2.25 s away
+
+    assert rig.go() == 0
+
+    clip = rig.clip("A01_tiktok")
+    assert clip.start == 22.0 and clip.end == sentence_end_cut(11)
+    assert clip.snap_notes[0].startswith(START_KEPT_NOTE)
+    assert "1.5 s" in clip.snap_notes[0]
+
+
+def test_one_moment_fails_the_length_check_while_the_others_still_render(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig.moments(
+        moment(id="A01", start="0:24", end="0:58"),
+        moment(id="A02", start="0:24", end="0:30", platform="instagram"),  # 4.65 s: too short
+        moment(id="A03", start="0:34", end="1:04", platform="youtube"),
+    )
+
+    assert rig.go() == 1
+
+    assert (rig.out / "A01_tiktok.mp4").is_file() and (rig.out / "A03_youtube.mp4").is_file()
+    for name in ("A01_tiktok", "A03_youtube"):
+        assert rig.clip(name).status == "rendered"
+        assert (rig.out / f"{name}.post.txt").is_file()
+    failed = rig.clip("A02_instagram")
+    assert failed.status == "failed" and failed.checks["length_in_range"] == "fail"
+    assert "outside the allowed 20-60 s" in (failed.error or "")
+    assert not (rig.out / "A02_instagram.mp4").exists()
+    assert not (rig.out / "A02_instagram.post.txt").exists()
+    text = out_of(capsys)
+    assert "A02 instagram: FAILED: 4.6 s is outside the allowed 20-60 s" in text
+    assert "campaign: 2 rendered, 1 failed, 0 refused; API calls: 0;" in text
+
+
+def test_a_failed_moment_removes_what_an_earlier_run_left(rig: Rig) -> None:
+    assert rig.go() == 0
+    assert (rig.out / "A01_tiktok.mp4").is_file()
+    rig.moments(moment(start="0:24", end="0:30"))  # now too short
+
+    assert rig.go() == 1
+
+    assert rig.clip("A01_tiktok").status == "failed"
+    for suffix in ("mp4", "post.txt", "ass"):
+        assert not (rig.out / f"A01_tiktok.{suffix}").exists()
+
+
+def test_a_moment_outside_the_source_fails(rig: Rig) -> None:
+    rig.moments(moment(start="5:00", end="5:30"))  # the source is 100 s long
+    assert rig.go() == 1
+    assert "outside the source" in (rig.clip("A01_tiktok").error or "")
+
+
+def test_a_stretch_with_no_words_fails(project: Path, fake: FakeFfmpeg) -> None:
+    rig = make_rig(project, fake)
+    run_dir = write_run(project, sentences=3)  # 14.7 s of speech in a 100 s source
+    rig.moments(moment(start="0:30", end="1:10"))
+    assert rig.go(target=run_dir) == 1
+    assert "no words" in (rig.clip("A01_tiktok").error or "")
+
+
+# --- auto end ------------------------------------------------------------------------------------
+
+
+def test_end_auto_picks_the_nearest_clean_end_to_the_target(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig.moments(moment(start="0:24", end="auto"))
+
+    assert rig.go() == 0
+
+    clip = rig.clip("A01_tiktok")
+    start, end = sentence_start_cut(5), sentence_end_cut(12)  # target end 64.25: 63.2 is nearest
+    assert (clip.start, clip.end) == (start, end)
+    assert clip.end_mode == "auto" and clip.auto_end_target == 40.0
+    assert clip.requested_end is None
+    assert clip.duration == pytest.approx(end - start, abs=1e-3)
+    assert clip.snap_notes[-1] == "end chosen automatically: target 40 s, actual 38.95 s"
+    assert "end auto (target 40 s, actual 38.95 s)" in out_of(capsys)
+
+
+def test_end_auto_fails_cleanly_when_no_edge_gives_an_allowed_length(rig: Rig) -> None:
+    rig.moments(moment(start="1:30", end="auto"), moment(id="A02", start="0:24", end="0:58"))
+
+    assert rig.go() == 1
+
+    failed = rig.clip("A01_tiktok")
+    assert failed.status == "failed" and failed.end_mode == "auto"
+    assert "no clean sentence end gives a clip of 20-60 s" in (failed.error or "")
+    assert rig.clip("A02_tiktok").status == "rendered"
+
+
+def test_a_missing_end_is_the_same_as_auto(rig: Rig) -> None:
+    entry = moment(start="0:24")
+    del entry["end"]
+    rig.moments(entry)
+    assert rig.go() == 0
+    assert rig.clip("A01_tiktok").end_mode == "auto"
+
+
+# --- no API --------------------------------------------------------------------------------------
+
+
+def test_a_campaign_run_never_touches_the_api(
+    rig: Rig, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created: list[str] = []
+    monkeypatch.setattr(claude, "new_client", lambda key: created.append(key))
+    monkeypatch.setattr(claude, "load_api_key", lambda root: pytest.fail("key read"))
+    monkeypatch.delenv(claude.KILL_SWITCH_ENV, raising=False)
+    seen: list[str | None] = []
+    original = fake.render_clip
+
+    def spy(args: list[str], cwd: Path, duration_seconds: float) -> None:
+        seen.append(os.environ.get(claude.KILL_SWITCH_ENV))
+        original(args, cwd, duration_seconds)
+
+    monkeypatch.setattr(ffmpeg, "render_clip", spy)
+
+    assert rig.go() == 0
+
+    assert created == [] and seen == ["1"]
+    assert claude.KILL_SWITCH_ENV not in os.environ  # put back
+    assert rig.clip("A01_tiktok").api_calls == 0
+    assert not (rig.run_dir / "costs.json").exists()
+
+
+def test_a_changed_ledger_stops_the_command(
+    rig: Rig, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    original = fake.render_clip
+
+    def spend(args: list[str], cwd: Path, duration_seconds: float) -> None:
+        ledger = rig.project / "runs" / "_ledger" / "costs.jsonl"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text("{}\n", encoding="utf-8")
+        original(args, cwd, duration_seconds)
+
+    monkeypatch.setattr(ffmpeg, "render_clip", spend)
+
+    assert rig.go() == 2
+    assert "campaign mode made an API call" in capsys.readouterr().err
+
+
+def test_a_changed_run_cost_file_stops_the_command(
+    rig: Rig, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    original = fake.render_clip
+
+    def spend(args: list[str], cwd: Path, duration_seconds: float) -> None:
+        (rig.run_dir / "costs.json").write_text("{}", encoding="utf-8")
+        original(args, cwd, duration_seconds)
+
+    monkeypatch.setattr(ffmpeg, "render_clip", spend)
+
+    assert rig.go() == 2
+    assert "campaign mode made an API call" in capsys.readouterr().err
+
+
+# --- the watermark and the hook ------------------------------------------------------------------
+
+
+def test_the_hook_goes_below_the_watermark(rig: Rig) -> None:
+    assert rig.go() == 0
+
+    clip = rig.clip("A01_tiktok")
+    wm_bottom = clip.watermark.rect[3]
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    tops = [
+        int(m.group(1))
+        for line in ass.split("\n")
+        if line.startswith("Dialogue: 3,")
+        for m in [re.search(r"pos\(\d+,(\d+)\)", line)]
+        if m
+    ]
+    assert tops and all(top > wm_bottom for top in tops)
+    assert "hook_moved_for_overlay" in clip.notes
+
+
+def test_a_caption_over_the_watermark_fails_the_moment(project: Path, fake: FakeFfmpeg) -> None:
+    def low(d: dict[str, Any]) -> None:
+        d["watermark"]["position"] = {"x_center": 0.5, "y_center": 0.68}
+
+    rig = make_rig(project, fake, mutate=low)
+    assert rig.go() == 1
+    failed = rig.clip("A01_tiktok")
+    assert failed.status == "failed" and "a caption would cover the watermark" in (
+        failed.error or ""
+    )
+    assert failed.checks["watermark_full_and_clear"] == "fail"
+    assert not (rig.out / "A01_tiktok.mp4").exists()
+
+
+def test_a_hook_that_cannot_fit_fails_the_moment(project: Path, fake: FakeFfmpeg) -> None:
+    def big(d: dict[str, Any]) -> None:
+        d["hook"]["font_size"] = 200
+
+    rig = make_rig(project, fake, mutate=big)
+    rig.moments(moment(start="0:24", end="0:58", hook="AAAA BBBB CCCC DDDD EEEE FFFF"))
+    assert rig.go() == 1
+    error = rig.clip("A01_tiktok").error or ""
+    assert "the hook does not fit at font size 200; shorten it" in error
+
+
+def test_centre_crop_says_the_faces_are_unknown(rig: Rig) -> None:
+    assert rig.go() == 0
+    clip = rig.clip("A01_tiktok")
+    assert clip.crop_mode == "center" and "watermark_faces_unknown" in clip.notes
+    assert "watermark_over_face" not in clip.notes
+
+
+def speaker_rig(project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch, cy: float) -> Rig:
+    edit_yaml(project / "config" / "default.yaml", lambda d: d["video"].update(crop="speaker"))
+    track_fakes.write_model(project)
+    track_fakes.install(
+        monkeypatch, lambda t: [track_fakes.RawFace(0.5, cy, 0.1, 0.1, track_fakes.talking(t))]
+    )
+    return make_rig(project, fake)
+
+
+def test_a_watermark_over_a_face_is_a_note_and_the_clip_still_renders(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = speaker_rig(project, fake, monkeypatch, 0.18)  # the face is where the watermark is
+
+    assert rig.go() == 0
+
+    clip = rig.clip("A01_tiktok")
+    assert clip.crop_mode == "speaker" and "watermark_over_face" in clip.notes
+    assert (rig.out / "A01_tiktok.track.json").is_file()  # tracks live with the campaign clips
+    assert not list((rig.run_dir / "clips").glob("*"))  # the track plan makes an empty folder
+
+
+def test_a_face_away_from_the_watermark_adds_no_note(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = speaker_rig(project, fake, monkeypatch, 0.5)
+    assert rig.go() == 0
+    clip = rig.clip("A01_tiktok")
+    assert "watermark_over_face" not in clip.notes and "watermark_faces_unknown" not in clip.notes
+
+
+# --- the ffmpeg arguments and the .ass file ------------------------------------------------------
+
+
+def graph_of(args: list[str]) -> str:
+    return args[args.index("-filter_complex") + 1]
+
+
+def test_the_ffmpeg_arguments_overlay_the_watermark_for_the_whole_clip(rig: Rig) -> None:
+    assert rig.go() == 0
+    args = rig.args_of("A01_tiktok")
+    graph = graph_of(args)
+
+    assert graph.index("subtitles=") < graph.index("overlay=")
+    assert "enable=" not in graph and "eof_action=repeat" in graph
+    assert "blend=" not in graph and "scale=" in graph.split("overlay=")[0].split("subtitles=")[0]
+    assert "-vf" not in args
+    maps = [args[i + 1] for i, a in enumerate(args) if a == "-map"]
+    assert maps == ["[v]", "0:a:0"]
+    inputs = [args[i + 1] for i, a in enumerate(args) if a == "-i"]
+    wm_file = rig.folder / "assets" / "mark.png"
+    assert inputs[1] == ffmpeg.input_url(wm_file) and len(inputs) == 2
+    assert not re.search(r"[A-Za-z]:[\/]|\\", graph)  # no drive letter, no backslash
+    cwd = next(cwd for clip_id, _, cwd in rig.fake.calls if clip_id == "A01_tiktok")
+    assert cwd == rig.run_dir
+
+
+def test_blend_screen_uses_a_screen_blend_and_the_visible_box(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    def screen(d: dict[str, Any]) -> None:
+        d["watermark"]["blend"] = "screen"
+
+    rig = make_rig(project, fake, mutate=screen, png=black_mark())
+    assert rig.go() == 0
+    graph = graph_of(rig.args_of("A01_tiktok"))
+    assert "blend=all_mode=screen" in graph and "enable=" not in graph
+    assert rig.clip("A01_tiktok").watermark.blend == "screen"
+
+
+def test_the_ass_file_has_captions_on_layers_0_and_1_and_the_hook_for_the_whole_clip(
+    rig: Rig,
+) -> None:
+    assert rig.go() == 0
+    clip = rig.clip("A01_tiktok")
+    assert clip.duration is not None
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    lines = [line for line in ass.split("\n") if line.startswith("Dialogue:")]
+    layers = {int(line.split(",")[0].split(": ")[1]) for line in lines}
+    assert layers == {0, 1, 2, 3}
+    end = ass_time(clip.duration)
+    hook_lines = [line for line in lines if line.startswith(("Dialogue: 2,", "Dialogue: 3,"))]
+    assert len(hook_lines) >= 2
+    for line in hook_lines:
+        assert f",0:00:00.00,{end}," in line
+    assert "\\fad" not in "".join(hook_lines)
+    assert any(line.startswith("Dialogue: 0,") for line in lines)
+
+
+def test_hook_mode_intro_shows_the_hook_only_at_the_start(project: Path, fake: FakeFfmpeg) -> None:
+    def intro(d: dict[str, Any]) -> None:
+        d["hook"]["mode"] = "intro"
+
+    rig = make_rig(project, fake, mutate=intro)
+    assert rig.go() == 0
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    hooks = [line for line in ass.split("\n") if line.startswith("Dialogue: 2,")]
+    assert hooks and all(",0:00:00.00,0:00:03.00," in line for line in hooks)
+    assert "\\fad(0,150)" in ass
+    assert rig.clip("A01_tiktok").hook_mode == "intro"
+
+
+def test_a_campaign_can_set_its_own_hook_seconds_in_intro_mode(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    def intro(d: dict[str, Any]) -> None:
+        d["hook"]["mode"] = "intro"
+        d["hook"]["seconds"] = 3
+
+    rig = make_rig(project, fake, mutate=intro)
+    assert rig.go() == 0
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    hooks = [line for line in ass.splitlines() if line.startswith("Dialogue: 2,")]
+    assert hooks and all(",0:00:00.00,0:00:03.00," in line for line in hooks)
+
+
+def test_hook_seconds_is_ignored_in_full_mode(project: Path, fake: FakeFfmpeg) -> None:
+    def full(d: dict[str, Any]) -> None:
+        d["hook"]["seconds"] = 3
+
+    rig = make_rig(project, fake, mutate=full)
+    assert rig.go() == 0
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    hooks = [line for line in ass.splitlines() if line.startswith("Dialogue: 2,")]
+    assert hooks and not any(",0:00:03.00," in line for line in hooks)
+
+
+def test_hook_position_top_puts_the_band_at_the_top_of_the_safe_area(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    def top(d: dict[str, Any]) -> None:
+        d["hook"]["position"] = "top"
+        d["watermark"]["position"]["y_center"] = 0.62  # out of the hook's way
+
+    rig = make_rig(project, fake, mutate=top)
+    assert rig.go() == 0
+    clip = rig.clip("A01_tiktok")
+    assert clip.hook_position == "top" and "hook_faces_unknown" not in clip.notes
+    assert set(clip.checks.values()) == {"pass"}
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    band = next(line for line in ass.splitlines() if line.startswith("Dialogue: 2,"))
+    assert band.split("p1}m ")[1].split(" ")[1] == "290"
+
+
+def test_hook_position_top_fails_the_moment_when_the_watermark_is_in_the_way(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    rig = make_rig(project, fake, mutate=lambda d: d["hook"].update(position="top"))
+    assert rig.go() != 0
+    failed = rig.clip("A01_tiktok")
+    assert failed.status == "failed" and "the hook overlaps the watermark" in (failed.error or "")
+    assert failed.checks["watermark_full_and_clear"] == "fail"
+
+
+def test_hook_position_avoid_faces_still_notes_unknown_faces(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    rig = make_rig(project, fake)  # the rig's campaign says avoid_faces
+    assert rig.go() == 0
+    clip = rig.clip("A01_tiktok")
+    assert clip.hook_position == "avoid_faces" and "hook_faces_unknown" in clip.notes
+
+
+def test_the_clip_json_records_the_watermark_and_the_settings(rig: Rig) -> None:
+    assert rig.go() == 0
+    clip = rig.clip("A01_tiktok")
+    wm = clip.watermark
+    assert (wm.x, wm.y, wm.width, wm.height) == (360, 298, 360, 96)
+    assert wm.rect == (490.0, 336.0, 590.0, 356.0) and wm.background == "transparent"
+    assert wm.color_type == "RGBA" and len(wm.sha256) == 64
+    assert clip.hook_font_size == 80 and clip.hook_mode == "full"
+    assert clip.settings is not None and clip.settings.hook_font_size == 80
+    assert clip.output is not None and clip.output.audio_codec == "aac"
+    assert list(clip.checks) == list(CHECKS)
+    assert set(clip.checks.values()) == {"pass"}
+    assert clip.source_sha256 == "b" * 64
+
+
+# --- spelling ------------------------------------------------------------------------------------
+
+
+def test_spelling_fixes_reach_the_captions_and_the_transcript_stays_as_it_was(
+    project: Path, fake: FakeFfmpeg
+) -> None:
+    overrides = {(5, 2): "zorble", (6, 0): "q", (6, 1): "x", (6, 2): "v"}
+    rig = make_rig(project, fake, overrides=overrides)
+    transcript = rig.run_dir / "transcript.json"
+    before = transcript.read_bytes()
+
+    assert rig.go() == 0
+
+    clip = rig.clip("A01_tiktok")
+    ass = (rig.out / "A01_tiktok.ass").read_text(encoding="utf-8")
+    assert "Zorb1e" in ass and "QXV" in ass
+    assert "zorble" not in ass.lower() and "s6w3" in ass
+    assert clip.spelling_replacements == 2
+    assert clip.names_to_check == {"Zorb1e": [1.25], "QXV": [5.15]}
+    assert transcript.read_bytes() == before
+
+
+# --- post text and closers -----------------------------------------------------------------------
+
+
+def three(rig: Rig) -> None:
+    rig.moments(
+        moment(id="A01", start="0:24", end="0:58", platform="tiktok"),
+        moment(id="A02", start="0:10", end="0:40", platform="instagram", caption="a second one."),
+        moment(id="A03", start="0:34", end="1:04", platform="youtube", caption="a third one."),
+    )
+
+
+def post(rig: Rig, name: str) -> list[str]:
+    text = (rig.out / f"{name}.post.txt").read_text(encoding="utf-8")
+    assert text.endswith("\n") and "\r" not in text
+    return text.rstrip("\n").split("\n")
+
+
+def test_post_text_is_prefix_caption_then_the_closer(rig: Rig) -> None:
+    three(rig)
+    assert rig.go() == 0
+    assert post(rig, "A01_tiktok") == [f"@demo {CAPTION}", "closer one"]
+    assert post(rig, "A02_instagram") == ["a second one.", "closer two"]  # no prefix for it
+    assert post(rig, "A03_youtube") == ["a third one.", "closer three"]
+
+
+def test_hashtags_are_a_line_of_their_own_only_when_given(project: Path, fake: FakeFfmpeg) -> None:
+    def tags(d: dict[str, Any]) -> None:
+        d["post"]["hashtags"] = ["#one", "#two"]
+
+    rig = make_rig(project, fake, mutate=tags)
+    assert rig.go() == 0
+    assert post(rig, "A01_tiktok") == [f"@demo {CAPTION}", "#one #two", "closer one"]
+
+
+def test_a_second_run_continues_the_rotation_and_never_repeats_the_last_closer(rig: Rig) -> None:
+    three(rig)
+    assert rig.go() == 0
+    assert rig.go("--only", "A01") == 0  # the next closer after "closer three"
+    assert post(rig, "A01_tiktok")[-1] == "closer one"
+    assert rig.used().last_closer == "closer one"
+
+    # the list changes so that the next position points at the closer just used
+    def longer(d: dict[str, Any]) -> None:
+        d["post"]["closers"] = ["x", "y", "z", "closer one"]
+
+    edit_yaml(rig.folder / "campaign.yaml", longer)
+    assert rig.go("--only", "A01") == 0
+    assert post(rig, "A01_tiktok")[-1] != "closer one"
+
+
+def test_three_moments_get_three_different_closers_in_a_row(rig: Rig) -> None:
+    three(rig)
+    assert rig.go() == 0
+    closers = [rig.clip(n).closer for n in ("A01_tiktok", "A02_instagram", "A03_youtube")]
+    assert closers == ["closer one", "closer two", "closer three"]
+
+
+# --- the used log --------------------------------------------------------------------------------
+
+
+def snapshot(rig: Rig, name: str) -> dict[str, str]:
+    return {
+        p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(rig.out.glob(f"{name}.*"))
+    }
+
+
+def test_a_rendered_moment_is_recorded_unposted(rig: Rig) -> None:
+    assert rig.go() == 0
+    (entry,) = rig.used().entries
+    assert (entry.id, entry.platform, entry.posted_at) == ("A01", "tiktok", None)
+    assert entry.output.startswith("runs/run/campaign/demo/") and entry.output.endswith(".mp4")
+    assert entry.closer == "closer one" and entry.source_sha256 == "b" * 64
+    assert (entry.start, entry.end) == (sentence_start_cut(5), sentence_end_cut(11))
+
+
+def test_a_posted_moment_is_refused_and_its_files_are_not_touched(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    three(rig)
+    assert rig.go() == 0
+    assert (
+        cli.main(
+            ["campaign-posted", "--campaign", "demo", "--id", "A01", "--platform", "tiktok"],
+            root=rig.project,
+        )
+        == 0
+    )
+    before = snapshot(rig, "A01_tiktok")
+    stamps = {p: p.stat().st_mtime_ns for p in rig.out.glob("A01_tiktok.*")}
+    rig.fake.calls.clear()
+    capsys.readouterr()
+
+    assert rig.go() == 0  # a full run: refused, not an error
+
+    assert snapshot(rig, "A01_tiktok") == before
+    assert {p: p.stat().st_mtime_ns for p in rig.out.glob("A01_tiktok.*")} == stamps
+    assert rig.fake.ids == ["A02_instagram", "A03_youtube"]
+    text = out_of(capsys)
+    assert "A01 tiktok: refused: already posted (use --force-reuse to render it again)" in text
+    assert "2 rendered, 0 failed, 1 refused" in text
+
+
+def test_a_refused_moment_named_in_only_is_exit_1(rig: Rig) -> None:
+    assert rig.go() == 0
+    cli.main(
+        ["campaign-posted", "--campaign", "demo", "--id", "A01", "--platform", "tiktok"],
+        root=rig.project,
+    )
+    assert rig.go("--only", "A01") == 1
+
+
+def test_force_reuse_renders_a_posted_moment_with_a_warning_check(rig: Rig) -> None:
+    assert rig.go() == 0
+    cli.main(
+        ["campaign-posted", "--campaign", "demo", "--id", "A01", "--platform", "tiktok"],
+        root=rig.project,
+    )
+
+    assert rig.go("--force-reuse") == 0
+
+    clip = rig.clip("A01_tiktok")
+    assert clip.checks["not_previously_used"] == "warn"
+    entries = rig.used().entries
+    assert len(entries) == 2 and entries[0].posted_at is not None and entries[1].posted_at is None
+
+
+def test_a_moment_overlapping_a_posted_one_renders_with_a_warning(rig: Rig) -> None:
+    assert rig.go() == 0
+    cli.main(
+        ["campaign-posted", "--campaign", "demo", "--id", "A01", "--platform", "tiktok"],
+        root=rig.project,
+    )
+    rig.moments(moment(id="A09", start="0:30", end="1:00", platform="youtube"))  # most of it is A01
+
+    assert rig.go() == 0
+
+    clip = rig.clip("A09_youtube")
+    assert clip.status == "rendered" and clip.checks["not_previously_used"] == "warn"
+    assert clip.warnings == ["overlaps a posted moment (A01 tiktok)"]
+
+
+def test_a_moment_that_barely_overlaps_a_posted_one_has_no_warning(rig: Rig) -> None:
+    assert rig.go() == 0
+    cli.main(
+        ["campaign-posted", "--campaign", "demo", "--id", "A01", "--platform", "tiktok"],
+        root=rig.project,
+    )
+    rig.moments(moment(id="A09", start="0:55", end="1:20", platform="youtube"))  # 3 s of 25
+
+    assert rig.go() == 0
+    assert rig.clip("A09_youtube").checks["not_previously_used"] == "pass"
+
+
+# --- finding the run -----------------------------------------------------------------------------
+
+
+def make_source(project: Path, name: str = "talk.mp4", data: bytes = b"video bytes") -> Path:
+    path = project / name
+    path.write_bytes(data)
+    return path
+
+
+def test_a_video_file_matching_path_size_and_time_reuses_the_run(
+    project: Path, fake: FakeFfmpeg, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = make_source(project)
+    rig = make_rig(project, fake)
+    run_dir = write_run(project, name="earlier", source=source)
+
+    assert rig.go(target=source) == 0
+
+    assert find_run(project.resolve(), source) == (run_dir, False)
+    assert f"reusing run folder: {run_dir.resolve()}" in capsys.readouterr().out
+    assert (run_dir / "campaign" / "demo" / "A01_tiktok.mp4").is_file()
+
+
+@pytest.mark.parametrize("what", ["size", "mtime"])
+def test_a_changed_size_or_time_is_not_the_same_source(project: Path, what: str) -> None:
+    source = make_source(project)
+    write_run(project, source=source, **{what: "other"})  # type: ignore[arg-type]
+    assert find_run(project.resolve(), source) is None
+
+
+def test_another_path_is_not_the_same_source(project: Path) -> None:
+    source = make_source(project)
+    write_run(project, source=source)
+    other = make_source(project, "copy.mp4")
+    os.utime(other, ns=(source.stat().st_atime_ns, source.stat().st_mtime_ns))
+    assert find_run(project.resolve(), other) is None
+
+
+def test_a_run_with_no_recorded_time_matches_on_path_and_size_with_a_warning(
+    project: Path, fake: FakeFfmpeg, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = make_source(project)
+    rig = make_rig(project, fake)
+    run_dir = write_run(project, name="old", source=source, mtime="none")
+    assert find_run(project.resolve(), source) == (run_dir, True)
+
+    assert rig.go(target=source) == 0
+
+    out = capsys.readouterr().out
+    assert "reusing run folder:" in out
+    assert "warning: that run has no recorded modified time for its source" in out
+
+
+def test_a_run_matched_with_the_time_wins_over_a_newer_one_without(project: Path) -> None:
+    source = make_source(project)
+    with_time = write_run(project, name="a", source=source, created_at="2026-10-01T00:00:00+00:00")
+    write_run(
+        project, name="b", source=source, mtime="none", created_at="2026-10-09T00:00:00+00:00"
+    )
+    assert find_run(project.resolve(), source) == (with_time, False)
+
+
+def test_the_newest_run_wins_among_equals(project: Path) -> None:
+    source = make_source(project)
+    write_run(project, name="a", source=source, created_at="2026-10-01T00:00:00+00:00")
+    newer = write_run(project, name="b", source=source, created_at="2026-10-09T00:00:00+00:00")
+    assert find_run(project.resolve(), source) == (newer, False)
+
+
+def test_a_run_whose_transcribe_is_not_done_is_not_matched(project: Path) -> None:
+    source = make_source(project)
+    write_run(project, source=source, transcribe_done=False)
+    assert find_run(project.resolve(), source) is None
+
+
+def test_unreadable_runs_are_skipped_quietly(project: Path) -> None:
+    source = make_source(project)
+    broken = project / "runs" / "broken"
+    broken.mkdir()
+    (broken / "run.json").write_text("not json", encoding="utf-8")
+    good = write_run(project, name="good", source=source)
+    assert find_run(project.resolve(), source) == (good, False)
+
+
+def test_a_run_folder_is_used_as_given(rig: Rig, capsys: pytest.CaptureFixture[str]) -> None:
+    assert rig.go() == 0
+    assert f"run folder: {rig.run_dir}" in capsys.readouterr().out
+
+
+def test_a_new_source_makes_a_new_run_with_the_general_client(
+    project: Path, fake: FakeFfmpeg, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = make_source(project)
+    rig = make_rig(project, fake)
+    # fetch and transcribe are stubbed in unit tests, so the new run has no inputs to render:
+    # the command stops with a clear error, but the run was made for the general client
+    assert rig.go(target=source) == 2
+    (created,) = (p for p in (project / "runs").iterdir() if p.name != "run")
+    state = json.loads((created / "run.json").read_text(encoding="utf-8"))
+    assert state["client"] == "general" and state["input"] == str(source.resolve())
+    assert [s["status"] for s in state["stages"].values()][:2] == ["done", "done"]
+    assert state["stages"]["candidates"]["status"] == "pending"
+    assert f"run folder: {created}" in capsys.readouterr().out
+
+
+# --- options and errors --------------------------------------------------------------------------
+
+
+def test_only_selects_the_named_moments(rig: Rig) -> None:
+    three(rig)
+    assert rig.go("--only", "A02,A03") == 0
+    assert not (rig.out / "A01_tiktok.mp4").exists()
+    assert (rig.out / "A02_instagram.mp4").is_file() and (rig.out / "A03_youtube.mp4").is_file()
+
+
+def test_an_unknown_id_in_only_is_exit_2(rig: Rig, capsys: pytest.CaptureFixture[str]) -> None:
+    assert rig.go("--only", "Z9") == 2
+    assert "no moment with id Z9" in capsys.readouterr().err
+    assert not rig.out.exists()
+
+
+def test_an_unknown_campaign_is_exit_2(rig: Rig, capsys: pytest.CaptureFixture[str]) -> None:
+    code = cli.main(["campaign", str(rig.run_dir), "--campaign", "nothing"], root=rig.project)
+    assert code == 2 and "unknown campaign" in capsys.readouterr().err
+
+
+def test_legacy_caption_style_is_exit_2(rig: Rig, capsys: pytest.CaptureFixture[str]) -> None:
+    def legacy(d: dict[str, Any]) -> None:
+        d["captions"]["style"] = "legacy"
+        d["hook"]["enabled"] = False
+
+    edit_yaml(rig.project / "config" / "default.yaml", legacy)
+    assert rig.go() == 2
+    assert "box_karaoke" in capsys.readouterr().err
+    assert not rig.out.exists()
+
+
+def test_a_bad_campaign_file_stops_everything_before_a_run_is_made(
+    project: Path, fake: FakeFfmpeg, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def broken(d: dict[str, Any]) -> None:
+        d["watermark"]["position"] = {"x_center": 0.05, "y_center": 0.05}  # a corner
+
+    rig = make_rig(project, fake, mutate=broken)
+    source = make_source(project)
+    assert rig.go(target=source) == 2
+    assert "corner zone" in capsys.readouterr().err
+    assert [p.name for p in (project / "runs").iterdir()] == ["run"]  # no new run folder
+
+
+def test_the_current_config_is_used_not_the_runs_copy(rig: Rig) -> None:
+    edit_yaml(
+        rig.project / "config" / "default.yaml", lambda d: d["campaign"].update(max_snap_seconds=0)
+    )
+    assert rig.go() == 0
+    clip = rig.clip("A01_tiktok")
+    assert clip.start == 24.0 and clip.snap_notes[0].startswith(START_KEPT_NOTE)
+
+
+# --- what is printed -----------------------------------------------------------------------------
+
+
+def test_the_console_never_shows_texts(rig: Rig, capsys: pytest.CaptureFixture[str]) -> None:
+    three(rig)
+    rig.moments(
+        moment(id="A01", start="0:24", end="0:58"),
+        moment(id="A02", start="0:24", end="0:30", platform="instagram"),  # fails
+        moment(id="A03", start="0:34", end="1:04", platform="youtube", hook="AAAA BBBB CCCC DDDD"),
+    )
+    rig.go()
+    cli.main(
+        ["campaign-posted", "--campaign", "demo", "--id", "A01", "--platform", "tiktok"],
+        root=rig.project,
+    )
+    rig.go()
+    text = out_of(capsys)
+    assert "A01 tiktok" in text
+    for secret in (*SECRET_TEXTS, "AAAA BBBB", "Example Campaign"):
+        assert secret not in text
+
+
+def test_the_json_and_the_post_file_hold_no_hook_or_caption_text(rig: Rig) -> None:
+    assert rig.go() == 0
+    raw = (rig.out / "A01_tiktok.json").read_text(encoding="utf-8")
+    assert HOOK not in raw and CAPTION not in raw and "s5w" not in raw
+    assert "closer one" in raw  # the one text it keeps
+    assert json.loads(raw)["schema_version"] == 1
+
+
+def test_used_json_is_written_in_the_campaign_folder(rig: Rig) -> None:
+    assert rig.go() == 0
+    assert (rig.folder / USED_FILE).is_file()

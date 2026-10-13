@@ -14,6 +14,7 @@ from clipmachine.config import (
     validate_client_name,
 )
 from clipmachine.models import (
+    CampaignModeConfig,
     CaptionsConfig,
     HookConfig,
     RenderedClip,
@@ -771,7 +772,7 @@ def test_the_shipped_default_is_box_karaoke_with_the_hook_on(project: Path) -> N
     assert set(data["safe"]) == set(SafeConfig.model_fields)
     app = load_app_config(project)
     assert (app.captions.style, app.captions.font_size) == ("box_karaoke", 96)
-    assert app.hook == HookConfig(enabled=True)
+    assert app.hook == HookConfig(enabled=True, seconds=3.0)  # 3 s since Brief 11's run
     assert app.safe == SafeConfig()
     assert app.captions.model_dump(include=set(R1_CAPTION_KEYS)) == CaptionsConfig(
         words_per_line=1, font="x", highlight_color="#FFD400", style="box_karaoke"
@@ -788,6 +789,31 @@ def test_config_without_the_r1_keys_loads_as_legacy(project: Path) -> None:
     assert (app.captions.box_opacity, app.captions.box_padding_px) == (0.75, 18)
     assert app.hook == HookConfig() and app.hook.enabled is False
     assert (app.safe.top, app.safe.bottom, app.safe.left, app.safe.right) == (290, 560, 120, 192)
+
+
+def test_the_hook_font_size_is_80_and_separate_from_the_caption_size(project: Path) -> None:
+    app = load_app_config(project)
+    assert app.hook.font_size == 80 and app.captions.font_size == 96
+
+
+def test_a_config_without_hook_font_size_loads_as_80(project: Path) -> None:
+    _default(project, lambda d: d["hook"].pop("font_size"))
+    assert load_app_config(project).hook.font_size == 80
+
+
+@pytest.mark.parametrize("size", [20, 200])
+def test_the_hook_font_size_range_ends_are_valid(project: Path, size: int) -> None:
+    _default(project, lambda d: d["hook"].update(font_size=size))
+    assert load_app_config(project).hook.font_size == size
+
+
+def test_a_resolved_file_without_hook_font_size_still_loads(project: Path, tmp_path: Path) -> None:
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "example-client"), target)
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    del data["config"]["hook"]["font_size"]
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert load_resolved_file(target).app.hook.font_size == 80
 
 
 def _box_karaoke(d: dict[str, Any]) -> None:
@@ -818,6 +844,8 @@ def test_box_karaoke_with_the_default_margins_is_valid(project: Path) -> None:
         (lambda d: d.update(hook={"seconds": 0}), "hook.seconds"),
         (lambda d: d.update(hook={"fade_ms": -1}), "hook.fade_ms"),
         (lambda d: d.update(hook={"enable": True}), "hook.enable"),  # typo: unknown key
+        (lambda d: d["hook"].update(font_size=19), "hook.font_size"),
+        (lambda d: d["hook"].update(font_size=201), "hook.font_size"),
         (lambda d: d.update(safe={"top": -1}), "safe.top"),
         # margins that leave no room
         (lambda d: d.update(safe={"left": 600, "right": 480}), "safe.left"),
@@ -896,6 +924,7 @@ def test_rendered_settings_and_clip_json_from_before_r1_still_load() -> None:
     assert settings.caption_style == "legacy" and settings.hook_enabled is False
     assert (settings.safe_top, settings.safe_bottom, settings.max_words) == (0, 0, 0)
     assert settings.spoken_color == "" and settings.box_opacity == 0.0
+    assert settings.hook_font_size == 0  # Brief 11: old outputs are stale and re-render
 
     old_clip = {
         "id": "c01",
@@ -928,3 +957,59 @@ def test_rendered_settings_and_clip_json_from_before_r1_still_load() -> None:
     clip = RenderedClip.model_validate(old_clip)
     assert clip.notes == [] and clip.caption_lines == 0 and clip.caption_max_words == 0
     assert (clip.hook_shown, clip.hook_moved, clip.outside_safe_zone) == (False, False, 0)
+
+
+# --- Brief 11: campaign mode settings -------------------------------------------------------------
+
+
+def test_the_shipped_default_has_the_campaign_section(project: Path) -> None:
+    data = yaml.safe_load((project / "config" / "default.yaml").read_text(encoding="utf-8"))
+    assert set(data["campaign"]) == set(CampaignModeConfig.model_fields)
+    app = load_app_config(project)
+    assert app.campaign == CampaignModeConfig()
+    assert (app.campaign.max_snap_seconds, app.campaign.corner_zone) == (1.5, 0.15)
+    assert app.campaign.auto_end_target_s == 40
+
+
+@pytest.mark.parametrize(
+    ("update", "expected"),
+    [
+        ({"max_snap_seconds": -1}, "campaign.max_snap_seconds"),
+        ({"max_snap_seconds": 11}, "campaign.max_snap_seconds"),
+        ({"corner_zone": 0}, "campaign.corner_zone"),
+        ({"corner_zone": 0.5}, "campaign.corner_zone"),
+        ({"auto_end_target_s": 0}, "campaign.auto_end_target_s"),
+        ({"max_snap": 1.0}, "campaign.max_snap"),  # typo: unknown key
+    ],
+)
+def test_invalid_campaign_settings_are_rejected(
+    project: Path, update: dict[str, Any], expected: str
+) -> None:
+    _default(project, lambda d: d["campaign"].update(update))
+    with pytest.raises(ConfigError, match=expected):
+        load_app_config(project)
+
+
+def test_a_config_without_the_campaign_section_loads_with_the_defaults(project: Path) -> None:
+    _default(project, lambda d: d.pop("campaign"))
+    assert load_app_config(project).campaign == CampaignModeConfig()
+
+
+def test_a_resolved_file_from_before_brief_11_still_loads(project: Path, tmp_path: Path) -> None:
+    target = tmp_path / "config.resolved.yaml"
+    dump_resolved(load_resolved(project, "example-client"), target)
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    del data["config"]["campaign"]
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert load_resolved_file(target).app.campaign == CampaignModeConfig()
+
+
+def test_a_config_without_hook_position_reads_as_top(project: Path) -> None:
+    _default(project, lambda d: d["hook"].pop("position"))
+    assert load_app_config(project).hook.position == "top"
+
+
+def test_hook_position_must_be_top_or_avoid_faces(project: Path) -> None:
+    _default(project, lambda d: d["hook"].update(position="bottom"))
+    with pytest.raises(ConfigError, match="position"):
+        load_app_config(project)
