@@ -414,6 +414,10 @@ class CampaignModeConfig(StrictModel):
     title_keep_case: list[str] = Field(
         default_factory=lambda: ["NBA", "NFL", "NHL", "MLB", "UFC", "MMA", "MPJ", "US", "UK"]
     )
+    # Brief 12 (scout): the host-side check looks at the first seconds of a proposed moment and
+    # says "likely" when a face sits on the host's side in at least this share of the frames
+    scout_host_seconds: float = Field(default=5.0, gt=0, le=30)
+    scout_host_share: float = Field(default=0.5, gt=0, le=1)
 
 
 class RenderConfig(StrictModel):

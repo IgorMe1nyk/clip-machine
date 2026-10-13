@@ -377,6 +377,21 @@ def final_cut(index: SentenceIndex, first: int, last: int) -> CutInfo:
     )
 
 
+def both_checks(
+    first: Callable[[ScoreBatch], str | None],
+    second: Callable[[ScoreBatch], str | None] | None,
+) -> Callable[[ScoreBatch], str | None]:
+    """One check out of two: the messages joined, None when both pass."""
+    if second is None:
+        return first
+
+    def check(batch: ScoreBatch) -> str | None:
+        problems = [p for p in (first(batch), second(batch)) if p]
+        return "; ".join(problems) if problems else None
+
+    return check
+
+
 # --- selection -----------------------------------------------------------------------------------
 
 
@@ -504,7 +519,7 @@ def _score(ctx: RunContext, run_dir: Path, out_dir: Path) -> None:
             cfg.max_output_tokens,
             thinking=cfg.thinking,
             effort=cfg.effort,
-            check=ids_problem([item.candidate.id for item in group]),
+            check=both_checks(ids_problem([item.candidate.id for item in group]), ctx.extra_check),
             repairs=cfg.repair_attempts,
         )
         for clip in batch.clips:

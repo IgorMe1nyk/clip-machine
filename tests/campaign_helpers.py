@@ -241,7 +241,7 @@ def write_run(
                 id=k,
                 start=words[0].start,
                 end=words[-1].end,
-                text="",
+                text=" ".join(w.word.strip() for w in words),
                 avg_logprob=0.0,
                 no_speech_prob=0.0,
                 words=words,

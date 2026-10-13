@@ -164,6 +164,8 @@ def _line(moment_name: str, result: MomentResult, closers: int) -> str:
     label = moment_name.replace("_", " ", 1)
     if result.outcome == "refused":
         return f"{label}: refused: already posted (use --force-reuse to render it again)"
+    if result.outcome == "rejected":
+        return f"{label}: skipped: rejected with campaign-reject"
     if result.outcome == "failed":
         return f"{label}: FAILED: {result.reason}"
     clip = result.clip
@@ -297,7 +299,7 @@ def run_campaign(
 
     closers = len(cfg.post.closers)
     wanted = {part.strip() for part in only.split(",")} if only else set()
-    counts = {"rendered": 0, "failed": 0, "refused": 0}
+    counts = {"rendered": 0, "failed": 0, "refused": 0, "rejected": 0}
     refused_named = False
     sources: list[_Source] = []
     source_names: dict[str, str] = {}
@@ -357,9 +359,10 @@ def run_campaign(
             f"names: {len(first.auto)} automatic spelling rules, {suggestions} suggestions, "
             f"{len(first.covered)} already in spelling; see {AUTO_SPELLING_FILE} and the report"
         )
+    rejected = f", {counts['rejected']} rejected" if counts["rejected"] else ""
     print(
         f"campaign: {counts['rendered']} rendered, {counts['failed']} failed, "
-        f"{counts['refused']} refused; API calls: 0; {seconds:.1f} s"
+        f"{counts['refused']} refused{rejected}; API calls: 0; {seconds:.1f} s"
     )
     print(f"output: {out_dir}")
     run_names = ", ".join(dict.fromkeys(s.run_dir.name for s in sources))

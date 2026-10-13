@@ -31,7 +31,13 @@ from clipmachine.campaign.models import (
 )
 from clipmachine.campaign.post import post_text
 from clipmachine.campaign.spelling import apply_spelling, find_names
-from clipmachine.campaign.used import overlapping_posted, posted_entry, record_render, take_closer
+from clipmachine.campaign.used import (
+    is_rejected,
+    overlapping_posted,
+    posted_entry,
+    record_render,
+    take_closer,
+)
 from clipmachine.models import AppConfig, RenderedOutput
 from clipmachine.runs import RunError, write_json_atomic, write_text_atomic
 from clipmachine.stages import render as stage
@@ -42,7 +48,7 @@ from clipmachine.utils.snapping import EPSILON, SentenceIndex, auto_end, snap_ne
 from clipmachine.utils.wordlists import Hit, sensitive_hits
 
 Check = Literal["pass", "warn", "fail", "n/a"]  # n/a: the campaign does not require it
-Outcome = Literal["rendered", "failed", "refused"]
+Outcome = Literal["rendered", "failed", "refused", "rejected"]  # rejected: Brief 12
 
 # The clip length is compared with this much slack, as the render stage's checks are.
 LENGTH_SLACK = 0.001
@@ -525,6 +531,8 @@ def render_moment(
 ) -> MomentResult:
     """Render one moment. Returns the outcome with the (possibly updated) used log."""
     name = moment.clip_name
+    if is_rejected(used, moment.id):
+        return MomentResult("rejected", used)  # Igor said no (Brief 12); nothing is touched
     was_posted = posted_entry(used, moment.id, moment.platform) is not None
     if was_posted and not force_reuse:
         return MomentResult("refused", used)  # nothing of this moment is touched

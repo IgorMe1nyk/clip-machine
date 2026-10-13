@@ -353,15 +353,19 @@ def load_moments(campaign: Campaign) -> list[MomentSpec]:
     path = campaign.folder / "moments.yaml"
     if not path.is_file():
         raise ConfigError(f"moments.yaml not found: {path}")
+    return parse_moments(path.read_text(encoding="utf-8"), campaign.config.hook.max_chars)
+
+
+def parse_moments(text: str, limit: int) -> list[MomentSpec]:
+    """The entries of a moments.yaml text (also used to check a text before it is written)."""
     try:
-        data: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data: Any = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         raise ConfigError(f"moments.yaml: invalid YAML: {exc}") from exc
     if not isinstance(data, list):
         raise ConfigError("moments.yaml: expected a list of moments at the top level")
     if not data:
         raise ConfigError("moments.yaml: the list is empty")
-    limit = campaign.config.hook.max_chars
     moments: list[MomentSpec] = []
     seen: set[str] = set()
     for number, entry in enumerate(data, start=1):
