@@ -54,6 +54,9 @@ class CampaignHook(StrictModel):
     # optional; left out, hook.position from the app config is used
     position: Literal["top", "avoid_faces"] | None = None
     max_chars: int = Field(default=48, ge=1, le=200)
+    # Brief 11.1: a word from config/wordlists/flag.txt (or a slur) in the hook is a warning in
+    # the report, or fails the moment. The hook is never rewritten.
+    sensitive: Literal["warn", "fail"] = "warn"
 
 
 class WatermarkPosition(StrictModel):
@@ -123,13 +126,17 @@ class CampaignConfig(StrictModel):
     spelling: list[SpellingRule] = Field(default_factory=list)
     names_to_check: list[str] = Field(default_factory=list)
     post: PostConfig
+    # Brief 11.1: words this campaign is fine with (taken off the mask, context and flag lists;
+    # a show called "High Stakes") and words to mask on top of config/wordlists/mask.txt
+    allowed: list[str] = Field(default_factory=list)
+    extra_masked: list[str] = Field(default_factory=list)
 
-    @field_validator("names_to_check")
+    @field_validator("names_to_check", "allowed", "extra_masked")
     @classmethod
     def _names(cls, value: list[str]) -> list[str]:
         names = [n.strip() for n in value]
         if any(not n for n in names):
-            raise ValueError("a name must not be empty")
+            raise ValueError("an entry must not be empty")
         return names
 
     @model_validator(mode="after")
@@ -253,6 +260,9 @@ class CampaignClip(StrictModel):
     notes: list[str] = Field(default_factory=list)  # reason codes from captions, hook, watermark
     spelling_replacements: int = 0
     names_to_check: dict[str, list[float]] = Field(default_factory=dict)
+    # Brief 11.1: counts only; the words are in <clip>.review.txt next to the clip
+    masked_words: int = 0  # in the captions, the hook and the post caption
+    sensitive_words: int = 0  # flagged in the hook and the post caption
     checks: dict[str, Literal["pass", "warn", "fail"]] = Field(default_factory=dict)
     closer: str | None = None
     hook_mode: str

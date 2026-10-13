@@ -18,7 +18,7 @@ from clipmachine.campaign.report import CHECK_LABELS, REPORT_HTML, build_html, w
 from clipmachine.config import load_app_config
 from clipmachine.utils import ffmpeg
 from test_campaign_run import HOOK, SECRET_TEXTS, Rig, make_rig, out_of
-from test_render import FakeFfmpeg
+from test_render import FakeFfmpeg, invented_lists
 
 LABELS = [
     "length within range",
@@ -87,7 +87,11 @@ POST = "@demo says something invented.\ncloser one\n"
 
 
 def page(
-    project: Path, moments: list[Moment], clips: dict[str, CampaignClip], posts: Any = None
+    project: Path,
+    moments: list[Moment],
+    clips: dict[str, CampaignClip],
+    posts: Any = None,
+    reviews: Any = None,
 ) -> str:
     return build_html(
         campaign=make_campaign(project),
@@ -95,6 +99,7 @@ def page(
         moments=moments,
         clips=clips,
         posts={"A01_tiktok": POST} if posts is None else posts,
+        reviews=reviews,
     )
 
 
@@ -265,6 +270,30 @@ def test_write_report_reads_the_jsons_and_post_files_in_the_folder(project: Path
     assert "\r" not in text
 
 
+def test_masked_words_are_a_count_and_sensitive_words_are_named(project: Path) -> None:
+    review = (
+        "masked\tcaptions\tblorp\tmask\nmasked\thook\t-\tslur\nmasked\tpost\tglim\tmask\n"
+        "sensitive\thook\twump\tflag\nsensitive\tpost\t-\tslur\nsensitive\tpost\tzib\tcontext\n"
+    )
+    html = page(
+        project,
+        [mom()],
+        {"A01_tiktok": clip(masked_words=3, sensitive_words=3)},
+        reviews={"A01_tiktok": review},
+    )
+    assert "<b>Masked:</b> 3 words (1 slur)" in html
+    assert "<li>wump (hook)</li>" in html and "<li>a slur (post caption)</li>" in html
+    assert "<li>zib (post caption)</li>" in html and "allowed:" in html
+    assert "blorp" not in html and "glim" not in html  # masked words are a count only
+
+    plain = page(project, [mom()], {"A01_tiktok": clip()})
+    assert "Masked" not in plain and "Sensitive" not in plain
+    one = page(project, [mom()], {"A01_tiktok": clip(masked_words=1)})
+    assert "<b>Masked:</b> 1 word</p>" in one
+    missing = page(project, [mom()], {"A01_tiktok": clip(sensitive_words=2)})
+    assert "<b>Sensitive words:</b> 2 (the review file is missing)" in missing
+
+
 # --- through the command ---
 
 
@@ -346,3 +375,18 @@ def test_the_console_still_shows_no_text_from_the_report(
     assert "report: " in text
     for secret in (*SECRET_TEXTS, "a second one.", "Example Campaign"):
         assert secret not in text
+
+
+def test_the_report_names_the_sensitive_word_and_the_console_does_not(
+    project: Path, fake: FakeFfmpeg, capsys: pytest.CaptureFixture[str]
+) -> None:
+    invented_lists(project)
+    rig = make_rig(project, fake, overrides={(5, 2): "blorp"})
+    rig.moments(moment(start="0:24", end="0:58", hook="WHY WUMP MATTERS"))
+
+    assert rig.go() == 0
+
+    html = (rig.out / REPORT_HTML).read_text(encoding="utf-8")
+    assert "<li>WUMP (hook)</li>" in html and "<b>Masked:</b> 1 word</p>" in html
+    assert "blorp" not in html
+    assert "WUMP" not in out_of(capsys)

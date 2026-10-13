@@ -157,6 +157,11 @@ def run_campaign(
                 inputs, track_plan=dataclasses.replace(inputs.track_plan, clips_dir=out_dir)
             )
         plan = stage._make_plan(run_dir, out_dir, app, inputs)
+        if plan.wordlists is not None:  # the campaign's own allowed and extra words
+            cfg = campaign.config
+            fine = [*cfg.allowed, *cfg.names_to_check, *(rule.to for rule in cfg.spelling)]
+            lists = plan.wordlists.with_masked(cfg.extra_masked).without(fine)
+            plan = dataclasses.replace(plan, wordlists=lists)
         transcript = _load_transcript(run_dir)
         index = build_index(
             transcript.segments,

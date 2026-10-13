@@ -411,7 +411,9 @@ class Captions:
     notes: tuple[str, ...] = ()
     caption_boxes: tuple[Rect, ...] = ()  # one per caption line (box_karaoke)
     hook_band: Rect | None = None  # the box behind the hook, when it is shown
-    masked: tuple[Hit, ...] = ()  # caption and hook words masked; shown nowhere but a local report
+    # words masked in the captions and in the hook; shown nowhere but a local report
+    masked: tuple[Hit, ...] = ()
+    hook_masked: tuple[Hit, ...] = ()
 
 
 def _masked_words(plan: Plan, words: list[CaptionWord]) -> tuple[list[CaptionWord], list[Hit]]:
@@ -491,6 +493,7 @@ def _karaoke_captions(
     notes = list(built.notes)
     hook_events: list[AssEvent] = []
     hook_band: Rect | None = None
+    hook_masked: list[Hit] = []
     shown = moved = False
     if hook is None and settings.hook_enabled:
         hook = HookSpec(
@@ -505,8 +508,7 @@ def _karaoke_captions(
         face_boxes = None if at_top else _face_boxes(plan, chosen, min(hook.seconds, duration))
         hook_line = clip.hook_line
         if plan.wordlists is not None:
-            hook_line, hook_hits = mask_text(hook_line, plan.wordlists)
-            masked.extend(hook_hits)
+            hook_line, hook_masked = mask_text(hook_line, plan.wordlists)
         result = build_hook(
             hook_line,
             karaoke,
@@ -547,6 +549,7 @@ def _karaoke_captions(
         caption_boxes=tuple(built.boxes),
         hook_band=hook_band,
         masked=tuple(masked),
+        hook_masked=tuple(hook_masked),
     )
 
 
@@ -560,7 +563,8 @@ def _captions_log(settings: RenderedSettings, captions: Captions) -> str:
         hook = "hook missing"
     else:
         hook = "hook moved" if captions.hook_moved else "hook shown"
-    return f", captions {captions.lines} lines, {hook}, {len(captions.masked)} masked"
+    count = len(captions.masked) + len(captions.hook_masked)
+    return f", captions {captions.lines} lines, {hook}, {count} masked"
 
 
 def _render_clip(plan: Plan, clip: ScoredClip) -> None:
@@ -655,7 +659,7 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
             hook_shown=captions.hook_shown,
             hook_moved=captions.hook_moved,
             outside_safe_zone=captions.outside_safe_zone,
-            masked_words=len(captions.masked),
+            masked_words=len(captions.masked) + len(captions.hook_masked),
         ).model_dump(mode="json"),
     )
     mode = "center" if chosen is None else _speaker_log(chosen)

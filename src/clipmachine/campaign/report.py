@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from clipmachine.campaign.loader import Campaign
 from clipmachine.campaign.models import CHECKS, CampaignClip, Moment
+from clipmachine.campaign.render import REVIEW_SUFFIX
 from clipmachine.runs import write_text_atomic
 from clipmachine.stages.report import CSS, _esc, _hms
 from clipmachine.utils.image import color_type_name
@@ -50,7 +51,9 @@ EXTRA_CSS = """
 pre.post { white-space: pre-wrap; background: #f1f3f7; border-radius: 6px; padding: 8px 10px;
   margin: 6px 0; overflow-wrap: anywhere; }
 .names { margin: 4px 0; padding-left: 18px; }
+.review { margin: 4px 0; padding-left: 18px; }
 """
+WHERE = {"captions": "captions", "hook": "hook", "post": "post caption"}
 
 
 def _clock(seconds: float) -> str:
@@ -105,7 +108,37 @@ def _names(names: Mapping[str, Sequence[float]]) -> str:
     return f'<p><b>Names to check</b></p><ul class="names">{"".join(rows)}</ul>'
 
 
-def _card(moment: Moment, clip: CampaignClip | None, post: str | None) -> str:
+def _review_block(clip: CampaignClip, review: str | None) -> str:
+    """Masked words as a count (slurs counted apart) and the sensitive words by name, from the
+    clip's review file; nothing when there is nothing to say."""
+    rows = [line.split("\t") for line in (review or "").splitlines() if line.count("\t") == 3]
+    slurs = sum(1 for what, _, _, kind in rows if what == "masked" and kind == "slur")
+    parts = []
+    if clip.masked_words:
+        apart = f" ({slurs} slur{'s' if slurs != 1 else ''})" if slurs else ""
+        count = f"{clip.masked_words} word{'s' if clip.masked_words != 1 else ''}"
+        parts.append(f"<p><b>Masked:</b> {count}{apart}</p>")
+    sensitive = [(where, word, kind) for what, where, word, kind in rows if what == "sensitive"]
+    if sensitive:
+        items = "".join(
+            f"<li>{'a slur' if kind == 'slur' else _esc(word)} ({_esc(WHERE.get(where, where))})"
+            "</li>"
+            for where, word, kind in sensitive
+        )
+        parts.append(
+            f"<p><b>Sensitive words</b> (reword, or add to <code>allowed:</code> in campaign.yaml "
+            f'if the campaign is fine with it)</p><ul class="review">{items}</ul>'
+        )
+    elif clip.sensitive_words:
+        parts.append(
+            f"<p><b>Sensitive words:</b> {clip.sensitive_words} (the review file is missing)</p>"
+        )
+    return "".join(parts)
+
+
+def _card(
+    moment: Moment, clip: CampaignClip | None, post: str | None, review: str | None = None
+) -> str:
     name = moment.clip_name
     heading = f"<h2>{_esc(moment.id)} &middot; {_esc(moment.platform)}</h2>"
     if clip is None:
@@ -149,6 +182,9 @@ def _card(moment: Moment, clip: CampaignClip | None, post: str | None) -> str:
         parts.append(f"<p><b>Closer:</b> {_esc(clip.closer or '')}</p>\n")
         parts.append(f"<p>{_esc(clip.spelling_replacements)} spelling fixes</p>\n")
         parts.append(_names(clip.names_to_check) + "\n")
+    block = _review_block(clip, review)
+    if block:
+        parts.append(block + "\n")
     parts.append("<p><b>Compliance checklist</b></p>" + _checks(clip) + "\n")
     if badges:
         parts.append(f"<p>{badges}</p>\n")
@@ -198,10 +234,15 @@ def build_html(
     moments: Sequence[Moment],
     clips: Mapping[str, CampaignClip],
     posts: Mapping[str, str],
+    reviews: Mapping[str, str] | None = None,
 ) -> str:
-    """The whole page. `clips` and `posts` are keyed by Moment.clip_name; a moment with no clip
-    is listed as not rendered yet."""
-    cards = [_card(m, clips.get(m.clip_name), posts.get(m.clip_name)) for m in moments]
+    """The whole page. `clips`, `posts` and `reviews` (the .review.txt texts) are keyed by
+    Moment.clip_name; a moment with no clip is listed as not rendered yet."""
+    found = reviews or {}
+    cards = [
+        _card(m, clips.get(m.clip_name), posts.get(m.clip_name), found.get(m.clip_name))
+        for m in moments
+    ]
     body = "\n".join([_header(campaign, run_name, moments, clips), *cards])
     return (
         "<!DOCTYPE html>\n"
@@ -219,6 +260,7 @@ def write_report(
     is missing or does not validate counts as not rendered yet."""
     clips: dict[str, CampaignClip] = {}
     posts: dict[str, str] = {}
+    reviews: dict[str, str] = {}
     for moment in moments:
         name = moment.clip_name
         try:
@@ -229,9 +271,18 @@ def write_report(
             continue
         with contextlib.suppress(OSError):
             posts[name] = (out_dir / f"{name}.post.txt").read_text(encoding="utf-8")
+        with contextlib.suppress(OSError):
+            reviews[name] = (out_dir / f"{name}{REVIEW_SUFFIX}").read_text(encoding="utf-8")
     path = out_dir / REPORT_HTML
     write_text_atomic(
         path,
-        build_html(campaign=campaign, run_name=run_name, moments=moments, clips=clips, posts=posts),
+        build_html(
+            campaign=campaign,
+            run_name=run_name,
+            moments=moments,
+            clips=clips,
+            posts=posts,
+            reviews=reviews,
+        ),
     )
     return path
