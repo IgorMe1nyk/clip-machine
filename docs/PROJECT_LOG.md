@@ -4,7 +4,7 @@ Dated entries, newest first. Numbers come from real runs only.
 
 ## 2026-10-14 — Brief 12.2: one-command campaigns and one posting plan across campaigns (built; real run pending Igor's OK)
 
-**Built** on branch `brief-12-2-one-command` (D-034, D-035), seven commits, no real campaign
+**Built** on branch `brief-12-2-one-command` (D-034, D-035), eight commits, no real campaign
 data touched:
 
 - `campaign-init <slug> --brief <file>`: the brief (.txt/.md/.pdf; pypdf text extraction only,
@@ -30,7 +30,7 @@ data touched:
 - Docs: `docs/RUNBOOK.md`, the example README (5 steps, combined plan), the example
   `schedule.yaml`, COSTS row for pypdf.
 
-**Checks:** ruff, format, mypy, pytest (2249 passed, 3 skipped), pip-audit, each run separately
+**Checks:** ruff, format, mypy, pytest (2251 passed, 3 skipped), pip-audit, each run separately
 and green at every commit. A fresh-context security and reliability review of the full diff
 followed (see the session report).
 
