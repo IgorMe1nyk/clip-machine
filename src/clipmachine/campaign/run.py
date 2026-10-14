@@ -16,7 +16,7 @@ import os
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -33,10 +33,11 @@ from clipmachine.campaign.names import (
     find_variants,
     record,
 )
-from clipmachine.campaign.plan import write_posting_plan
+from clipmachine.campaign.plan import PLAN_FILE, write_posting_plan
 from clipmachine.campaign.post import keep_words
 from clipmachine.campaign.render import META_DIR, MomentContext, MomentResult, render_moment
 from clipmachine.campaign.report import write_report
+from clipmachine.campaign.schedule import PlanInput, rebuild_plans, report_backups
 from clipmachine.campaign.scoutlog import latest_records, load_scout_file
 from clipmachine.campaign.used import load_used, save_used
 from clipmachine.config import ConfigError, load_app_config
@@ -404,10 +405,10 @@ def render_moments(
 
 
 def finalize(
-    root: Path, opened: OpenCampaign, outcome: RenderOutcome, *, today: date
+    root: Path, opened: OpenCampaign, outcome: RenderOutcome, *, now: datetime
 ) -> tuple[Path, Path]:
     """After a render pass: the names scan, the summary line, the report and the posting plan(s).
-    Returns (report path, plan path)."""
+    Returns (report path, plan path: the combined plan when campaigns/schedule.yaml exists)."""
     app, campaign, cfg = opened.app, outcome.campaign, opened.cfg
     counts, sources = outcome.counts, outcome.sources
     out_dir = campaign_out_dir(root, campaign.slug)
@@ -445,13 +446,20 @@ def finalize(
         out_dir, campaign, opened.moments, run_names, auto=auto_spelling, scout=scouted
     )
     print(f"report: {report}")
+    current = PlanInput(campaign.slug, cfg, list(opened.moments), outcome.used, out_dir)
+    combined = rebuild_plans(root, app, now=now, current=current)
+    if combined is not None:
+        plan_path, backups = combined
+        report_backups(backups)
+        print(f"posting plan: {plan_path} (this campaign's view: {out_dir / PLAN_FILE})")
+        return report, plan_path
     plan_path = write_posting_plan(
         out_dir,
         cfg,
         opened.moments,
         outcome.used,
         root=root,
-        today=today,
+        today=now.date(),
         sources=outcome.source_names,
     )
     print(f"posting plan: {plan_path}")
@@ -467,6 +475,6 @@ def run_campaign(
     moments = select_moments(opened.moments, only)
     wanted = frozenset(part.strip() for part in only.split(",")) if only else frozenset()
     outcome = render_moments(root, opened, moments, target, force_reuse=force_reuse, wanted=wanted)
-    finalize(root, opened, outcome, today=date.today())
+    finalize(root, opened, outcome, now=datetime.now())
     failed = outcome.counts["failed"] or outcome.refused_named
     return EXIT_MOMENT_FAILED if failed else EXIT_OK

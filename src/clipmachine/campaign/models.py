@@ -268,15 +268,7 @@ class CampaignConfig(StrictModel):
     @field_validator("posting_times")
     @classmethod
     def _posting_times(cls, value: list[str]) -> list[str]:
-        times = [t.strip() for t in value]
-        if not times:
-            raise ValueError("at least one posting time is needed")
-        for text in times:
-            if not _CLOCK_RE.fullmatch(text):
-                raise ValueError(f'bad posting time {text!r}: use 24-hour "HH:MM" in quotes')
-        if len(set(times)) != len(times):
-            raise ValueError("a posting time is listed twice")
-        return times
+        return validate_posting_times(value)
 
     @model_validator(mode="after")
     def _unique_spelling(self) -> "CampaignConfig":
@@ -444,6 +436,56 @@ class AutoSpelling(StrictModel):
     source_sha256: str
     written_at: str
     variants: list[AutoVariant]
+
+
+def validate_posting_times(value: list[str]) -> list[str]:
+    """Non-empty, 24-hour "HH:MM", no repeats (campaign.yaml and schedule.yaml)."""
+    times = [t.strip() for t in value]
+    if not times:
+        raise ValueError("at least one posting time is needed")
+    for text in times:
+        if not _CLOCK_RE.fullmatch(text):
+            raise ValueError(f'bad posting time {text!r}: use 24-hour "HH:MM" in quotes')
+    if len(set(times)) != len(times):
+        raise ValueError("a posting time is listed twice")
+    return times
+
+
+class PriorityEntry(StrictModel):
+    """One campaign in schedule.yaml's priority list (Brief 12.2)."""
+
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,40}$")
+    max_per_day: int | None = Field(default=None, ge=1)  # of a platform's slots a day; None: all
+
+
+class ScheduleConfig(StrictModel):
+    """campaigns/schedule.yaml (Brief 12.2): one plan across every campaign."""
+
+    posting_times: list[str]
+    max_per_platform_per_day: int | None = Field(default=None, ge=1)  # None: len(posting_times)
+    priority: list[PriorityEntry] = Field(default_factory=list)
+
+    @field_validator("posting_times")
+    @classmethod
+    def _times(cls, value: list[str]) -> list[str]:
+        return validate_posting_times(value)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "ScheduleConfig":
+        cap = self.max_per_platform_per_day
+        if cap is not None and cap > len(self.posting_times):
+            raise ValueError(
+                f"max_per_platform_per_day {cap} is more than the {len(self.posting_times)} "
+                "posting times"
+            )
+        slugs = [p.slug for p in self.priority]
+        if len(set(slugs)) != len(slugs):
+            raise ValueError("priority lists a campaign twice")
+        return self
+
+    @property
+    def per_day(self) -> int:
+        return self.max_per_platform_per_day or len(self.posting_times)
 
 
 class UsedEntry(StrictModel):

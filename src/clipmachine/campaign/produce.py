@@ -11,7 +11,7 @@ closer or a name.
 """
 
 from collections.abc import Sequence
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 from clipmachine import pipeline
@@ -69,20 +69,22 @@ def check_sourceless(moments: Sequence[Moment], used: UsedLog, source_sha256: st
 
 
 def _next_slots(plan_path: Path, rendered: Sequence[Moment], slug: str) -> list[str]:
-    """The planned slot of each newly rendered clip, from the plan just written."""
-    rows = read_plan(plan_path, key=("id",))
+    """The planned slot of each newly rendered clip, from the plan just written (the combined
+    plan is keyed by campaign and id, a campaign's own plan by id)."""
+    try:
+        rows = read_plan(plan_path, key=("campaign", "id"))
+    except ConfigError:
+        rows = {(slug, k[0]): row for k, row in read_plan(plan_path, key=("id",)).items()}
     lines = []
     for moment in rendered:
-        row = rows.get((moment.id,))
-        if row is None or row.get("campaign", slug) != slug:
-            continue
-        if row.get("date"):
+        row = rows.get((slug, moment.id))
+        if row is not None and row.get("date"):
             lines.append(f"{row['date']} {row['time_et']} {row['platform']} {moment.id}")
     return lines
 
 
 def run_produce(
-    root: Path, episode: Path, slug: str, *, rerender: bool, today: date | None = None
+    root: Path, episode: Path, slug: str, *, rerender: bool, now: datetime | None = None
 ) -> int:
     """The exit code: 1 when a moment failed to render, else 0."""
     root = root.resolve()
@@ -121,7 +123,7 @@ def run_produce(
     rendered = render_moments(
         root, opened, moments, episode, force_reuse=False, skip_unchanged=not rerender
     )
-    _, plan_path = finalize(root, opened, rendered, today=today or date.today())
+    _, plan_path = finalize(root, opened, rendered, now=now or datetime.now())
 
     by_platform = ", ".join(
         f"{platform} {sum(1 for m in rendered.rendered if m.platform == platform)} new"

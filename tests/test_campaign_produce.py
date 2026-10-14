@@ -215,3 +215,22 @@ def test_the_scout_json_of_the_ai_path_carries_the_episode(ai: Rig) -> None:
     assert ai.produce() == 0
     records = json.loads((ai.folder / "scout.json").read_text(encoding="utf-8"))["records"]
     assert [r["id"] for r in records] == ["S01"] and records[0]["source_sha256"]
+
+
+# --- Brief 12.2: with campaigns/schedule.yaml the combined plan is written -------------------
+
+
+def test_with_a_schedule_produce_writes_the_combined_plan_and_a_view(
+    human: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (human.project / "campaigns" / "schedule.yaml").write_text(
+        'posting_times: ["12:30", "15:00"]\npriority:\n  - slug: demo\n', encoding="utf-8"
+    )
+    assert human.produce() == 0
+    text = out_of(capsys)
+    combined = human.project / "runs" / "_campaigns" / "posting_plan.csv"
+    assert f"posting plan: {combined} (this campaign's view: " in text
+    assert "next slots: " in text and " tiktok A01" in text
+    assert combined.read_text(encoding="utf-8").startswith("date,time_et,platform,campaign,")
+    view = (human.out / "posting_plan.csv").read_text(encoding="utf-8")
+    assert view.startswith("# read-only - edit runs/_campaigns/posting_plan.csv\n")

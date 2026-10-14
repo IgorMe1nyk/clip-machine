@@ -1,0 +1,10 @@
+# campaigns/schedule.yaml (Brief 12.2): ONE posting plan across every campaign.
+# Copy this file to campaigns/schedule.yaml (git-ignored) and edit it. While it exists,
+# runs/_campaigns/posting_plan.csv is the single list to schedule from, and each campaign's own
+# posting_plan.csv is a read-only view of its rows. Without it, every campaign keeps its own plan.
+posting_times: ["12:30", "15:00", "17:30", "20:00"]   # 24-hour Eastern, in quotes; one slot each
+max_per_platform_per_day: 4   # posts a platform takes per day, at most len(posting_times) (the default)
+priority:                     # strict order: a day's free slots go to the first campaign that has
+  - slug: example-a           # clips waiting, then the next; campaigns not listed come last, A-Z
+    max_per_day: 2            # optional: this campaign takes at most 2 of a platform's slots a day,
+  - slug: example-b           # so the next campaign still gets the rest
