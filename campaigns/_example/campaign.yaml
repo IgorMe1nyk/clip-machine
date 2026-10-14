@@ -19,7 +19,7 @@ hook:
   max_chars: 48
 watermark:              # optional (Brief 12): leave the whole section out when the campaign wants no watermark
   file: assets/watermark.png
-  position: auto        # chosen once by face overlap and background darkness, locked in auto_position.json
+  position: auto        # the default: chosen once by face overlap and background darkness, locked in auto_position.json
   # position: { x_center: 0.5, y_center: 0.18 }   # or fixed: fractions of 1080x1920; never a corner
   scale: 1.0                                    # uniform only; no stretching
 captions: { style: box_karaoke }                # font size comes from config/default.yaml

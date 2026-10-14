@@ -75,8 +75,9 @@ class WatermarkPosition(StrictModel):
 class WatermarkConfig(StrictModel):
     file: str
     # where the centre of the visible content goes; "auto" (Brief 11.1) lets the tool choose by
-    # face overlap and background darkness, once per campaign (auto_position.json)
-    position: WatermarkPosition | Literal["auto"]
+    # face overlap and background darkness, once per campaign (auto_position.json); the default
+    # since Brief 12.2
+    position: WatermarkPosition | Literal["auto"] = "auto"
     scale: float = Field(default=1.0, gt=0, le=10)  # uniform only
     blend: Literal["normal", "screen"] = "normal"
 

@@ -174,6 +174,16 @@ def test_each_side_of_the_safe_area_is_enforced(project: Path, x: float, y: floa
         load(project, position(x, y))
 
 
+def test_a_watermark_without_a_position_defaults_to_auto(project: Path) -> None:
+    def no_position(d: dict[str, Any]) -> None:
+        del d["watermark"]["position"]
+
+    campaign = load(project, no_position)
+    assert campaign.config.watermark is not None
+    assert campaign.config.watermark.position == "auto"
+    assert campaign.has_watermark and campaign.watermark is None  # chosen on the first render
+
+
 def test_the_corner_zone_comes_from_the_app_config(project: Path) -> None:
     from helpers import edit_yaml
 

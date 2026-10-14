@@ -15,6 +15,7 @@ dependencies = [
     "numpy>=2.4.6",
     "opencv-contrib-python>=5.0.0.93",
     "pydantic>=2.14.0",
+    "pypdf>=6.20.1",
     "pyyaml>=6.0.3",
 ]
 

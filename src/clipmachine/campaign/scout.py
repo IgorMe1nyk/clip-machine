@@ -176,7 +176,7 @@ def _same_file(a: Path, b: Path) -> bool:
     return os.path.normcase(str(a.resolve())) == os.path.normcase(str(b.resolve()))
 
 
-def _source_matches(root: Path, source: str | None, episode: Path) -> bool:
+def source_matches(root: Path, source: str | None, episode: Path) -> bool:
     """A moments.yaml `source:` (or None, the default source) counts as this episode when it is
     this file; the default always counts, so a list without sources is never duplicated."""
     if source is None:
@@ -200,9 +200,9 @@ def taken_stretches(
     taken = [
         (s.start, s.end if s.end is not None else s.start + auto_end)
         for s in specs
-        if _source_matches(root, s.source, episode)
+        if source_matches(root, s.source, episode)
     ]
-    taken.extend((r.start, r.end) for r in rejected if _source_matches(root, r.source, episode))
+    taken.extend((r.start, r.end) for r in rejected if source_matches(root, r.source, episode))
     taken.extend((a, b) for sha, a, b in rendered if sha == source_sha256)
     return taken
 
