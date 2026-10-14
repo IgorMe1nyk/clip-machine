@@ -133,8 +133,24 @@ class CampaignZoom(StrictModel):
     max_upscale: float | None = Field(default=None, ge=1)
 
 
+class CampaignGraphics(StrictModel):
+    """A campaign's override of video.graphics (Brief 12.1): a key left out falls back to the
+    app config. The bounds are those of GraphicsConfig."""
+
+    enabled: bool | None = None
+    layout: Literal["fit"] | None = None
+    sample_fps: float | None = Field(default=None, gt=0, le=30)
+    detect_width: int | None = Field(default=None, ge=64)
+    min_area_frac: float | None = Field(default=None, gt=0, le=1)
+    min_presence: float | None = Field(default=None, gt=0, le=1)
+    static_ratio: float | None = Field(default=None, gt=0, le=1)
+    blur: int | None = Field(default=None, ge=0, le=100)
+    darken: float | None = Field(default=None, ge=0, le=1)
+
+
 class CampaignVideo(StrictModel):
     zoom: CampaignZoom = Field(default_factory=CampaignZoom)
+    graphics: CampaignGraphics = Field(default_factory=CampaignGraphics)
 
 
 class ScoutConfig(StrictModel):

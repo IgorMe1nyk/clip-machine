@@ -260,8 +260,15 @@ def run_campaign(
     if app.captions.style != "box_karaoke":
         raise ConfigError("campaign mode needs captions.style: box_karaoke in config/default.yaml")
     campaign = load_campaign(root, slug, app)
-    # the campaign's video.zoom keys win; everything below reads the merged zoom from `app`
-    app = app.model_copy(update={"video": app.video.model_copy(update={"zoom": campaign.zoom})})
+    # the campaign's video.zoom and video.graphics keys win; everything below reads the merged
+    # settings from `app`
+    app = app.model_copy(
+        update={
+            "video": app.video.model_copy(
+                update={"zoom": campaign.zoom, "graphics": campaign.graphics}
+            )
+        }
+    )
     used = load_used(campaign.folder)
     specs = load_moments(campaign)
     all_moments, assignments, assignments_changed = assign_platforms(

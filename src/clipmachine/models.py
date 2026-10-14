@@ -244,6 +244,26 @@ class ZoomConfig(StrictModel):
         return self
 
 
+class GraphicsConfig(StrictModel):
+    """Graphics-aware layout (Brief 12.1): per camera shot, on-screen text graphics outside the
+    speaker crop switch the shot to the fit layout (the whole frame on a blurred fill). Every key
+    has a default and `enabled` defaults to off, so configs and run folders from before this
+    section load unchanged."""
+
+    enabled: bool = False
+    layout: Literal["fit"] = "fit"  # the only layout so far
+    sample_fps: float = Field(default=2, gt=0, le=30)  # frames analysed per second of clip
+    detect_width: int = Field(default=960, ge=64)  # frames are scaled to this width
+    # a shot has graphics when non-static text boxes cover at least min_area_frac of the frame
+    # in at least min_presence of its samples, and any of them reaches outside the crop window
+    min_area_frac: float = Field(default=0.02, gt=0, le=1)
+    min_presence: float = Field(default=0.3, gt=0, le=1)
+    # a box at the same place in this share of the clip's samples is a static overlay (ignored)
+    static_ratio: float = Field(default=0.8, gt=0, le=1)
+    blur: int = Field(default=20, ge=0, le=100)  # boxblur radius of the fill behind the frame
+    darken: float = Field(default=0.35, ge=0, le=1)  # the fill is this much darker
+
+
 class VideoConfig(StrictModel):
     width: int = Field(gt=0)
     height: int = Field(gt=0)
@@ -259,6 +279,7 @@ class VideoConfig(StrictModel):
         return value
 
     zoom: ZoomConfig = Field(default_factory=ZoomConfig)  # added in Brief R2
+    graphics: GraphicsConfig = Field(default_factory=GraphicsConfig)  # Brief 12.1
 
 
 class SpeakerConfig(StrictModel):

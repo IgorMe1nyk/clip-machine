@@ -100,6 +100,13 @@ def project(tmp_path: Path) -> Path:
         "    enabled: false           # false = the crop",
         1,
     )
+    # And the graphics-aware layout (Brief 12.1), which needs the text detector file.
+    assert "    enabled: true            # false = today's output" in text
+    text = text.replace(
+        "    enabled: true            # false = today's output",
+        "    enabled: false           # false = today's output",
+        1,
+    )
     default_yaml.write_text(text, encoding="utf-8")
     shutil.copytree(REPO_ROOT / "clients", tmp_path / "clients")
     shutil.copytree(REPO_ROOT / "prompts", tmp_path / "prompts")
