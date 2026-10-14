@@ -11,6 +11,7 @@ from clipmachine import tracking
 from clipmachine.campaign.assign import ASSIGNMENTS_FILE, assigned_platform
 from clipmachine.campaign.loader import campaign_dir
 from clipmachine.campaign.models import PLATFORMS
+from clipmachine.campaign.produce import run_produce
 from clipmachine.campaign.run import run_campaign
 from clipmachine.campaign.scout import reject_moment, run_scout
 from clipmachine.campaign.used import USED_FILE, load_used, mark_posted, relabel_posted, save_used
@@ -44,8 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{run,report,track,safe-zones,campaign,campaign-posted,campaign-reject,scout,"
-        "fetch-face-model,fetch-text-model}",
+        metavar="{run,report,track,safe-zones,produce,campaign,campaign-posted,campaign-reject,"
+        "scout,fetch-face-model,fetch-text-model}",
     )
 
     run = sub.add_parser(
@@ -99,6 +100,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--force-reuse",
         action="store_true",
         help="render moments that are already marked as posted again",
+    )
+
+    produce = sub.add_parser(
+        "produce",
+        help="one command per episode (Brief 12.2): scout it when campaign.yaml says "
+        "selection: ai, render this episode's unposted moments into the campaign folder, and "
+        "rebuild the report and the posting plan; posted and rejected moments are left alone",
+    )
+    produce.add_argument("episode", metavar="<source-video | run-folder>")
+    produce.add_argument("--campaign", required=True, help="the folder name under campaigns/")
+    produce.add_argument(
+        "--rerender",
+        action="store_true",
+        help="render again the clips whose moments.yaml entry did not change (kept by default)",
     )
 
     posted = sub.add_parser(
@@ -338,6 +353,10 @@ def main(argv: Sequence[str] | None = None, root: Path | None = None) -> int:
             return _cmd_safe_zones(args, project_root)
         if args.command == "campaign":
             return _cmd_campaign(args, project_root)
+        if args.command == "produce":
+            return run_produce(
+                project_root, Path(args.episode), args.campaign, rerender=args.rerender
+            )
         if args.command == "campaign-posted":
             return _cmd_campaign_posted(args, project_root)
         if args.command == "scout":
