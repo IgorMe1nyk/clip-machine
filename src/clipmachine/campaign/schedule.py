@@ -3,9 +3,11 @@ says the posting times, how many posts a platform takes per day and which campai
 `runs/_campaigns/posting_plan.csv` is the single list Igor schedules from.
 
 Allocation, per platform, day by day from now (a slot whose time has passed today is never
-given): the day's free slots go to the campaigns in priority order; a campaign takes at most its
-`max_per_day` of them, so a lower campaign still gets slots. A campaign that does not post on a
-platform never takes its slots. Posted rows come from each campaign's used.json.
+given): posts already made that day use up the platform's slots and the campaign's cap, the
+free slots left take the day's latest times and go to the campaigns in priority order; a
+campaign takes at most its `max_per_day` of them, so a lower campaign still gets slots. A
+campaign that does not post on a platform never takes its slots. Posted rows come from each
+campaign's used.json.
 
 The combined file is the master: result columns (and any extra column) are read first and never
 overwritten, keyed by (campaign, id). On the first build, every per-campaign posting_plan.csv is
@@ -185,19 +187,37 @@ def allocate(
     now: datetime,
 ) -> list[Row]:
     """Every row of the combined plan, slots not yet merged with the old file: posted rows by
-    date, then the scheduled ones by date, time, platform and campaign order."""
+    date, then the scheduled ones by date, time, platform and campaign order.
+
+    Posts already made on a day count against that day (Igor, 2026-10-14): a platform's posted
+    rows dated that day use up its slots, a campaign's posted rows use up its cap, and the free
+    slots left take the day's latest times (a posted row records no real time). Posted rows on
+    other dates do not count. A time that has passed today is never given."""
     by_slug = {inp.slug: inp for inp in inputs}
     pending = {slug: pending_by_platform(by_slug[slug]) for slug, _ in order}
+    posted = [row for inp in inputs for row in _posted_rows(inp, root)]
+    posted_on: dict[tuple[str, str], int] = {}  # (date, platform) -> posts that day
+    posted_by: dict[tuple[str, str, str], int] = {}  # (date, platform, campaign) -> posts
+    for done in posted:
+        key = (done["date"], done["platform"])
+        posted_on[key] = posted_on.get(key, 0) + 1
+        who = (*key, done["campaign"])
+        posted_by[who] = posted_by.get(who, 0) + 1
     times = schedule.posting_times
-    usable = list(range(min(schedule.per_day, len(times))))
+    per_day = min(schedule.per_day, len(times))
     now_hm = now.strftime("%H:%M")
     rank = {slug: i for i, (slug, _) in enumerate(order)}
     scheduled: list[tuple[str, int, int, int, Row]] = []
     for platform_order, platform in enumerate(PLATFORMS):
         day = now.date()
         while any(pending[slug][platform] for slug, _ in order):
-            free = [i for i in usable if day != now.date() or times[i] > now_hm]
-            taken: dict[str, int] = {slug: 0 for slug, _ in order}
+            stamp = day.isoformat()
+            left = max(0, per_day - posted_on.get((stamp, platform), 0))
+            latest = list(range(per_day))[per_day - left :] if left else []
+            free = [i for i in latest if day != now.date() or times[i] > now_hm]
+            taken: dict[str, int] = {
+                slug: posted_by.get((stamp, platform, slug), 0) for slug, _ in order
+            }
             for slug, cap in order:
                 queue = pending[slug][platform]
                 while free and queue and (cap is None or taken[slug] < cap):
@@ -218,7 +238,6 @@ def allocate(
                     }
                     scheduled.append((day.isoformat(), index, platform_order, rank[slug], row))
             day += timedelta(days=1)
-    posted = [row for inp in inputs for row in _posted_rows(inp, root)]
     posted.sort(key=lambda r: (r["date"], r["campaign"], r["id"]))
     scheduled.sort(key=lambda item: item[:4])
     return [*posted, *(row for *_, row in scheduled)]

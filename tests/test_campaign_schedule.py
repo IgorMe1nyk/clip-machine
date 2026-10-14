@@ -258,6 +258,71 @@ def test_posted_and_rejected_moments_get_no_slot_and_posted_rows_are_prefixed(ri
     assert rig.rows(schedule(), alpha)[0]["source"] == "alpha-ep.mp4"
 
 
+def posted_entry(slug: str, moment_id: str, platform: str, when: str) -> UsedEntry:
+    return entry(slug, moment_id, platform, posted=when)
+
+
+def test_posts_made_today_use_up_todays_slots_and_the_rest_take_the_latest_times(
+    rig: Rig,
+) -> None:
+    # today: 3 posted on youtube, 4 on tiktok and 4 on instagram, all by alpha; the posted_at
+    # stamps are UTC and the rows take the local date, so use noon UTC
+    when = "2026-10-13T12:00:00+00:00"
+    done = [("T1", "tiktok"), ("T2", "tiktok"), ("T3", "tiktok"), ("T4", "tiktok")]
+    done += [("I1", "instagram"), ("I2", "instagram"), ("I3", "instagram"), ("I4", "instagram")]
+    done += [("Y1", "youtube"), ("Y2", "youtube"), ("Y3", "youtube")]
+    used = UsedLog(entries=[posted_entry("alpha", i, p, when) for i, p in done])
+    alpha = rig.campaign("alpha", *done, ("A1", "tiktok"), ("A2", "instagram"), used=used)
+    beta = rig.campaign("beta", ("B1", "youtube"), ("B2", "youtube"), ("B3", "tiktok"))
+    rows = rig.rows(schedule(), alpha, beta, now=MORNING)
+    today = [r for r in rows if r["posted"] == "no" and r["date"] == "2026-10-13"]
+    assert slots(today) == [("2026-10-13", "8:00 PM", "youtube", "beta", "B1")]
+    tomorrow = [r for r in rows if r["posted"] == "no" and r["date"] == "2026-10-14"]
+    assert slots(tomorrow) == [
+        ("2026-10-14", "12:30 PM", "tiktok", "alpha", "A1"),
+        ("2026-10-14", "12:30 PM", "instagram", "alpha", "A2"),
+        ("2026-10-14", "12:30 PM", "youtube", "beta", "B2"),
+        ("2026-10-14", "3:00 PM", "tiktok", "beta", "B3"),
+    ]
+    assert sum(1 for r in rows if r["posted"] == "yes") == 11
+
+
+def test_a_campaign_posted_above_its_cap_by_hand_gets_nothing_more_that_day(rig: Rig) -> None:
+    when = "2026-10-13T12:00:00+00:00"
+    done = [("Y1", "youtube"), ("Y2", "youtube"), ("Y3", "youtube")]
+    used = UsedLog(entries=[posted_entry("alpha", i, p, when) for i, p in done])
+    alpha = rig.campaign("alpha", *done, ("A1", "youtube"), used=used)
+    beta = rig.campaign("beta", ("B1", "youtube"), ("B2", "youtube"))
+    sched = schedule(priority=[{"slug": "alpha", "max_per_day": 2}, {"slug": "beta"}])
+    rows = [r for r in rig.rows(sched, alpha, beta) if r["posted"] == "no"]
+    assert slots(rows) == [
+        ("2026-10-13", "8:00 PM", "youtube", "beta", "B1"),  # alpha is over its cap today
+        ("2026-10-14", "12:30 PM", "youtube", "alpha", "A1"),
+        ("2026-10-14", "3:00 PM", "youtube", "beta", "B2"),
+    ]
+
+
+def test_posts_on_other_dates_do_not_count_and_a_passed_time_is_still_skipped(rig: Rig) -> None:
+    yesterday = "2026-10-12T12:00:00+00:00"
+    done = [("T1", "tiktok"), ("T2", "tiktok"), ("T3", "tiktok"), ("T4", "tiktok")]
+    used = UsedLog(entries=[posted_entry("alpha", i, p, yesterday) for i, p in done])
+    alpha = rig.campaign("alpha", *done, ("A1", "tiktok"), ("A2", "tiktok"), used=used)
+    rows = [r for r in rig.rows(schedule(), alpha) if r["posted"] == "no"]
+    assert slots(rows) == [
+        ("2026-10-13", "12:30 PM", "tiktok", "alpha", "A1"),
+        ("2026-10-13", "3:00 PM", "tiktok", "alpha", "A2"),
+    ]
+    today = "2026-10-13T12:00:00+00:00"
+    used = UsedLog(entries=[posted_entry("alpha", "T1", "tiktok", today)])
+    alpha = rig.campaign("alpha", ("T1", "tiktok"), ("A1", "tiktok"), ("A2", "tiktok"), used=used)
+    # one post today leaves the three latest times; at 3 PM only 5:30 and 8:00 are ahead
+    rows = [r for r in rig.rows(schedule(), alpha, now=AFTERNOON) if r["posted"] == "no"]
+    assert slots(rows) == [
+        ("2026-10-13", "5:30 PM", "tiktok", "alpha", "A1"),
+        ("2026-10-13", "8:00 PM", "tiktok", "alpha", "A2"),
+    ]
+
+
 # --- the file, migration and views ---------------------------------------------------------------
 
 
@@ -442,7 +507,11 @@ def test_campaign_posted_and_fix_platform_rebuild_the_combined_plan(
     assert "A1 tiktok: marked as posted" in out and f"posting plan: {path}" in out
     rows = {r["id"]: r for r in read(path)}
     assert rows["A1"]["posted"] == "yes" and rows["A2"]["posted"] == "no"
-    assert rows["A2"]["date"] and rows["A2"]["time_et"] == "12:30 PM"  # moved into the first slot
+    # A1's post today uses a slot, so A2 never sits in today's first time
+    assert rows["A2"]["date"] and (rows["A2"]["date"], rows["A2"]["time_et"]) != (
+        rows["A1"]["date"],
+        "12:30 PM",
+    )
     args = ["campaign-posted", "--campaign", "alpha", "--id", "A1", "--fix-platform", "youtube"]
     assert cli.main(args, root=project) == 0
     assert {r["id"]: r["platform"] for r in read(path)}["A1"] == "youtube"
