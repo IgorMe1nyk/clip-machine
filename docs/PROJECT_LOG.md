@@ -2,6 +2,42 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-14 — Scout robustness, the recovered clips, and the 1440p switch of the ai campaign
+
+**Scout robustness** (branch `scout-robustness`, merged into main): a hook still over 7 words
+after the one repair keeps the clip with an empty hook and a note ("no hook: write one" in
+moments.yaml, scout.json, the report; the render refuses the moment until a hook is written);
+`scout --reuse-scored` rebuilds the proposals from the episode's scored.json or the new
+`scored.last-good.json` copy with no API call. Tests for both; the suite green.
+
+**Recovered clips at $0:** the last good scoring (its scored.json had been deleted by the later
+attempts) was replayed from the saved raw answers through the real stages, then
+`scout --reuse-scored` appended S06 (score 9, dating → instagram), S07 and S08 (7, youtube):
+3 proposed, 5 skipped as already listed, 0 API calls.
+
+**1440p switch (Igor's decision):** the 1440p AV1 + Opus download of the same episode decodes
+at about 5.7x realtime on the CPU (10.5 s for 60 s; the 1080p H.264 file: 1.6 s). Same episode:
+audio correlation 0.999 at six points, the 1440p file running 77.5 ms earlier (video cuts 41.7
+ms earlier, one frame). A new run folder took the 1080p transcript with every time shifted by
+-0.0775 s (transcribe marked done); moments.yaml repointed with the same shift (backup
+`moments.yaml.bak-1080`). Upscale factor 1080x1920 from the crop: **1.78x before (zoomed
+2.05x), 1.33x after (zoomed 1.53x)**. Renders from 1440p (fit layout on):
+
+| clip | length | fit | zooms | render |
+|---|---|---|---|---|
+| S01 | 35.3 s | 5.0 s | 1 | 64.7 s |
+| S04 | 26.9 s | 13.6 s | 1 | 43.6 s |
+| S05 | 38.2 s | 13.5 s | 0 | 65.5 s |
+| S06 | 56.6 s | 0 | 3 | 69.4 s |
+| S07 | 47.8 s | 0 | 1 | 62.1 s |
+| S08 | 46.3 s | 15.7 s | 2 | 75.8 s |
+
+About 1.6x the 1080p render time (AV1 decode). **S02 was re-rendered by mistake:** it was
+posted but not yet marked (used.json said unposted), so the tool treated it as pending; the
+local 1080p file is replaced by a 1440p render (the posted upload is unaffected). It is marked
+posted now. S03 untouched. The old 4.3 GB 1080p file and the old run folder's source copy went
+to the Recycle Bin; the old run folder keeps its transcript and scout files.
+
 ## 2026-10-14 — Brief 12.1: graphics-aware layout (built; real re-render done; Igor's phone check pending)
 
 **Why:** the second campaign's episodes carry on-screen text (chapter title, logo, citation
