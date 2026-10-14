@@ -9,6 +9,7 @@ from pathlib import Path
 
 from clipmachine import tracking
 from clipmachine.campaign.assign import ASSIGNMENTS_FILE, assigned_platform
+from clipmachine.campaign.init import run_init
 from clipmachine.campaign.loader import campaign_dir
 from clipmachine.campaign.models import PLATFORMS
 from clipmachine.campaign.produce import run_produce
@@ -45,8 +46,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{run,report,track,safe-zones,produce,campaign,campaign-posted,campaign-reject,"
-        "scout,fetch-face-model,fetch-text-model}",
+        metavar="{run,report,track,safe-zones,campaign-init,produce,campaign,campaign-posted,"
+        "campaign-reject,scout,fetch-face-model,fetch-text-model}",
     )
 
     run = sub.add_parser(
@@ -100,6 +101,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--force-reuse",
         action="store_true",
         help="render moments that are already marked as posted again",
+    )
+
+    init = sub.add_parser(
+        "campaign-init",
+        help="draft campaigns/<name>/campaign.yaml from the campaign's brief with one model call "
+        "(Brief 12.2); review every line before the first run",
+    )
+    init.add_argument("slug", metavar="<name>", help="the new folder name under campaigns/")
+    init.add_argument(
+        "--brief", required=True, type=Path, help="the brief as .txt, .md or .pdf (text only)"
+    )
+    init.add_argument("--watermark", type=Path, help="the campaign's watermark PNG, if required")
+    init.add_argument(
+        "--moments", type=Path, help="a text list of timestamped moments the campaign supplied"
+    )
+    init.add_argument(
+        "--force", action="store_true", help="replace an existing file (the old one goes to .bak)"
     )
 
     produce = sub.add_parser(
@@ -353,6 +371,15 @@ def main(argv: Sequence[str] | None = None, root: Path | None = None) -> int:
             return _cmd_safe_zones(args, project_root)
         if args.command == "campaign":
             return _cmd_campaign(args, project_root)
+        if args.command == "campaign-init":
+            return run_init(
+                project_root,
+                args.slug,
+                brief=args.brief,
+                watermark=args.watermark,
+                moments=args.moments,
+                force=args.force,
+            )
         if args.command == "produce":
             return run_produce(
                 project_root, Path(args.episode), args.campaign, rerender=args.rerender
