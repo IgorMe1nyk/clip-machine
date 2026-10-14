@@ -75,7 +75,17 @@ Everything goes to `runs/_campaigns/<slug>/`, whatever the source video:
 - `campaign_report.html`: the review page, with the per-platform counts and, for scouted moments,
   the score, topic, host check and reason. A campaign without a watermark or closers shows those
   checks as "not required".
-- `_meta/`: the clip jsons, caption files, review files and tracks; nothing to upload.
+- `_meta/`: the clip jsons, caption files, review files, tracks and graphics analyses
+  (`<id>_<platform>.graphics.json`, Brief 12.1); nothing to upload.
+
+## On-screen graphics
+
+With `video.graphics.enabled: true` in `config/default.yaml` (the default; it needs
+`clipmachine fetch-text-model` once) a camera shot whose on-screen text reaches outside the
+speaker crop is rendered as the whole frame on a blurred fill, captions below it, zooms off; the
+chapter title and show logo that sit in every frame are learned as overlays and ignored. The
+report card says how many seconds of a clip use the fit layout and where the overlays sit. A
+campaign may override any `video.graphics` key in campaign.yaml, like `video.zoom`.
 
 ## Times
 
