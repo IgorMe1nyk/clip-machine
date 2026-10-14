@@ -853,6 +853,16 @@ def test_only_selects_the_named_moments(rig: Rig) -> None:
     assert (rig.mp4("A02_instagram")).is_file() and (rig.mp4("A03_youtube")).is_file()
 
 
+def test_only_keeps_the_source_column_of_the_other_unposted_rows(rig: Rig) -> None:
+    three(rig)
+    assert rig.go() == 0
+    assert rig.go("--only", "A02") == 0  # Brief 12.2: A01 and A03 keep their source name
+    text = (rig.out / "posting_plan.csv").read_text(encoding="utf-8")
+    rows = list(csv.DictReader(text.splitlines()))
+    assert sorted(r["id"] for r in rows) == ["A01", "A02", "A03"]
+    assert len({r["source"] for r in rows}) == 1 and rows[0]["source"]
+
+
 def test_an_unknown_id_in_only_is_exit_2(rig: Rig, capsys: pytest.CaptureFixture[str]) -> None:
     assert rig.go("--only", "Z9") == 2
     assert "no moment with id Z9" in capsys.readouterr().err

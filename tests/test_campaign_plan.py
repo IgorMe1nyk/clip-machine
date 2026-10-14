@@ -9,13 +9,14 @@ from typing import Any
 import pytest
 
 from campaign_helpers import base_campaign, moment
-from clipmachine.campaign.models import CampaignConfig, Moment, UsedEntry, UsedLog
+from clipmachine.campaign.models import CampaignConfig, Moment, RejectedMoment, UsedEntry, UsedLog
 from clipmachine.campaign.plan import (
     PLAN_COLUMNS,
     PLAN_FILE,
     RESULT_COLUMNS,
     clock_12h,
     plan_rows,
+    read_plan,
     read_posting_plan,
     write_posting_plan,
 )
@@ -263,3 +264,47 @@ def test_read_posting_plan_handles_a_missing_file_and_refuses_one_without_ids(
         read_posting_plan(tmp_path / PLAN_FILE)
     (tmp_path / PLAN_FILE).write_text("﻿id,notes\r\nA01, hi \r\n,blank\r\n", encoding="utf-8")
     assert read_posting_plan(tmp_path / PLAN_FILE) == {"A01": {"id": "A01", "notes": "hi"}}
+
+
+# --- Brief 12.2: comment lines, keyed reads, source and rejected rows ---------------------------
+
+
+def test_leading_comment_lines_are_skipped_when_a_plan_is_read(tmp_path: Path) -> None:
+    path = tmp_path / PLAN_FILE
+    path.write_text("# read-only - edit elsewhere\nid,notes\nA01,kept\n", encoding="utf-8")
+    assert read_posting_plan(path) == {"A01": {"id": "A01", "notes": "kept"}}
+
+
+def test_read_plan_keys_rows_by_several_columns_and_names_the_missing_one(tmp_path: Path) -> None:
+    path = tmp_path / PLAN_FILE
+    path.write_text("campaign,id,likes\ndemo,A01,3\n,A02,4\nother,A01,5\n", encoding="utf-8")
+    rows = read_plan(path, key=("campaign", "id"))
+    assert set(rows) == {("demo", "A01"), ("other", "A01")}  # a row with an empty key is skipped
+    assert rows[("other", "A01")]["likes"] == "5"
+    (tmp_path / "x.csv").write_text("id\nA01\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="no 'campaign' column"):
+        read_plan(tmp_path / "x.csv", key=("campaign", "id"))
+
+
+def test_a_moment_missing_from_sources_takes_its_source_name_from_used_json(rig: Rig) -> None:
+    moments = rig.render(mom("A01", "tiktok"), mom("A02", "tiktok"))
+    rendered = entry("A01", "tiktok").model_copy(update={"source_name": "ep1.mp4"})
+    rows = plan_rows(
+        cfg(),
+        moments,
+        UsedLog(entries=[rendered]),
+        root=rig.root,
+        out_dir=rig.out,
+        start=TODAY,
+        sources={"A02": "ep2.mp4"},
+    )
+    assert [(r["id"], r["source"]) for r in rows] == [("A01", "ep1.mp4"), ("A02", "ep2.mp4")]
+
+
+def test_a_rejected_moment_gets_no_slot_even_when_its_clip_exists(rig: Rig) -> None:
+    moments = rig.render(mom("A01", "tiktok"), mom("A02", "tiktok"))
+    rejected = RejectedMoment(
+        id="A01", source=None, start=1.0, end=30.0, rejected_at="2026-10-13T00:00:00+00:00"
+    )
+    rows = rig.rows(moments, UsedLog(rejected=[rejected]))
+    assert slots(rows) == [("2026-10-13", "12:30 PM", "tiktok", "A02")]

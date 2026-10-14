@@ -79,6 +79,14 @@ def latest_posted(log: UsedLog, moment_id: str) -> UsedEntry | None:
     return None
 
 
+def latest_source_name(log: UsedLog, moment_id: str, platform: str) -> str:
+    """The source file name of the latest render of this id on this platform, or ""."""
+    for entry in reversed(log.entries):
+        if entry.id == moment_id and entry.platform == platform:
+            return entry.source_name or ""
+    return ""
+
+
 def rendered_platforms(log: UsedLog, moment_id: str) -> list[str]:
     """The platforms this id has an unposted render on, in the order they were rendered."""
     return list(

@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from clipmachine.campaign.models import CampaignConfig, Moment, UsedEntry, UsedLog
-from clipmachine.campaign.used import latest_posted
+from clipmachine.campaign.used import is_rejected, latest_posted, latest_source_name
 from clipmachine.config import ConfigError
 from clipmachine.runs import write_text_atomic
 
@@ -39,6 +39,7 @@ RESULT_COLUMNS = (
 )
 PLAN_COLUMNS = (*SLOT_COLUMNS, *RESULT_COLUMNS)
 Row = dict[str, str]
+Key = tuple[str, ...]
 
 
 def clock_12h(time_24h: str) -> str:
@@ -54,37 +55,51 @@ def local_date(stamp: str) -> str:
     return datetime.fromisoformat(stamp).astimezone().date().isoformat()
 
 
-def read_posting_plan(path: Path) -> dict[str, Row]:
-    """The rows of an existing plan by id (Excel's BOM and CRLF are fine); {} when there is no
-    file. A file with no `id` column is an error: it is not a plan."""
+def read_plan(path: Path, *, key: Key = ("id",)) -> dict[Key, Row]:
+    """The rows of an existing plan keyed by the `key` columns (Excel's BOM and CRLF are fine;
+    leading lines starting with `#` are comments, Brief 12.2); {} when there is no file. A file
+    without every key column is an error: it is not that kind of plan."""
     if not path.is_file():
         return {}
     try:
         text = path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise ConfigError(f"{path.name} cannot be read ({type(exc).__name__})") from exc
-    reader = csv.DictReader(io.StringIO(text))
-    if reader.fieldnames is None or "id" not in reader.fieldnames:
-        raise ConfigError(f"{path.name} has no 'id' column; rename or delete it")
-    rows: dict[str, Row] = {}
+    lines = text.splitlines(keepends=True)
+    while lines and lines[0].startswith("#"):
+        lines.pop(0)
+    reader = csv.DictReader(io.StringIO("".join(lines)))
+    missing = [c for c in key if reader.fieldnames is None or c not in reader.fieldnames]
+    if missing:
+        raise ConfigError(
+            f"{path.name} has no {', '.join(repr(c) for c in missing)} column; rename or delete it"
+        )
+    rows: dict[Key, Row] = {}
     for raw in reader:
         row = {k: (v or "").strip() for k, v in raw.items() if k is not None}
-        if row.get("id"):
-            rows[row["id"]] = row
+        values = tuple(row.get(c, "") for c in key)
+        if all(values):
+            rows[values] = row
     return rows
 
 
-def _posted_row(entry: UsedEntry, root: Path, out_dir: Path) -> Row:
+def read_posting_plan(path: Path) -> dict[str, Row]:
+    """A campaign's plan by moment id (see read_plan)."""
+    return {k[0]: row for k, row in read_plan(path, key=("id",)).items()}
+
+
+def _posted_row(entry: UsedEntry, root: Path, out_dir: Path, *, file_prefix: str = "") -> Row:
+    """`file_prefix` goes before paths relative to `out_dir` (the combined plan's `<slug>/`)."""
     mp4 = root / entry.output
     try:
-        file = mp4.relative_to(out_dir).as_posix()
+        file = file_prefix + mp4.relative_to(out_dir).as_posix()
     except ValueError:
         file = entry.output
     text_file = ""
     for candidate in (mp4.with_suffix(".txt"), mp4.with_name(mp4.stem + ".post.txt")):
         if candidate.is_file():
             text_file = (
-                candidate.relative_to(out_dir).as_posix()
+                file_prefix + candidate.relative_to(out_dir).as_posix()
                 if candidate.is_relative_to(out_dir)
                 else candidate.relative_to(root).as_posix()
             )
@@ -114,7 +129,9 @@ def plan_rows(
 ) -> list[Row]:
     """The rows to write: posted clips by date, then the scheduled ones by date, time and the
     campaign's platform order. Values from `existing` win over computed ones, except the slot of
-    an unposted clip. `sources` gives the source video's file name by moment id (Brief 12)."""
+    an unposted clip. `sources` gives the source video's file name by moment id (Brief 12); a
+    moment not in it takes the name from its render in used.json. A rejected moment gets no
+    slot."""
     old = existing or {}
     names = sources or {}
     posted_rows: list[Row] = []
@@ -137,6 +154,8 @@ def plan_rows(
         for moment in moments:
             if moment.platform != platform or moment.id in posted_ids:
                 continue
+            if is_rejected(used, moment.id):
+                continue
             if not (out_dir / platform / f"{moment.id}.mp4").is_file():
                 continue
             day = start + timedelta(days=slot // len(times))
@@ -145,7 +164,7 @@ def plan_rows(
                 "date": day.isoformat(),
                 "time_et": clock_12h(when),
                 "platform": platform,
-                "source": names.get(moment.id, ""),
+                "source": names.get(moment.id) or latest_source_name(used, moment.id, platform),
                 "id": moment.id,
                 "file": f"{platform}/{moment.id}.mp4",
                 "text_file": f"{platform}/{moment.id}.txt",
@@ -159,17 +178,24 @@ def plan_rows(
     return [_merge(row, old.get(row["id"]), row["posted"] == "yes") for row in rows]
 
 
-def _merge(row: Row, old: Row | None, posted: bool) -> Row:
+def _merge(
+    row: Row,
+    old: Row | None,
+    posted: bool,
+    *,
+    slot_columns: Sequence[str] = SLOT_COLUMNS,
+    columns: Sequence[str] = PLAN_COLUMNS,
+) -> Row:
     """Igor's values (and any extra column) first; the slot of an unposted clip is always the
     new one. A posted clip's platform and status come from used.json (which --fix-platform
     corrects) and its date from used.json the first time it shows as posted; after that its date,
     time and files stay as Igor left them. The time of a clip that was scheduled and then posted
     stays its planned slot until Igor corrects it."""
-    merged: Row = dict.fromkeys(PLAN_COLUMNS, "")
+    merged: Row = dict.fromkeys(columns, "")
     if old is not None:
         merged.update(old)
     was_posted = old is not None and old.get("posted") == "yes"
-    for column in SLOT_COLUMNS:
+    for column in slot_columns:
         keep = posted and column not in ("platform", "posted") and merged.get(column)
         if keep and (column != "date" or was_posted):
             continue
