@@ -439,16 +439,20 @@ class AutoSpelling(StrictModel):
 
 
 def validate_posting_times(value: list[str]) -> list[str]:
-    """Non-empty, 24-hour "HH:MM", no repeats (campaign.yaml and schedule.yaml)."""
-    times = [t.strip() for t in value]
+    """Non-empty, 24-hour "HH:MM", no repeats (campaign.yaml and schedule.yaml). Returned
+    zero-padded and in clock order, so "9:00" sorts and compares before "12:30"."""
+    times = []
+    for raw in value:
+        text = raw.strip()
+        match = _CLOCK_RE.fullmatch(text)
+        if match is None:
+            raise ValueError(f'bad posting time {text!r}: use 24-hour "HH:MM" in quotes')
+        times.append(f"{int(match.group(1)):02d}:{match.group(2)}")
     if not times:
         raise ValueError("at least one posting time is needed")
-    for text in times:
-        if not _CLOCK_RE.fullmatch(text):
-            raise ValueError(f'bad posting time {text!r}: use 24-hour "HH:MM" in quotes')
     if len(set(times)) != len(times):
         raise ValueError("a posting time is listed twice")
-    return times
+    return sorted(times)
 
 
 class PriorityEntry(StrictModel):

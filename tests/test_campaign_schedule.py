@@ -181,6 +181,16 @@ def test_max_per_platform_per_day_uses_only_the_first_times(rig: Rig) -> None:
     ]
 
 
+def test_a_single_digit_posting_time_that_has_passed_is_never_given(rig: Rig) -> None:
+    alpha = rig.campaign("alpha", ("A1", "tiktok"), ("A2", "tiktok"))
+    sched = schedule(posting_times=["9:00", "12:30"])
+    rows = rig.rows(sched, alpha, now=datetime(2026, 10, 13, 10, 15))
+    assert [(r["date"], r["time_et"]) for r in rows] == [
+        ("2026-10-13", "12:30 PM"),
+        ("2026-10-14", "9:00 AM"),
+    ]
+
+
 def test_a_slot_whose_time_has_passed_today_is_never_given(rig: Rig) -> None:
     alpha = rig.campaign("alpha", ("A1", "tiktok"), ("A2", "tiktok"), ("A3", "tiktok"))
     rows = rig.rows(schedule(), alpha, now=AFTERNOON)
@@ -351,6 +361,8 @@ def test_schedule_yaml_is_validated(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         schedule(priority=[{"slug": "Bad Name"}])
     assert schedule().per_day == 4 and schedule(max_per_platform_per_day=3).per_day == 3
+    # single-digit hours are padded and the list is put in clock order (review finding)
+    assert schedule(posting_times=["18:00", "9:00"]).posting_times == ["09:00", "18:00"]
     assert load_schedule(tmp_path) is None
     (tmp_path / "campaigns").mkdir()
     (tmp_path / "campaigns" / "schedule.yaml").write_text("posting_times: []\n", encoding="utf-8")
@@ -438,6 +450,19 @@ def test_campaign_posted_and_fix_platform_rebuild_the_combined_plan(
         read_posting_plan(project / "runs" / "_campaigns" / "alpha" / PLAN_FILE)["A1"]["platform"]
         == "youtube"
     )
+
+
+def test_a_campaign_that_does_not_load_is_left_out_with_a_warning(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real_campaign(project, "alpha", ("A1", "tiktok"))
+    broken = real_campaign(project, "beta", ("B1", "tiktok"))
+    (broken / "campaign.yaml").write_text("name: beta\nnonsense: 1\n", encoding="utf-8")
+    write_schedule(project)
+    assert cli.main(["plan"], root=project) == 0
+    out = capsys.readouterr().out
+    assert "warning: campaign 'beta' left out of the combined plan" in out
+    assert [r["campaign"] for r in read(project / COMBINED_PLAN)] == ["alpha"]
 
 
 def test_a_priority_slug_without_a_folder_fails_the_plan_command(

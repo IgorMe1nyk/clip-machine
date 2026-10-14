@@ -49,8 +49,9 @@ BRIEF_SUFFIXES = (".txt", ".md", ".pdf")
 HEADER = "# DRAFT by campaign-init. Review every line before the first run."
 MOMENT_ID_PREFIX = "M"
 BRIEF_TAG_RE = re.compile(r"<\s*/?\s*brief[^>]*>?", re.IGNORECASE)
-# control characters except tab and newline: a brief keeps its line breaks
-CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]+")
+# control characters (C0 except tab and newline, DEL, C1) and zero-width characters: a
+# brief keeps its line breaks and nothing invisible
+CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\ufeff]+")
 BLANK_LINES_RE = re.compile(r"\n{3,}")
 TIME = r"\d{1,2}:\d{2}(?::\d{2})?|\d+(?:\.\d+)?"
 MOMENT_LINE_RE = re.compile(
@@ -173,7 +174,7 @@ def _pdf_text(path: Path) -> tuple[str, bool]:
         if pages > MAX_PDF_PAGES:
             raise ConfigError(f"the PDF has {pages} pages; the limit is {MAX_PDF_PAGES}")
         for page in reader.pages:
-            text = page.extract_text() or ""
+            text = (page.extract_text() or "")[: MAX_BRIEF_CHARS - total]
             parts.append(text)
             total += len(text)
             if total >= MAX_BRIEF_CHARS:
@@ -389,8 +390,14 @@ def run_init(
         raise ConfigError(
             f"{moments_path} exists; use --force to replace it (the old file goes to .bak)"
         )
+    asset_path = None
     if watermark is not None:
         check_watermark(watermark)
+        asset_path = folder / "assets" / watermark.name
+        if asset_path.exists() and not force:
+            raise ConfigError(
+                f"{asset_path} exists; use --force to replace it (the old file goes to .bak)"
+            )
     moments_entries = None
     if moments is not None:
         try:
@@ -426,13 +433,16 @@ def run_init(
     data = to_config(draft, watermark_file=watermark_file)
 
     folder.mkdir(parents=True, exist_ok=True)
-    if watermark is not None:
-        (folder / "assets").mkdir(exist_ok=True)
-        shutil.copyfile(watermark, folder / "assets" / watermark.name)
     backup = _backup(yaml_path, force)
     write_text_atomic(yaml_path, render_yaml(data, draft, cut=cut))
     if backup is not None:
         print(f"the old campaign.yaml is {backup.name}")
+    if watermark is not None and asset_path is not None:
+        asset_path.parent.mkdir(exist_ok=True)
+        old_asset = _backup(asset_path, force)
+        shutil.copyfile(watermark, asset_path)
+        if old_asset is not None:
+            print(f"the old watermark is assets/{old_asset.name}")
     if moments_entries is not None:
         parse_moments(yaml.safe_dump(moments_entries, sort_keys=False), 48)  # it must load
         backup = _backup(moments_path, force)

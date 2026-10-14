@@ -227,6 +227,14 @@ def test_the_watermark_is_copied_only_when_given_and_must_be_a_small_png(
     assert (rig.folder / "assets" / "mark.png").read_bytes() == png.read_bytes()
     assert "watermark: yes (position: auto)" in out_of(capsys)
 
+    # an existing asset of the same name is refused without --force, kept as .bak with it
+    rig.script(answer(draft()))
+    assert rig.init("--watermark", str(png)) == 2
+    assert "use --force" in out_of(capsys) and (rig.folder / "assets" / "mark.png").is_file()
+    rig.script(answer(draft()))
+    assert rig.init("--watermark", str(png), "--force") == 0
+    assert (rig.folder / "assets" / "mark.png.bak").read_bytes() == png.read_bytes()
+
     fake = tmp_path / "mark2.png"
     fake.write_bytes(b"GIF89a not a png")
     rig.script(answer(draft()))

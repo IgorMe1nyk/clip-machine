@@ -137,11 +137,8 @@ def plan_input(root: Path, app: AppConfig, slug: str) -> PlanInput:
     campaign = load_campaign(root, slug, app)
     used = load_used(campaign.folder)
     path = campaign.folder / MOMENTS_FILE
-    specs = (
-        parse_moments(path.read_text(encoding="utf-8"), campaign.config.hook.max_chars)
-        if path.is_file() and path.read_text(encoding="utf-8").strip()
-        else []
-    )
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    specs = parse_moments(text, campaign.config.hook.max_chars) if text.strip() else []
     moments, _, _ = assign_platforms(campaign.folder, campaign.config, specs, used)
     return PlanInput(slug, campaign.config, list(moments), used, root / CAMPAIGNS_OUT / slug)
 
@@ -341,10 +338,16 @@ def rebuild_plans(
     schedule = load_schedule(root)
     if schedule is None:
         return None
-    inputs = [
-        current if current is not None and current.slug == slug else plan_input(root, app, slug)
-        for slug in list_campaigns(root)
-    ]
+    inputs: list[PlanInput] = []
+    for slug in list_campaigns(root):
+        if current is not None and current.slug == slug:
+            inputs.append(current)
+            continue
+        try:
+            inputs.append(plan_input(root, app, slug))
+        except ConfigError as exc:
+            # another campaign's broken files must not stop this command; its rows are left out
+            print(f"warning: campaign {slug!r} left out of the combined plan: {exc}")
     if current is not None and current.slug not in [inp.slug for inp in inputs]:
         inputs.append(current)
     return write_combined_plan(root, schedule, inputs, now=now)
