@@ -132,6 +132,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="score and report, but write nothing to moments.yaml or scout.json",
     )
+    scout.add_argument(
+        "--reuse-scored",
+        action="store_true",
+        help="no API call: rebuild the proposals from this episode's last scored.json of the "
+        "campaign (new ids for stretches not yet listed)",
+    )
 
     rejected = sub.add_parser(
         "campaign-reject",
@@ -335,7 +341,13 @@ def main(argv: Sequence[str] | None = None, root: Path | None = None) -> int:
         if args.command == "campaign-posted":
             return _cmd_campaign_posted(args, project_root)
         if args.command == "scout":
-            return run_scout(project_root, Path(args.episode), args.campaign, dry_run=args.dry_run)
+            return run_scout(
+                project_root,
+                Path(args.episode),
+                args.campaign,
+                dry_run=args.dry_run,
+                reuse_scored=args.reuse_scored,
+            )
         if args.command == "campaign-reject":
             return _cmd_campaign_reject(args, project_root)
         if args.command == "fetch-face-model":

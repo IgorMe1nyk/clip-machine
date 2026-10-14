@@ -150,10 +150,11 @@ def _scout_block(record: ScoutRecord | None) -> str:
     if record is None:
         return ""
     topic = _esc(record.topic) if record.topic is not None else "none"
+    hook = " &middot; <b>no hook: write one</b>" if record.notes else ""
     return (
         f"<p><b>Scout:</b> score {record.score} of 10 &middot; topic {topic} &rarr; "
         f"{_esc(record.platform)} &middot; host {_esc(record.host_check.replace('_', ' '))}"
-        f"</p>\n<p><b>Why:</b> {_esc(record.reason)}</p>\n"
+        f"{hook}</p>\n<p><b>Why:</b> {_esc(record.reason)}</p>\n"
     )
 
 

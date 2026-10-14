@@ -384,6 +384,8 @@ def _render_moment(
     _review(work, "masked", "hook", captions.hook_masked)
     work.masked = len(captions.masked) + len(captions.hook_masked)
 
+    if not moment.hook:
+        raise MomentFailed("no hook in moments.yaml; write one", "hook_from_start")
     if "hook_missing" in captions.notes or "hook_truncated" in captions.notes:
         raise MomentFailed(
             f"the hook does not fit at font size {campaign.hook_font_size}; shorten it",
