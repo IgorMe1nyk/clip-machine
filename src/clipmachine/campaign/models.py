@@ -1,5 +1,6 @@
 """The campaign's files as models (Brief 11): campaign.yaml and one entry of moments.yaml."""
 
+import hashlib
 import math
 import re
 from typing import Any, Literal
@@ -459,6 +460,27 @@ class UsedEntry(StrictModel):
     source_sha256: str
     source_name: str | None = None  # the source video's file name as fetched (Brief 12)
     posted_at: str | None = None  # set by campaign-posted; a render is not a post
+    # Brief 12.2: moment_fingerprint() of the entry as it was in moments.yaml when rendered, so
+    # `produce` can skip a clip whose entry did not change; None in files from before 12.2
+    spec_sha256: str | None = None
+
+
+SEPARATOR = chr(31)  # the ASCII unit separator, never in a hook or caption (clean_word)
+
+
+def moment_fingerprint(moment: Moment, source_sha256: str) -> str:
+    """A hash of what decides a render: id, platform, start, end (or auto), hook, caption and the
+    source video. Only the hash is stored, never the text (Brief 12.2)."""
+    parts = [
+        moment.id,
+        moment.platform,
+        repr(moment.start),
+        "auto" if moment.end is None else repr(moment.end),
+        moment.hook,
+        moment.caption,
+        source_sha256,
+    ]
+    return hashlib.sha256(SEPARATOR.join(parts).encode("utf-8")).hexdigest()
 
 
 class CloserState(StrictModel):

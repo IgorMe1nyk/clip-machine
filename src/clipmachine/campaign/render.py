@@ -19,6 +19,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from pydantic import ValidationError
+
 from clipmachine.campaign.loader import Campaign
 from clipmachine.campaign.models import (
     CHECKS,
@@ -28,6 +30,7 @@ from clipmachine.campaign.models import (
     SpellingRule,
     UsedEntry,
     UsedLog,
+    moment_fingerprint,
 )
 from clipmachine.campaign.post import post_text
 from clipmachine.campaign.spelling import apply_spelling, find_names
@@ -48,7 +51,8 @@ from clipmachine.utils.snapping import EPSILON, SentenceIndex, auto_end, snap_ne
 from clipmachine.utils.wordlists import Hit, sensitive_hits
 
 Check = Literal["pass", "warn", "fail", "n/a"]  # n/a: the campaign does not require it
-Outcome = Literal["rendered", "failed", "refused", "rejected"]  # rejected: Brief 12
+# rejected: Brief 12; unchanged: Brief 12.2 (`produce` keeps a clip whose entry did not change)
+Outcome = Literal["rendered", "failed", "refused", "rejected", "unchanged"]
 
 # The clip length is compared with this much slack, as the render stage's checks are.
 LENGTH_SLACK = 0.001
@@ -499,6 +503,7 @@ def _render_moment(
             output=mp4.relative_to(ctx.root).as_posix(),
             source_sha256=ctx.source_sha256,
             source_name=ctx.source_name or None,
+            spec_sha256=moment_fingerprint(moment, ctx.source_sha256),
         ),
     )
 
@@ -545,16 +550,47 @@ def _render_moment(
     )
 
 
+def is_unchanged(ctx: MomentContext, moment: Moment, used: UsedLog) -> bool:
+    """True when the latest unposted render of this moment on its platform was made from the
+    same entry and source (its fingerprint) and its files are still there (Brief 12.2)."""
+    latest = next(
+        (
+            e
+            for e in reversed(used.entries)
+            if e.id == moment.id and e.platform == moment.platform and not e.posted_at
+        ),
+        None,
+    )
+    if latest is None or latest.spec_sha256 != moment_fingerprint(moment, ctx.source_sha256):
+        return False
+    if not (ctx.mp4_path(moment).is_file() and ctx.post_path(moment).is_file()):
+        return False
+    meta = ctx.meta_dir / f"{moment.clip_name}.json"
+    try:
+        record = CampaignClip.model_validate_json(meta.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ValidationError):
+        return False
+    return record.status == "rendered"
+
+
 def render_moment(
-    ctx: MomentContext, moment: Moment, used: UsedLog, *, force_reuse: bool
+    ctx: MomentContext,
+    moment: Moment,
+    used: UsedLog,
+    *,
+    force_reuse: bool,
+    skip_unchanged: bool = False,
 ) -> MomentResult:
-    """Render one moment. Returns the outcome with the (possibly updated) used log."""
+    """Render one moment. Returns the outcome with the (possibly updated) used log.
+    `skip_unchanged`: keep a clip whose entry and source did not change (outcome unchanged)."""
     name = moment.clip_name
     if is_rejected(used, moment.id):
         return MomentResult("rejected", used)  # Igor said no (Brief 12); nothing is touched
     was_posted = posted_entry(used, moment.id, moment.platform) is not None
     if was_posted and not force_reuse:
         return MomentResult("refused", used)  # nothing of this moment is touched
+    if skip_unchanged and not was_posted and is_unchanged(ctx, moment, used):
+        return MomentResult("unchanged", used)
     ctx.meta_dir.mkdir(parents=True, exist_ok=True)
     ctx.platform_dir(moment.platform).mkdir(parents=True, exist_ok=True)
     (ctx.meta_dir / f"{name}.json").unlink(missing_ok=True)  # it must never describe a stale clip
