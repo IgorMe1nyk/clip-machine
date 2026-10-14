@@ -13,7 +13,9 @@ The combined file is the master: result columns (and any extra column) are read 
 overwritten, keyed by (campaign, id). On the first build, every per-campaign posting_plan.csv is
 copied to `posting_plan.pre-12-2.bak` (never overwritten) and its result columns are carried
 over. From then on each campaign's posting_plan.csv is a read-only view of its rows, headed by a
-comment line. Nothing here prints or logs a hook, a caption or a closer.
+comment line. A campaign whose files do not load is warned about and its rows in the combined
+file are kept unchanged, slots included, until it loads again. Nothing here prints or logs a
+hook, a caption or a closer.
 """
 
 import csv
@@ -178,6 +180,17 @@ def _posted_rows(inp: PlanInput, root: Path) -> list[Row]:
     return rows
 
 
+def _clock_24h(time_et: str) -> str | None:
+    """A plan time on the 24-hour clock ("5:30 PM", "5:30PM" or "17:30" -> "17:30"; Excel may
+    save any of them); None when empty or unreadable."""
+    for layout in ("%I:%M %p", "%I:%M%p", "%H:%M"):
+        try:
+            return datetime.strptime(time_et.strip(), layout).strftime("%H:%M")
+        except ValueError:
+            continue
+    return None
+
+
 def allocate(
     schedule: ScheduleConfig,
     inputs: Sequence[PlanInput],
@@ -185,6 +198,7 @@ def allocate(
     *,
     root: Path,
     now: datetime,
+    kept: Sequence[Row] = (),
 ) -> list[Row]:
     """Every row of the combined plan, slots not yet merged with the old file: posted rows by
     date, then the scheduled ones by date, time, platform and campaign order.
@@ -192,19 +206,29 @@ def allocate(
     Posts already made on a day count against that day (Igor, 2026-10-14): a platform's posted
     rows dated that day use up its slots, a campaign's posted rows use up its cap, and the free
     slots left take the day's latest times (a posted row records no real time). Posted rows on
-    other dates do not count. A time that has passed today is never given."""
+    other dates do not count. A time that has passed today is never given.
+
+    `kept` are the rows of a campaign that did not load, carried over unchanged (they are not
+    returned): a posted one counts like any post, an unposted one holds its slot, so no other
+    campaign is given it."""
     by_slug = {inp.slug: inp for inp in inputs}
     pending = {slug: pending_by_platform(by_slug[slug]) for slug, _ in order}
     posted = [row for inp in inputs for row in _posted_rows(inp, root)]
     posted_on: dict[tuple[str, str], int] = {}  # (date, platform) -> posts that day
     posted_by: dict[tuple[str, str, str], int] = {}  # (date, platform, campaign) -> posts
-    for done in posted:
+    for done in [*posted, *(r for r in kept if r.get("posted") == "yes")]:
         key = (done["date"], done["platform"])
         posted_on[key] = posted_on.get(key, 0) + 1
         who = (*key, done["campaign"])
         posted_by[who] = posted_by.get(who, 0) + 1
     times = schedule.posting_times
     per_day = min(schedule.per_day, len(times))
+    held: dict[tuple[str, str], list[int | None]] = {}  # (date, platform) -> kept slots
+    for kept_row in kept:
+        if kept_row.get("posted") != "yes" and kept_row.get("date"):
+            clock = _clock_24h(kept_row.get("time_et", ""))
+            position = times.index(clock) if clock is not None and clock in times else None
+            held.setdefault((kept_row["date"], kept_row["platform"]), []).append(position)
     now_hm = now.strftime("%H:%M")
     rank = {slug: i for i, (slug, _) in enumerate(order)}
     scheduled: list[tuple[str, int, int, int, Row]] = []
@@ -214,6 +238,13 @@ def allocate(
             stamp = day.isoformat()
             left = max(0, per_day - posted_on.get((stamp, platform), 0))
             latest = list(range(per_day))[per_day - left :] if left else []
+            for position in held.get((stamp, platform), []):
+                # a kept row's own time stays its own; one at a time no longer in the schedule
+                # still uses up one of the day's slots (the earliest left)
+                if position in latest:
+                    latest.remove(position)
+                elif latest:
+                    latest.pop(0)
             free = [i for i in latest if day != now.date() or times[i] > now_hm]
             taken: dict[str, int] = {
                 slug: posted_by.get((stamp, platform, slug), 0) for slug, _ in order
@@ -290,19 +321,36 @@ def _csv(rows: Sequence[Mapping[str, str]], columns: Sequence[str], *, header: s
     return buffer.getvalue()
 
 
+def _plan_order(row: Row) -> tuple[str, bool, str]:
+    """By date, a day's posted rows first, then the scheduled ones by time."""
+    posted = row.get("posted") == "yes"
+    return (row.get("date", ""), not posted, "" if posted else _clock_24h(row["time_et"]) or "")
+
+
 def write_combined_plan(
     root: Path,
     schedule: ScheduleConfig,
     inputs: Sequence[PlanInput],
     *,
     now: datetime,
+    unloaded: Sequence[str] = (),
 ) -> tuple[Path, list[Path]]:
     """Rebuild runs/_campaigns/posting_plan.csv and the per-campaign views. Returns the path and
-    the pre-12.2 backups made on this call."""
+    the pre-12.2 backups made on this call.
+
+    `unloaded` names campaigns on disk that did not load: their rows in the current file are
+    kept exactly as they are (posted rows, slots, result columns) and their slots stay theirs;
+    their own view is not rewritten. A load error never drops a row (Igor, 2026-10-14)."""
     path = root / COMBINED_PLAN
     existing = read_plan(path, key=COMBINED_KEY)
     backups = migrate_results(root, inputs, existing)
-    order = campaign_order(schedule, [inp.slug for inp in inputs])
+    kept = [row for (slug, _), row in existing.items() if slug in unloaded]
+    listed = [inp.slug for inp in inputs]
+    order = [
+        (slug, cap)
+        for slug, cap in campaign_order(schedule, [*listed, *unloaded])
+        if slug not in unloaded
+    ]
     rows = [
         _merge(
             row,
@@ -311,8 +359,10 @@ def write_combined_plan(
             slot_columns=COMBINED_SLOT_COLUMNS,
             columns=COMBINED_COLUMNS,
         )
-        for row in allocate(schedule, inputs, order, root=root, now=now)
+        for row in allocate(schedule, inputs, order, root=root, now=now, kept=kept)
     ]
+    if kept:
+        rows = sorted([*rows, *kept], key=_plan_order)  # stable: the rest keep their order
     extra = [c for r in rows for c in r if c not in COMBINED_COLUMNS]
     columns = [*COMBINED_COLUMNS, *dict.fromkeys(extra)]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -358,18 +408,23 @@ def rebuild_plans(
     if schedule is None:
         return None
     inputs: list[PlanInput] = []
+    unloaded: list[str] = []
     for slug in list_campaigns(root):
         if current is not None and current.slug == slug:
             inputs.append(current)
             continue
         try:
             inputs.append(plan_input(root, app, slug))
-        except ConfigError as exc:
-            # another campaign's broken files must not stop this command; its rows are left out
-            print(f"warning: campaign {slug!r} left out of the combined plan: {exc}")
+        except (ConfigError, OSError, ValueError) as exc:  # ValueError: bad UTF-8, validation
+            # another campaign's broken files must not stop this command, nor cost its rows
+            unloaded.append(slug)
+            print(
+                f"warning: campaign {slug!r} did not load; its rows in the combined plan are "
+                f"kept unchanged: {exc}"
+            )
     if current is not None and current.slug not in [inp.slug for inp in inputs]:
         inputs.append(current)
-    return write_combined_plan(root, schedule, inputs, now=now)
+    return write_combined_plan(root, schedule, inputs, now=now, unloaded=unloaded)
 
 
 def report_backups(backups: Sequence[Path]) -> None:

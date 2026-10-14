@@ -530,8 +530,135 @@ def test_a_campaign_that_does_not_load_is_left_out_with_a_warning(
     write_schedule(project)
     assert cli.main(["plan"], root=project) == 0
     out = capsys.readouterr().out
-    assert "warning: campaign 'beta' left out of the combined plan" in out
-    assert [r["campaign"] for r in read(project / COMBINED_PLAN)] == ["alpha"]
+    assert "warning: campaign 'beta' did not load; its rows in the combined plan are kept" in out
+    assert [r["campaign"] for r in read(project / COMBINED_PLAN)] == ["alpha"]  # it had none
+
+
+def type_results(path: Path, values: dict[tuple[str, str], dict[str, str]]) -> None:
+    """Igor fills result columns in the combined file by hand."""
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        columns = list(reader.fieldnames or [])
+        rows = list(reader)
+    for row in rows:
+        row.update(values.get((row["campaign"], row["id"]), {}))
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def test_a_campaign_with_a_broken_moments_file_keeps_its_rows_until_it_loads_again(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real_campaign(project, "alpha", *((f"A{i}", "tiktok") for i in range(1, 7)))
+    beta = real_campaign(project, "beta", ("B1", "tiktok"), ("B2", "tiktok"), ("B3", "youtube"))
+    # beta comes first, so a failure to load it must not make its priority entry an error
+    write_schedule(project, priority=[{"slug": "beta", "max_per_day": 1}, {"slug": "alpha"}])
+    assert cli.main(["plan"], root=project) == 0
+    args = ["campaign-posted", "--campaign", "beta", "--id", "B1", "--platform", "tiktok"]
+    assert cli.main(args, root=project) == 0
+    path = project / COMBINED_PLAN
+    type_results(
+        path,
+        {
+            ("beta", "B1"): {"views_48h": "1200", "notes": "good"},
+            ("beta", "B2"): {"notes": "check the face"},
+            ("alpha", "A1"): {"likes": "7"},
+        },
+    )
+    before = read(path)
+    beta_before = [r for r in before if r["campaign"] == "beta"]
+    assert len(beta_before) == 3
+    view = project / "runs" / "_campaigns" / "beta" / PLAN_FILE
+    view_before = view.read_text(encoding="utf-8")
+    capsys.readouterr()
+
+    moments_file = beta / "moments.yaml"
+    good = moments_file.read_text(encoding="utf-8")
+    moments_file.write_text("- {id: B1, start: [unclosed\n", encoding="utf-8")
+    assert cli.main(["plan"], root=project) == 0
+    out = capsys.readouterr().out
+    assert "warning: campaign 'beta' did not load; its rows in the combined plan are kept" in out
+    after = read(path)
+    assert [r for r in after if r["campaign"] == "beta"] == beta_before  # every column, as is
+    assert {r["id"]: r["likes"] for r in after if r["campaign"] == "alpha"}["A1"] == "7"
+    # beta's scheduled clips keep their slots (a posted row only uses up one of its day's slots)
+    beta_slots = {
+        (r["date"], r["time_et"], r["platform"]) for r in beta_before if r["posted"] == "no"
+    }
+    assert len(beta_slots) == 2
+    alpha_slots = [
+        (r["date"], r["time_et"], r["platform"]) for r in after if r["campaign"] == "alpha"
+    ]
+    assert not beta_slots & set(alpha_slots)  # beta's slots are not handed to alpha
+    assert len(alpha_slots) == len(set(alpha_slots)) == 6
+    assert view.read_text(encoding="utf-8") == view_before  # its view is left alone
+
+    moments_file.write_text(good, encoding="utf-8")
+    assert cli.main(["plan"], root=project) == 0
+    assert "warning" not in capsys.readouterr().out
+    fixed = {r["id"]: r for r in read(path) if r["campaign"] == "beta"}
+    assert set(fixed) == {"B1", "B2", "B3"}
+    assert fixed["B1"]["posted"] == "yes" and fixed["B1"]["views_48h"] == "1200"
+    assert fixed["B1"]["notes"] == "good" and fixed["B2"]["notes"] == "check the face"
+    assert fixed["B2"]["posted"] == "no" and fixed["B2"]["date"]
+
+
+def test_kept_rows_hold_their_slots_and_a_kept_post_uses_up_its_day(rig: Rig) -> None:
+    alpha = rig.campaign("alpha", *((f"A{i}", "tiktok") for i in range(1, 6)))
+    kept = [
+        {
+            "date": "2026-10-13",
+            "time_et": "17:30",  # as Excel may save "5:30 PM"
+            "platform": "tiktok",
+            "campaign": "beta",
+            "id": "B2",
+            "posted": "no",
+        },
+        {
+            "date": "2026-10-13",
+            "time_et": "",
+            "platform": "tiktok",
+            "campaign": "beta",
+            "id": "B1",
+            "posted": "yes",
+        },
+        {
+            "date": "2026-10-14",
+            "time_et": "9:15 AM",
+            "platform": "tiktok",
+            "campaign": "beta",
+            "id": "B3",
+            "posted": "no",
+        },  # a time no longer in the schedule: still one slot
+    ]
+    sched = schedule()
+    order = campaign_order(sched, ["alpha"])
+    rows = allocate(sched, [alpha], order, root=rig.root, now=MORNING, kept=kept)
+    assert slots(rows) == [
+        ("2026-10-13", "3:00 PM", "tiktok", "alpha", "A1"),
+        ("2026-10-13", "8:00 PM", "tiktok", "alpha", "A2"),
+        ("2026-10-14", "3:00 PM", "tiktok", "alpha", "A3"),
+        ("2026-10-14", "5:30 PM", "tiktok", "alpha", "A4"),
+        ("2026-10-14", "8:00 PM", "tiktok", "alpha", "A5"),
+    ]
+
+
+def test_a_moments_file_that_is_not_utf8_is_a_warning_not_a_failed_rebuild(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real_campaign(project, "alpha", ("A1", "tiktok"))
+    beta = real_campaign(project, "beta", ("B1", "youtube"))
+    write_schedule(project)
+    assert cli.main(["plan"], root=project) == 0
+    path = project / COMBINED_PLAN
+    beta_before = [r for r in read(path) if r["campaign"] == "beta"]
+    (beta / "moments.yaml").write_bytes(b"- {id: B1, hook: a \x97 dash}\n")  # cp1252, not UTF-8
+    capsys.readouterr()
+    assert cli.main(["plan"], root=project) == 0
+    assert "warning: campaign 'beta' did not load" in capsys.readouterr().out
+    assert [r for r in read(path) if r["campaign"] == "beta"] == beta_before
 
 
 def test_a_priority_slug_without_a_folder_fails_the_plan_command(
