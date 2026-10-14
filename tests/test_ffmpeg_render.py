@@ -185,6 +185,60 @@ def test_crop_commands_are_one_line_per_change_after_the_first() -> None:
     assert text == "1.500000 crop x 60;\n4.123457 crop x 380;\n"
 
 
+def test_crop_commands_may_address_a_named_crop_instance() -> None:
+    # Brief 12.1: the fit graph has two crop filters; the lines go to the speaker's by name
+    text = ffmpeg.crop_commands([(0.0, 218), (1.5, 60)], target="crop@spk")
+    assert text == "1.500000 crop@spk x 60;\n"
+    wide = CropBox(w=1080, h=1920, x=100, y=0)
+    tight = CropBox(w=964, h=1714, x=120, y=40)
+    text = ffmpeg.crop_box_commands([(0.0, wide), (1.0, tight)], target="crop@spk")
+    assert text == "1.000000 crop@spk w 964, crop@spk h 1714, crop@spk x 120, crop@spk y 40;\n"
+
+
+def test_fit_graph_is_plain_integers_switches_on_the_spans_and_draws_subtitles_last() -> None:
+    graph = ffmpeg.fit_graph(
+        CROP,
+        1080,
+        1920,
+        "clips/c04.ass",
+        "../../assets/fonts",
+        "clips/c04.crop.cmd",
+        frame_w=1080,
+        frame_h=608,
+        frame_top=449,
+        spans=[(4.05, 7.98), (12.0, 15.5)],
+        blur=20,
+        darken=0.35,
+    )
+    assert graph == (
+        "[0:v:0]split=3[fit_src][fit_frame][fit_fill];"
+        "[fit_src]sendcmd=f=clips/c04.crop.cmd,crop@spk=202:360:218:0,scale=1080:1920,setsar=1"
+        "[fit_spk];"
+        "[fit_frame]scale=1080:608,setsar=1[fit_fg];"
+        "[fit_fill]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
+        "boxblur=20,eq=brightness=-0.350,setsar=1[fit_bg];"
+        "[fit_bg][fit_fg]overlay=x=0:y=449[fit_full];"
+        "[fit_spk][fit_full]overlay=x=0:y=0:enable='between(t,4.050,7.980)+between(t,12.000,15.500)',"
+        "subtitles=filename=clips/c04.ass:fontsdir=../../assets/fonts"
+    )
+    ffmpeg.assert_source_audio_only(["-i", "s.mp4", "-map", "0:a:0", "-filter_complex", graph])
+    fixed = ffmpeg.fit_graph(
+        CROP, 1080, 1920, "clips/c04.ass", "f", None,
+        frame_w=1080, frame_h=608, frame_top=449, spans=[(0.0, 2.0)], blur=0, darken=0.0,
+    )  # fmt: skip
+    assert "sendcmd" not in fixed and "[fit_src]crop@spk=202:360:218:0," in fixed
+    with pytest.raises(ffmpeg.MediaError, match="span"):
+        ffmpeg.fit_graph(
+            CROP, 1080, 1920, "clips/c04.ass", "f", None,
+            frame_w=1080, frame_h=608, frame_top=449, spans=[], blur=0, darken=0.0,
+        )  # fmt: skip
+    with pytest.raises(ffmpeg.MediaError, match="subtitle file path"):
+        ffmpeg.fit_graph(
+            CROP, 1080, 1920, "C:/bad.ass", "f", None,
+            frame_w=1080, frame_h=608, frame_top=449, spans=[(0.0, 1.0)], blur=0, darken=0.0,
+        )  # fmt: skip
+
+
 def test_crop_commands_are_empty_for_a_path_that_never_moves() -> None:
     assert ffmpeg.crop_commands([(0.0, 218)]) == ""
     assert ffmpeg.crop_commands([]) == ""

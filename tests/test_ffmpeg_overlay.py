@@ -122,6 +122,16 @@ def test_the_vf_command_is_what_it_was(tmp_path: Path) -> None:
     assert args[args.index("-vf") + 1] == "VF"
 
 
+def test_overlay_graph_wraps_a_graph_that_already_starts_at_the_source() -> None:
+    # Brief 12.1: fit_graph returns a graph from [0:v:0]; the watermark goes on top of it
+    graph = "[0:v:0]split=2[a][b];[a]crop=1:1:0:0[c];[b][c]overlay=x=0:y=0,subtitles=filename=a"
+    normal = overlay_graph(graph, x=1, y=2, size=None, blend="normal", frame=FRAME)
+    assert normal == f"{graph}[base];[base][1:v:0]overlay=x=1:y=2:eof_action=repeat[v]"
+    screen = overlay_graph(graph, x=1, y=2, size=None, blend="screen", frame=FRAME)
+    assert screen.startswith(f"{graph},format=gbrp[base];")
+    assert_source_audio_only(["-map", "0:a:0", "-i", "s.mp4", "-filter_complex", normal])
+
+
 def test_exactly_one_of_vf_and_filter_complex(tmp_path: Path) -> None:
     out = tmp_path / "o.mp4"
     with pytest.raises(MediaError, match="exactly one"):
@@ -133,10 +143,11 @@ def test_exactly_one_of_vf_and_filter_complex(tmp_path: Path) -> None:
         ffmpeg.render_args(tmp_path / "s.mp4", out, **COMMON)  # type: ignore[arg-type]
 
 
-def test_filter_complex_needs_an_image_and_an_image_needs_filter_complex(tmp_path: Path) -> None:
+def test_an_image_needs_filter_complex_but_not_the_other_way_round(tmp_path: Path) -> None:
     out = tmp_path / "o.mp4"
-    with pytest.raises(MediaError, match="overlay image"):
-        ffmpeg.render_args(tmp_path / "s.mp4", out, filter_complex="G", **COMMON)  # type: ignore[arg-type]
+    # Brief 12.1: the fit layout is a filter_complex without a second input
+    args = ffmpeg.render_args(tmp_path / "s.mp4", out, filter_complex="G", **COMMON)  # type: ignore[arg-type]
+    assert args.count("-i") == 1 and args[args.index("-map") + 1] == "[v]"
     with pytest.raises(MediaError, match="overlay image"):
         ffmpeg.render_args(
             tmp_path / "s.mp4",
