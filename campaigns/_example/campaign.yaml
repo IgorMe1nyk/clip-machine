@@ -9,7 +9,7 @@ selection: human      # human (default): you list the moments. ai: `scout` may p
 #   topics:           # topic key -> platform; the AI tags every proposed moment with one key
 #     values_purpose_growth: youtube
 #     dating_relationships: instagram
-#   host_side: left   # optional: left | right; a face on that side in the first seconds is a hint in the report
+#   host_side: left   # optional: left | right; a face on that side in the first seconds is a hint in the report; campaign-init never drafts it
 clip_length: { min: 20, max: 60 }
 hook:
   mode: full            # full = on screen the whole clip; intro = the first seconds only

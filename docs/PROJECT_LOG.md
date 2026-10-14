@@ -2,6 +2,44 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-14 — Brief 12.2: one-command campaigns and one posting plan across campaigns (built; real run pending Igor's OK)
+
+**Built** on branch `brief-12-2-one-command` (D-034, D-035), seven commits, no real campaign
+data touched:
+
+- `campaign-init <slug> --brief <file>`: the brief (.txt/.md/.pdf; pypdf text extraction only,
+  10 MB and 50 pages at most, encrypted or malformed files refused cleanly) is cleaned, cut at
+  60k characters, fenced between `<brief>` tags and treated as data; one Sonnet call with an
+  API-enforced draft schema and one repair; the draft is validated as a CampaignConfig and
+  written under a DRAFT header with the model's reasons and `# confirm:` notes as comments.
+  `selection` falls back to `human`. `--watermark` needs a real PNG under 5 MB; `--moments`
+  drafts moments.yaml from a timestamped list with no model call. Costs land in
+  `runs/_campaigns/<slug>/_init/costs.json`.
+- `produce <episode> --campaign <slug>`: scout once per episode where allowed, render this
+  episode's unposted moments, keep unchanged clips (fingerprint in used.json; the first `produce`
+  after this change re-renders every unposted clip once, since older entries have none),
+  rebuild report and plan, print the new clips' slots and the cost. A sourceless moment rendered
+  from another episode is refused, not guessed.
+- `campaigns/schedule.yaml` and `runs/_campaigns/posting_plan.csv`: the combined plan (strict
+  priority, per-campaign `max_per_day`, `max_per_platform_per_day`, no slot whose time has
+  passed today). First build: per-campaign plans backed up to `posting_plan.pre-12-2.bak` and
+  their result columns carried over; per-campaign plans are read-only views from then on.
+  `plan` rebuilds; `campaign`, `produce`, `campaign-posted` and `--fix-platform` rebuild too.
+- Refactor: `run_campaign` is now `open_campaign` → `render_moments` → `finalize`; the
+  `campaign --only` source-column bug is fixed; `watermark.position` defaults to `auto`.
+- Docs: `docs/RUNBOOK.md`, the example README (5 steps, combined plan), the example
+  `schedule.yaml`, COSTS row for pypdf.
+
+**Checks:** ruff, format, mypy, pytest (2249 passed, 3 skipped), pip-audit, each run separately
+and green at every commit. A fresh-context security and reliability review of the full diff
+followed (see the session report).
+
+**Pending (Igor):** write the real `campaigns/schedule.yaml` (first campaign `max_per_day: 3`,
+then the second; 4 times a day), rehearse the migration on a copy under `runs/_scratch/`, then
+`plan`; `campaign-init` on the second campaign's saved brief (compare with the hand-written
+YAML); `produce` on one new episode.
+
+
 ## 2026-10-14 — Scout robustness, the recovered clips, and the 1440p switch of the ai campaign
 
 **Scout robustness** (branch `scout-robustness`, merged into main): a hook still over 7 words
