@@ -116,7 +116,9 @@ def score_block(scout: ScoutConfig, max_chars: int) -> str:
     lines.append(
         f"For every clip you keep, hook_line is at most {MAX_HOOK_WORDS} words and {max_chars} "
         "characters, says what the clip actually delivers (no clickbait the clip does not pay "
-        "off), and caption is one sentence that leads with the idea in the clip."
+        "off), and caption is one sentence that leads with the idea in the clip. A clip you "
+        "reject still gets a non-empty hook_line (same limits) and suggested_title; never leave "
+        "them empty."
     )
     return "\n".join(lines) + "\n"
 

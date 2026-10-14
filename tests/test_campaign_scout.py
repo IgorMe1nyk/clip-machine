@@ -537,6 +537,9 @@ def test_score_block_without_topics_asks_for_null() -> None:
     assert (
         "Leave topic null." in block and "hook_line is at most 7 words and 48 characters" in block
     )
+    # A rejected clip must keep a hook and title too: the base ClipScore validator requires
+    # them, and the real run showed the model emptying them for rejects in a repair round.
+    assert "A clip you reject still gets a non-empty hook_line" in block
 
 
 def test_without_topics_every_proposal_is_auto(rig: Rig) -> None:
