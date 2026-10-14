@@ -55,6 +55,8 @@ from clipmachine.utils import faces
 
 EXIT_OK = 0
 SCOUT_DIR = "scout"  # runs/<run>/scout/<slug>/: candidates.json and scored.json of a scout run
+LAST_GOOD_JSON = "scored.last-good.json"  # a copy of the last scored.json the stage finished
+HOOK_NOTE = "no hook: write one"  # the moments.yaml comment and the report line
 MOMENTS_FILE = "moments.yaml"
 BACKUP_SUFFIX = ".bak"
 ID_PREFIX = "S"
@@ -77,6 +79,7 @@ class Proposal:
     score: int
     reason: str
     host_check: HostCheck
+    notes: tuple[str, ...] = ()  # hook_too_long | hook_missing: the hook is left empty
 
 
 # --- the prompt pieces ---------------------------------------------------------------------------
@@ -126,9 +129,17 @@ def score_block(scout: ScoutConfig, max_chars: int) -> str:
 def scout_check(topics: Sequence[str], max_chars: int) -> Callable[[ScoreBatch], str | None]:
     """A check for call_structured, run with the id check: every kept clip has a valid topic (when
     the campaign has topics), a hook of at most MAX_HOOK_WORDS words and `max_chars` characters,
-    and a caption. The message names ids and rules only, never the model's text."""
+    and a caption. The message names ids and rules only, never the model's text.
+
+    The hook rule asks for one repair and no more: the second answer for the same clips is taken
+    even with a long hook (the scout then leaves that hook empty with a note, see run_scout), so
+    one stubborn hook never fails the run. Topic and caption stay strict."""
+    hooks_asked: set[frozenset[str]] = set()
 
     def check(batch: ScoreBatch) -> str | None:
+        ids = frozenset(clip.id for clip in batch.clips)
+        hooks_strict = ids not in hooks_asked
+        hooks_asked.add(ids)
         problems: list[str] = []
         for clip in batch.clips:
             if clip.verdict != "keep":
@@ -137,7 +148,7 @@ def scout_check(topics: Sequence[str], max_chars: int) -> Callable[[ScoreBatch],
             if topics and clip.topic not in topics:
                 faults.append("topic must be one of " + ", ".join(topics))
             hook = " ".join(clip.hook_line.split())
-            if len(hook.split()) > MAX_HOOK_WORDS or len(hook) > max_chars:
+            if hooks_strict and (len(hook.split()) > MAX_HOOK_WORDS or len(hook) > max_chars):
                 faults.append(
                     f"hook_line must be at most {MAX_HOOK_WORDS} words and {max_chars} characters"
                 )
@@ -248,9 +259,10 @@ def format_entries(proposals: Sequence[Proposal], source: str, when: str) -> str
     lines = [f"# scout {when[:10]}: {len(proposals)} proposed from {Path(source).name}"]
     for p in proposals:
         topic = p.topic or "none"
+        hook_note = f" {HOOK_NOTE};" if p.notes else ""
         lines.append(
-            f"# {p.id}: score {p.score}, topic {topic} -> {p.platform}, host {p.host_check}; "
-            f"{_one_line(p.reason, MAX_REASON_CHARS)}"
+            f"# {p.id}: score {p.score}, topic {topic} -> {p.platform}, host {p.host_check};"
+            f"{hook_note} {_one_line(p.reason, MAX_REASON_CHARS)}"
         )
         entry = {
             "id": p.id,
@@ -306,7 +318,12 @@ def _source_label(root: Path, episode: Path, run_dir: Path) -> str:
 # --- the command ---------------------------------------------------------------------------------
 
 
-def run_scout(root: Path, episode: Path, slug: str, *, dry_run: bool = False) -> int:
+def run_scout(
+    root: Path, episode: Path, slug: str, *, dry_run: bool = False, reuse_scored: bool = False
+) -> int:
+    """`reuse_scored`: no API call; the kept list comes from the episode's scored.json of this
+    campaign (or the copy kept from the last run that finished), so a run that died after the
+    scoring, or a moments.yaml that lost entries, is rebuilt for free."""
     root = root.resolve()
     app = load_app_config(root)
     campaign = load_campaign(root, slug, app)
@@ -339,22 +356,28 @@ def run_scout(root: Path, episode: Path, slug: str, *, dry_run: bool = False) ->
         out_dir=out_dir,
         scout_block=rules_block(scout),
     )
-    candidates.run(ctx)
-    score.run(
-        dataclasses.replace(
-            ctx,
-            scout_block=score_block(scout, limit),
-            extra_check=scout_check(list(scout.topics), limit),
+    if reuse_scored:
+        scored = _last_scored(out_dir)
+        cost, calls = 0.0, 0
+        print(f"reusing {scored.summary.candidates} scored candidates; no API call")
+    else:
+        candidates.run(ctx)
+        score.run(
+            dataclasses.replace(
+                ctx,
+                scout_block=score_block(scout, limit),
+                extra_check=scout_check(list(scout.topics), limit),
+            )
         )
-    )
-    found = CandidatesFile.model_validate_json(
-        (out_dir / candidates.CANDIDATES_JSON).read_text(encoding="utf-8")
-    )
-    scored = ScoredFile.model_validate_json(
-        (out_dir / score.SCORED_JSON).read_text(encoding="utf-8")
-    )
-    cost = found.summary.actual_usd + scored.summary.actual_usd
-    calls = found.summary.calls + scored.summary.calls
+        found = CandidatesFile.model_validate_json(
+            (out_dir / candidates.CANDIDATES_JSON).read_text(encoding="utf-8")
+        )
+        scored = ScoredFile.model_validate_json(
+            (out_dir / score.SCORED_JSON).read_text(encoding="utf-8")
+        )
+        shutil.copyfile(out_dir / score.SCORED_JSON, out_dir / LAST_GOOD_JSON)
+        cost = found.summary.actual_usd + scored.summary.actual_usd
+        calls = found.summary.calls + scored.summary.calls
 
     episode_file = Path(pipeline.load_state(run_dir).input)
     taken = taken_stretches(
@@ -368,7 +391,7 @@ def run_scout(root: Path, episode: Path, slug: str, *, dry_run: bool = False) ->
     )
     kept = sorted((c for c in scored.clips if c.kept), key=lambda c: c.rank or 0)
     chosen: list[Proposal] = []
-    skipped = dropped = 0
+    skipped = dropped = without_hook = 0
     for clip in kept:
         if len(chosen) >= scout.per_episode:
             break
@@ -377,9 +400,15 @@ def run_scout(root: Path, episode: Path, slug: str, *, dry_run: bool = False) ->
             continue
         hook = " ".join(clip.hook_line.split())
         caption = " ".join((clip.caption or "").split())
-        if not hook or len(hook) > limit or len(hook.split()) > MAX_HOOK_WORDS or not caption:
+        if not caption:
             dropped += 1  # the check asked for a repair; the answer still broke the rule
             continue
+        notes: tuple[str, ...] = ()
+        if not hook:
+            notes, without_hook = ("hook_missing",), without_hook + 1
+        elif len(hook) > limit or len(hook.split()) > MAX_HOOK_WORDS:
+            # the check asked for one repair; the clip is kept, the hook is Igor's to write
+            notes, hook, without_hook = ("hook_too_long",), "", without_hook + 1
         topic = clip.topic if clip.topic in scout.topics else None
         platform = scout.topics.get(topic, "auto") if topic is not None else "auto"
         chosen.append(
@@ -394,6 +423,7 @@ def run_scout(root: Path, episode: Path, slug: str, *, dry_run: bool = False) ->
                 score=clip.score,
                 reason=" ".join(clip.reason.split()),
                 host_check="not_checked",
+                notes=notes,
             )
         )
     ids = next_ids((s.id for s in specs), len(chosen))
@@ -425,6 +455,7 @@ def run_scout(root: Path, episode: Path, slug: str, *, dry_run: bool = False) ->
                 reason=p.reason,
                 proposed_at=when,
                 model=scored.summary.model,
+                notes=list(p.notes),
             )
             for p in proposals
         )
@@ -441,6 +472,8 @@ def run_scout(root: Path, episode: Path, slug: str, *, dry_run: bool = False) ->
         f"overlapping, {dropped} dropped, of {len(kept)} kept by the scorer; "
         f"cost ${cost:.4f} in {calls} API calls"
     )
+    if without_hook:
+        print(f"{without_hook} proposed without a hook (too long or missing): write one")
     if hosts:
         print(f"host check: {hosts}")
     if proposals:
@@ -449,6 +482,22 @@ def run_scout(root: Path, episode: Path, slug: str, *, dry_run: bool = False) ->
             f"{episode} --campaign {slug} --only {','.join(p.id for p in proposals)}"
         )
     return EXIT_OK
+
+
+def _last_scored(out_dir: Path) -> ScoredFile:
+    """scored.json of the last scout run of this episode and campaign, else the copy of the
+    last one that finished; a ConfigError when there is neither."""
+    for name in (score.SCORED_JSON, LAST_GOOD_JSON):
+        path = out_dir / name
+        if path.is_file():
+            try:
+                return ScoredFile.model_validate_json(path.read_text(encoding="utf-8"))
+            except ValueError as exc:
+                raise ConfigError(f"{path} is not a valid scored file: {exc}") from exc
+    raise ConfigError(
+        f"no scored.json for this episode and campaign in {out_dir}; run scout without "
+        "--reuse-scored first"
+    )
 
 
 def reject_moment(root: Path, slug: str, moment_id: str, when: str) -> RejectedMoment:

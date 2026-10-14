@@ -487,8 +487,6 @@ def test_a_missing_end_key_is_none(project: Path) -> None:
         ({"id": "x" * 25}, "id must be"),
         ({"id": "a/b"}, "id must be"),
         ({"platform": "myspace"}, "platform"),
-        ({"hook": " {} "}, "hook must not be empty"),
-        ({"hook": ""}, "hook must not be empty"),
         ({"hook": "H" * 31}, "hook.max_chars \\(30\\)"),
         ({"surprise": 1}, "surprise"),
     ],
@@ -496,6 +494,12 @@ def test_a_missing_end_key_is_none(project: Path) -> None:
 def test_bad_moments_name_the_entry(project: Path, fields: dict[str, Any], message: str) -> None:
     with pytest.raises(ConfigError, match=rf"moments\.yaml entry 2 \(id .*\).*{message}"):
         moments_of(project, [moment(id="B01", platform="youtube"), moment(**fields)])
+
+
+def test_an_empty_hook_loads_and_is_left_for_igor_to_write(project: Path) -> None:
+    # the scout leaves a hook empty when the model's stayed too long; the render refuses it
+    specs = moments_of(project, [moment(id="S01", hook=""), moment(id="S02", hook=" {} ")])
+    assert [s.hook for s in specs] == ["", ""]
 
 
 def test_a_hook_of_exactly_the_limit_is_fine(project: Path) -> None:

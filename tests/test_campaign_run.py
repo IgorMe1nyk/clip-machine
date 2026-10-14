@@ -1276,6 +1276,14 @@ def test_with_zoom_off_everywhere_the_line_and_the_json_say_nothing_about_zooms(
     assert "zooms" not in out_of(capsys)
 
 
+def test_a_moment_without_a_hook_fails_with_a_clear_reason(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig.moments(moment(id="A01", start="0:24", end="0:58", hook=""))
+    assert rig.go() == 1
+    assert "A01 tiktok: FAILED: no hook in moments.yaml; write one" in out_of(capsys)
+
+
 # --- Brief 12.1: the graphics-aware fit layout ---------------------------------------------------
 
 

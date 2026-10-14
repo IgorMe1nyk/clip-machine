@@ -385,6 +385,57 @@ def test_a_bad_topic_is_repaired_once_and_a_second_bad_answer_stops_scout(
     assert len(rig.ids()) == 3  # nothing more was written
 
 
+def test_a_hook_still_too_long_after_the_repair_keeps_the_clip_with_an_empty_hook(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    long_hook = "one two three four five six seven eight"
+    rig.script(
+        answer(THREE),
+        answer(judged(clip("c01", hook=long_hook), clip("c02"), clip("c03"))),
+        answer(judged(clip("c01", hook=long_hook), clip("c02"), clip("c03"))),  # still long
+    )
+    assert rig.scout() == 0
+    assert len(rig.messages.create_calls) == 3  # one repair was asked, then the answer taken
+    assert "hook_line must be at most 7 words" in rig.user_text(2)
+    assert rig.ids() == ["S01", "S02", "S03"]
+    text = rig.moments_text()
+    assert "hook: ''" in text and "# S01:" in text and "no hook: write one" in text
+    assert long_hook not in text
+    records = rig.records().records
+    assert records[0].notes == ["hook_too_long"] and records[1].notes == []
+    console = out_of(capsys)
+    assert "1 proposed without a hook" in console and long_hook not in console
+
+
+def test_reuse_scored_rebuilds_the_proposals_without_an_api_call(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    edit_yaml(rig.folder / "campaign.yaml", lambda d: d["scout"].update(per_episode=1))
+    rig.script(answer(THREE), answer(judged(clip("c01"), clip("c02"), clip("c03"))))
+    assert rig.scout() == 0 and rig.ids() == ["S01"]
+    scout_dir = rig.run_dir / "scout" / "demo"
+    assert (scout_dir / "scored.last-good.json").is_file()
+
+    edit_yaml(rig.folder / "campaign.yaml", lambda d: d["scout"].update(per_episode=8))
+    rig.script()  # any API call would fail: nothing is scripted
+    capsys.readouterr()
+    assert rig.scout("--reuse-scored") == 0
+    assert rig.ids() == ["S01", "S02", "S03"]  # S01's stretch is skipped as listed
+    console = out_of(capsys)
+    assert "no API call" in console and "cost $0.0000 in 0 API calls" in console
+    assert "2 proposed" in console and "1 skipped as overlapping" in console
+
+    (scout_dir / "scored.json").unlink()  # a later run died after the scoring: the copy serves
+    capsys.readouterr()
+    assert rig.scout("--reuse-scored") == 0
+    assert "0 proposed" in out_of(capsys)
+
+    (scout_dir / "scored.last-good.json").unlink()
+    capsys.readouterr()
+    assert rig.scout("--reuse-scored") == 2
+    assert "run scout without --reuse-scored" in out_of(capsys)
+
+
 def test_dry_run_writes_nothing(rig: Rig, capsys: pytest.CaptureFixture[str]) -> None:
     rig.script(answer(THREE), answer(judged(clip("c01"), clip("c02"), clip("c03"))))
     assert rig.scout("--dry-run") == 0

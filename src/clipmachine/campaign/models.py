@@ -208,6 +208,7 @@ class ScoutRecord(StrictModel):
     reason: str
     proposed_at: str
     model: str
+    notes: list[str] = Field(default_factory=list)  # hook_too_long | hook_missing
 
 
 class ScoutFile(StrictModel):
@@ -319,10 +320,9 @@ class _MomentFields(StrictModel):
     @field_validator("hook")
     @classmethod
     def _hook(cls, value: str) -> str:
-        cleaned = clean_word(value)
-        if not cleaned:
-            raise ValueError("hook must not be empty")
-        return cleaned
+        # An empty hook is allowed in the file (the scout leaves one empty when the model's was
+        # too long); the render refuses such a moment until a hook is written.
+        return clean_word(value)
 
     @field_validator("source")
     @classmethod
