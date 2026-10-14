@@ -30,6 +30,10 @@ if TYPE_CHECKING:
 log = logging.getLogger("clipmachine")
 
 
+FETCH_COMMAND = "clipmachine fetch-face-model"
+FETCH_TEXT_COMMAND = "clipmachine fetch-text-model"
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     """One model file the face code needs: where it lives, where it comes from, how to check it."""
@@ -39,6 +43,7 @@ class ModelSpec:
     url: str
     sha256: str | None  # None: any present file is accepted
     label: str  # for messages, e.g. "face model"
+    command: str = FETCH_COMMAND  # the command that downloads it, named in error messages
 
 
 # SHA-256 of the file, taken at the first download Igor approved on 2026-10-11 (3,758,596 bytes;
@@ -66,10 +71,26 @@ DETECTOR = ModelSpec(
     label="face detector model",
 )
 
+# PP-OCRv3 English text detector (DB) from the OpenCV model zoo, for the graphics-aware layout
+# (Brief 12.1, D-033). 2,423,490 bytes, Apache-2.0 (the folder's LICENSE). The hash is the
+# repository's Git LFS id and matched the bytes fetched on 2026-10-14. Loaded by
+# utils/graphics.py with cv2.dnn.TextDetectionModel_DB; fetched only by fetch-text-model.
+TEXT_DETECTOR = ModelSpec(
+    folder=Path("models") / "textdet",
+    name="text_detection_en_ppocrv3_2023may.onnx",
+    url=(
+        "https://media.githubusercontent.com/media/opencv/opencv_zoo/"
+        "b32d27c8f138ffd625efc52e2d82f8b7d54dabc7/models/text_detection_ppocr/"
+        "text_detection_en_ppocrv3_2023may.onnx"
+    ),
+    sha256="03f550c6b406fda8bf54bd8327815f6c7e2edd98cea02348c93d879254366587",
+    label="text detector model",
+    command=FETCH_TEXT_COMMAND,
+)
+
 DOWNLOAD_TIMEOUT_SECONDS = 60
 DOWNLOAD_CHUNK_BYTES = 1 << 16
 MAX_REASON_CHARS = 200
-FETCH_COMMAND = "clipmachine fetch-face-model"
 
 # Face Mesh landmark indices (468-point topology; the Face Landmarker model uses the same).
 INNER_UPPER_LIP = 13
@@ -322,7 +343,7 @@ def ensure_model(
     expected = spec.sha256 if expected_sha256 is None else expected_sha256
     path = directory / spec.name
     if not path.is_file():
-        raise FacesError(f"{spec.label} not found at {path}; run: {FETCH_COMMAND}")
+        raise FacesError(f"{spec.label} not found at {path}; run: {spec.command}")
     if expected is not None:
         try:
             actual = file_sha256(path)
@@ -347,7 +368,7 @@ def download_model(
     expected_sha256: str | None = None,
     timeout: float = DOWNLOAD_TIMEOUT_SECONDS,
 ) -> DownloadedModel:
-    """Download a model into `directory`; only the explicit fetch-face-model command calls this.
+    """Download a model into `directory`; only the explicit fetch commands call this.
 
     `spec` defaults to the landmarker; `url` and `expected_sha256` default to the spec's. The file
     is written to a temp name and moved into place once complete. An existing file is never

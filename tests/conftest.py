@@ -68,7 +68,7 @@ def _no_tools_needed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
 def _no_pinned_model_hash(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests write tiny fake model files; the real models' pinned SHA-256 must not apply to them.
     Tests of the hash check pass `expected_sha256` explicitly."""
-    for name in ("LANDMARKER", "DETECTOR"):
+    for name in ("LANDMARKER", "DETECTOR", "TEXT_DETECTOR"):
         spec = getattr(faces, name)
         monkeypatch.setattr(faces, name, dataclasses.replace(spec, sha256=None))
 
