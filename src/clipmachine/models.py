@@ -1123,6 +1123,52 @@ class TrackFile(StrictModel):
     faces: list[TrackFace] = []
 
 
+# --- graphics (Brief 12.1) ----------------------------------------------------------------------
+
+GRAPHICS_SCHEMA_VERSION = 1
+
+
+class GraphicsBox(StrictModel):
+    """A text box as fractions (0..1) of the analysed frame; x2 and y2 are the right and bottom
+    edges. Positions only, never the text."""
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
+class ShotGraphics(StrictModel):
+    """One camera shot's verdict."""
+
+    start: float  # seconds from the clip start, the shot's real boundaries
+    end: float
+    fit: bool  # rendered in the fit layout
+    area: float  # mean share of the frame the non-static text covered, in the samples it was in
+    presence: float  # share of the shot's samples with enough non-static text
+    outside: bool  # one of those samples had a box reaching outside the crop window
+
+
+class GraphicsFile(StrictModel):
+    """The contents of clips/<id>.graphics.json: what the text detector found in a clip and
+    which shots are shown whole. Numbers only."""
+
+    schema_version: int = GRAPHICS_SCHEMA_VERSION
+    clip_id: str
+    clip_start: float
+    clip_end: float
+    source_sha256: str
+    model_sha256: str
+    opencv_version: str | None
+    settings: GraphicsConfig
+    frame: TrackFrame
+    samples: int
+    static: list[GraphicsBox]  # the overlays learned and ignored
+    shots: list[ShotGraphics]
+    fit_spans: list[tuple[float, float]]  # the fit shots, neighbours merged
+    analysis_seconds: float
+
+
 CostStatus = Literal["ok", "refused", "failed", "unconfirmed"]
 EstimateSource = Literal["count_tokens", "chars_div_3", "none"]
 
