@@ -31,12 +31,14 @@ No transcript text, hook or title is logged or written to clips/<id>.json (only 
 reason codes).
 """
 
+import dataclasses
 import hashlib
 import logging
 import math
 import os
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -48,6 +50,8 @@ from clipmachine.models import (
     AppConfig,
     ClipCropBox,
     FetchMeta,
+    GraphicsBox,
+    GraphicsFile,
     RenderedClip,
     RenderedOutput,
     RenderedSettings,
@@ -64,7 +68,7 @@ from clipmachine.stages.candidates import _load_transcript
 from clipmachine.stages.fetch import META_FILE
 from clipmachine.stages.score import SCORED_JSON
 from clipmachine.stages.transcribe import REPO_ROOT
-from clipmachine.utils import audio, ffmpeg
+from clipmachine.utils import audio, ffmpeg, graphics
 from clipmachine.utils.captions import (
     AssEvent,
     CaptionWord,
@@ -74,6 +78,7 @@ from clipmachine.utils.captions import (
     build_events,
     build_hook,
     build_karaoke,
+    caption_top,
     clip_words,
     group_words,
 )
@@ -85,7 +90,21 @@ from clipmachine.utils.crop import (
     frame_path,
 )
 from clipmachine.utils.fontmetrics import FontError, FontMetrics, load_font
-from clipmachine.utils.safezone import Rect, face_rects, outside_count, safe_rect
+from clipmachine.utils.graphics import GraphicsPlan, graphics_path
+from clipmachine.utils.layout import (
+    FitLayout,
+    fit_face_rects,
+    fit_layout,
+    fit_seconds,
+    in_spans,
+)
+from clipmachine.utils.safezone import (
+    CAPTION_BOTTOM_GAP_PX,
+    Rect,
+    face_rects,
+    outside_count,
+    safe_rect,
+)
 from clipmachine.utils.snapping import SentenceIndex, build_index
 from clipmachine.utils.wordlists import (
     Hit,
@@ -127,6 +146,9 @@ MAX_PATH_FPS = 60.0  # a variable-rate file can report a huge rate; the crop pat
 TRACK_JSON_SUFFIX = ".track.json"  # written by `clipmachine track` (tracking.py)
 TRACK_PREVIEW_SUFFIX = ".track.preview.mp4"
 TRACK_SUFFIXES = (TRACK_JSON_SUFFIX, TRACK_PREVIEW_SUFFIX)
+GRAPHICS_JSON_SUFFIX = ".graphics.json"  # Brief 12.1: the graphics analysis (utils/graphics.py)
+# analysis files a kept clip keeps on a forced redo: the track command's and the graphics'
+ANALYSIS_SUFFIXES = (*TRACK_SUFFIXES, GRAPHICS_JSON_SUFFIX)
 CLIP_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,40}")
 
 
@@ -153,6 +175,10 @@ class Plan:
     sentences: SentenceIndex | None = (
         None  # the transcript's sentences; set with zoom in speaker mode
     )
+    # Brief 12.1: set in speaker mode with video.graphics.enabled; the fit layout's geometry is
+    # the same for every clip of the run
+    graphics: GraphicsPlan | None = None
+    fit: FitLayout | None = None
 
 
 class ClipLike(Protocol):
@@ -203,6 +229,11 @@ class SpeakerCrop:
     zooms: tuple[ZoomSpan, ...] = ()
     ramps: tuple[Ramp, ...] = ()  # Brief R2.1: the eases actually used
     zoom_notes: tuple[str, ...] = ()
+    # Brief 12.1: the shots shown whole, the overlays learned, and the graphics.json behind them
+    fit_spans: tuple[tuple[float, float], ...] = ()
+    static: tuple[GraphicsBox, ...] = ()
+    graphics_sha256: str | None = None
+    graphics_reused: bool = False
 
 
 def _load_scored(run_dir: Path) -> ScoredFile:
@@ -237,10 +268,11 @@ def _sweep(clips_dir: Path, keep_ids: set[str], *, everything: bool) -> None:
         if not path.is_file() or not name.endswith(OUTPUT_SUFFIXES):
             continue
         is_temp = name.endswith((TEMP_SUFFIX, ".tmp"))
-        # <id>.track.json and <id>.track.preview.mp4 belong to the track command, not to this
-        # stage: a clip that is still kept keeps them, even on a forced redo.
+        # <id>.track.json, <id>.track.preview.mp4 and <id>.graphics.json are analyses, not
+        # outputs of this stage: a clip that is still kept keeps them, even on a forced redo.
         track_owner = next(
-            (name[: -len(s)] for s in TRACK_SUFFIXES if name.endswith(s) and not is_temp), None
+            (name[: -len(s)] for s in ANALYSIS_SUFFIXES if name.endswith(s) and not is_temp),
+            None,
         )
         if track_owner is not None:
             if track_owner not in keep_ids:
@@ -277,6 +309,7 @@ def _settings(ctx: RunContext) -> RenderedSettings:
 
 def _settings_of(app: AppConfig) -> RenderedSettings:
     zoom = app.video.zoom
+    graphics = app.video.graphics
     on = zoom.enabled  # off: the six fields keep their defaults, so older output is not stale
     return RenderedSettings(
         width=app.video.width,
@@ -320,6 +353,14 @@ def _settings_of(app: AppConfig) -> RenderedSettings:
         zoom_max_upscale=zoom.max_upscale if on else 0.0,
         zoom_style=zoom.style if on else "",
         zoom_ramp_s=zoom.ramp_s if on else 0.0,
+        graphics_enabled=graphics.enabled,
+        graphics_sample_fps=graphics.sample_fps if graphics.enabled else 0.0,
+        graphics_detect_width=graphics.detect_width if graphics.enabled else 0,
+        graphics_min_area_frac=graphics.min_area_frac if graphics.enabled else 0.0,
+        graphics_min_presence=graphics.min_presence if graphics.enabled else 0.0,
+        graphics_static_ratio=graphics.static_ratio if graphics.enabled else 0.0,
+        graphics_blur=graphics.blur if graphics.enabled else 0,
+        graphics_darken=graphics.darken if graphics.enabled else 0.0,
     )
 
 
@@ -370,6 +411,21 @@ def _speaker_output_matches(plan: Plan, clip: ScoredClip, old: RenderedClip) -> 
         return False
     if old.track_sha256 != _file_sha256(tracking.track_path(plan.clips_dir, clip.id)):
         return False
+    if plan.graphics is not None:  # Brief 12.1: the graphics file must be valid and the same
+        found = graphics.load_valid_graphics(
+            plan.clips_dir,
+            clip.id,
+            start=clip.start,
+            end=clip.end,
+            source_sha256=plan.graphics.source_sha256,
+            settings=plan.graphics.settings,
+            model_sha256=plan.graphics.model_sha256,
+            opencv_version=plan.graphics.opencv_version,
+        )
+        if found is None or old.graphics_sha256 != _file_sha256(
+            graphics.graphics_path(plan.clips_dir, clip.id)
+        ):
+            return False
     return (old.crop_changes > 0) == (plan.clips_dir / f"{clip.id}{CROP_CMD_SUFFIX}").is_file()
 
 
@@ -405,7 +461,47 @@ def _speaker_crop(plan: Plan, clip: ClipLike) -> SpeakerCrop:
         )
     except (faces.FacesError, ffmpeg.MediaError) as exc:
         raise RunError(f"speaker tracking failed for {clip.id}: {exc}") from exc
-    return _crop_from_track(plan, clip, track, reused, plan.clips_dir)
+    found: GraphicsFile | None = None
+    graphics_reused = False
+    if plan.graphics is not None:
+        found, graphics_reused = _graphics_for(plan, clip, track)
+    return _crop_from_track(
+        plan, clip, track, reused, plan.clips_dir, graphics=found, graphics_reused=graphics_reused
+    )
+
+
+def _graphics_for(plan: Plan, clip: ClipLike, track: TrackFile) -> tuple[GraphicsFile, bool]:
+    """The clip's graphics.json (reused or analysed): which shots show text outside the crop
+    window the track gives (the centre crop when the track fell back)."""
+    from clipmachine.utils import faces
+
+    assert plan.graphics is not None
+    duration = clip.end - clip.start
+    if track.fallback_reason is not None or not track.samples:
+        crop_path: list[tuple[float, int]] = [(0.0, plan.crop.x)]
+    else:
+        crop_path = frame_path(
+            [(s.t, s.crop_x) for s in track.samples],
+            [(s.start, s.end) for s in track.shots],
+            track.cuts,
+            track.cuts_exact,
+            _source_fps(plan.video),
+            duration,
+        )
+    try:
+        return graphics.graphics_for_clip(
+            plan.graphics,
+            clip.id,
+            clip.start,
+            clip.end,
+            shots=[(s.start, s.end) for s in track.shots],
+            cuts=track.cuts,
+            cuts_exact=track.cuts_exact,
+            crop_path=crop_path,
+            crop_w=plan.crop.w,
+        )
+    except (faces.FacesError, ffmpeg.MediaError) as exc:
+        raise RunError(f"graphics detection failed for {clip.id}: {exc}") from exc
 
 
 def _sentence_starts(
@@ -445,13 +541,18 @@ def _sentence_starts(
 
 
 def _zoom_spans(
-    plan: Plan, clip: ClipLike, track: TrackFile, base: CropBox
+    plan: Plan,
+    clip: ClipLike,
+    track: TrackFile,
+    base: CropBox,
+    fit_spans: Sequence[tuple[float, float]] = (),
 ) -> tuple[list[ZoomSpan], list[str], list[float]]:
     """The zooms of a clip with a followed face, reason codes for what was skipped, and the
     shot boundaries the choice used (the ramps must stop at the same ones).
 
     Nothing is chosen when the zoomed window would be enlarged more than `max_upscale`. Each
-    span is centred vertically on the face of the shot where it starts."""
+    span is centred vertically on the face of the shot where it starts. No zoom starts inside
+    `fit_spans` (Brief 12.1: a shot shown whole is never zoomed)."""
     zoom = plan.zoom
     if zoom is None or plan.sentences is None:
         return [], [], []
@@ -465,6 +566,7 @@ def _zoom_spans(
     boundaries = effective_boundaries(shots, track.cuts, track.cuts_exact, duration)
     cuts = track.cuts_exact if len(track.cuts_exact) == len(track.cuts) else track.cuts
     excluded = [(s.start, s.end) for s in track.shots if s.face_cy is None]
+    excluded.extend(fit_spans)
     chosen = select_zooms(starts, 0, boundaries, cuts, duration, zoom, excluded=excluded)
     spans: list[ZoomSpan] = []
     for start, end in chosen:
@@ -476,13 +578,27 @@ def _zoom_spans(
 
 
 def _crop_from_track(
-    plan: Plan, clip: ClipLike, track: TrackFile, reused: bool, out_dir: Path
+    plan: Plan,
+    clip: ClipLike,
+    track: TrackFile,
+    reused: bool,
+    out_dir: Path,
+    graphics: GraphicsFile | None = None,
+    graphics_reused: bool = False,
 ) -> SpeakerCrop:
-    """The crop a clip's track gives; the sendcmd file (if the crop moves) goes in `out_dir`."""
+    """The crop a clip's track gives; the sendcmd file (if the crop moves) goes in `out_dir`.
+    With `graphics` (Brief 12.1) its fit spans are kept out of the zooms and recorded, and the
+    sendcmd lines address the speaker crop by name, as the fit graph needs."""
     from clipmachine import tracking  # tracking imports this module
 
     sha = _file_sha256(tracking.track_path(plan.clips_dir, clip.id))
     cuts = track.summary.cuts
+    fit_spans = tuple(graphics.fit_spans) if graphics is not None else ()
+    static = tuple(graphics.static) if graphics is not None else ()
+    graphics_sha = (
+        _file_sha256(graphics_path(plan.clips_dir, clip.id)) if graphics is not None else None
+    )
+    target = ffmpeg.FIT_CROP_INSTANCE if fit_spans else "crop"
     if track.fallback_reason is not None:  # exactly the centre crop
         no_track: tuple[str, ...] = () if plan.zoom is None else ("zoom_no_track",)
         return SpeakerCrop(
@@ -496,6 +612,10 @@ def _crop_from_track(
             0,
             track,
             zoom_notes=no_track,
+            fit_spans=fit_spans,
+            static=static,
+            graphics_sha256=graphics_sha,
+            graphics_reused=graphics_reused,
         )
     duration = clip.end - clip.start
     path = frame_path(
@@ -512,13 +632,25 @@ def _crop_from_track(
         sendcmd_rel = None
         if len(path) > 1:
             cmd = out_dir / f"{clip.id}{CROP_CMD_SUFFIX}"
-            write_text_atomic(cmd, ffmpeg.crop_commands(path))
+            write_text_atomic(cmd, ffmpeg.crop_commands(path, target))
             sendcmd_rel = _relative(plan.run_dir, cmd)
         return SpeakerCrop(
-            box, sendcmd_rel, sha, None, len(path) - 1, reused, cuts, switches, track
+            box,
+            sendcmd_rel,
+            sha,
+            None,
+            len(path) - 1,
+            reused,
+            cuts,
+            switches,
+            track,
+            fit_spans=fit_spans,
+            static=static,
+            graphics_sha256=graphics_sha,
+            graphics_reused=graphics_reused,
         )
 
-    spans, notes, boundaries = _zoom_spans(plan, clip, track, plan.crop)
+    spans, notes, boundaries = _zoom_spans(plan, clip, track, plan.crop, fit_spans)
     frame_w, frame_h = display_size(plan.video.width, plan.video.height, plan.video.rotation)
     ramps: list[Ramp] = []
     if plan.zoom.style == "punch":
@@ -540,7 +672,7 @@ def _crop_from_track(
     sendcmd_rel = None
     if len(boxes) > 1:
         cmd = out_dir / f"{clip.id}{CROP_CMD_SUFFIX}"
-        write_text_atomic(cmd, ffmpeg.crop_box_commands(boxes))
+        write_text_atomic(cmd, ffmpeg.crop_box_commands(boxes, target))
         sendcmd_rel = _relative(plan.run_dir, cmd)
     return SpeakerCrop(
         boxes[0][1],
@@ -556,6 +688,10 @@ def _crop_from_track(
         zooms=tuple(spans),
         ramps=tuple(ramps),
         zoom_notes=tuple(notes),
+        fit_spans=fit_spans,
+        static=static,
+        graphics_sha256=graphics_sha,
+        graphics_reused=graphics_reused,
     )
 
 
@@ -615,8 +751,13 @@ def _face_boxes(plan: Plan, chosen: SpeakerCrop | None, until: float) -> list[Re
         return None
     settings = plan.settings
     source_w, source_h = display_size(plan.video.width, plan.video.height, plan.video.rotation)
-    return face_rects(
-        chosen.track.faces,
+    faces = chosen.track.faces
+    found: list[Rect] = []
+    if chosen.fit_spans and plan.fit is not None:  # Brief 12.1: through the fitted frame
+        found = fit_face_rects(faces, plan.fit, chosen.fit_spans, until)
+        faces = [f for f in faces if not in_spans(f.t, chosen.fit_spans)]
+    return found + face_rects(
+        faces,
         chosen.track.samples,
         source_w=source_w,
         source_h=source_h,
@@ -644,6 +785,9 @@ def _karaoke_captions(
     karaoke, metrics, safe = plan.karaoke, plan.metrics, plan.safe
     assert karaoke is not None and metrics is not None and safe is not None
     words, masked = _masked_words(plan, words)
+    anchors: list[tuple[float, float, Rect]] = []
+    if chosen is not None and plan.fit is not None:  # Brief 12.1: captions under the frame
+        anchors = [(s, e, plan.fit.caption_safe) for s, e in chosen.fit_spans]
     built = build_karaoke(
         words,
         karaoke,
@@ -651,6 +795,7 @@ def _karaoke_captions(
         safe,
         clip_seconds=duration,
         offset_seconds=settings.caption_offset_seconds,
+        anchors=anchors,
     )
     boxes = list(built.boxes)
     notes = list(built.notes)
@@ -757,7 +902,7 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
     elif plan.zoom is not None:  # centre-crop mode has no followed face
         notes.append("zoom_no_track")
 
-    vf = ffmpeg.video_filter(
+    vf: str | None = ffmpeg.video_filter(
         crop,
         settings.width,
         settings.height,
@@ -765,12 +910,18 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
         plan.fonts_rel,
         None if chosen is None else chosen.sendcmd_rel,
     )
+    graph: str | None = None
+    if chosen is not None and chosen.fit_spans:  # Brief 12.1
+        notes.append("graphics_fit")
+        graph = _fit_graph(plan, crop, f"{CLIPS_DIR}/{ass.name}", chosen) + "[v]"
+        vf = None
     args = ffmpeg.render_args(
         plan.source,
         temp,
         start=clip.start,
         duration=duration,
         vf=vf,
+        filter_complex=graph,
         crf=settings.crf,
         preset=settings.preset,
         audio_bitrate=settings.audio_bitrate,
@@ -833,13 +984,49 @@ def _render_clip(plan: Plan, clip: ScoredClip) -> None:
             zoom_count=len(zooms),
             zoom_spans=[(round(z.start, 3), round(z.end, 3)) for z in zooms],
             zoom_ramps=[(round(r.start, 3), round(r.end, 3)) for r in ramps],
+            fit_spans=[] if chosen is None else list(chosen.fit_spans),
+            fit_seconds=0.0 if chosen is None else fit_seconds(chosen.fit_spans),
+            static_overlays=[] if chosen is None else list(chosen.static),
+            graphics_sha256=None if chosen is None else chosen.graphics_sha256,
         ).model_dump(mode="json"),
     )
     mode = "center" if chosen is None else _speaker_log(chosen, plan.zoom is not None)
     log.info(
         f"render: {clip.id} {clip.start:.2f}-{clip.end:.2f} s, crop {crop.w}x{crop.h}"
-        f"+{crop.x}+{crop.y} ({mode}){_captions_log(settings, captions)}, "
-        f"{mp4.stat().st_size / 1_000_000:.1f} MB, {seconds:.1f} s"
+        f"+{crop.x}+{crop.y} ({mode}){_captions_log(settings, captions)}"
+        f"{_fit_log(chosen)}, {mp4.stat().st_size / 1_000_000:.1f} MB, {seconds:.1f} s"
+    )
+
+
+def _fit_log(chosen: SpeakerCrop | None) -> str:
+    """Brief 12.1: the seconds shown whole and the overlays learned; empty with graphics off."""
+    if chosen is None or chosen.graphics_sha256 is None:
+        return ""
+    reused = ", graphics reused" if chosen.graphics_reused else ""
+    return (
+        f", fit {fit_seconds(chosen.fit_spans):.1f} s in {len(chosen.fit_spans)} spans, "
+        f"{len(chosen.static)} static overlays{reused}"
+    )
+
+
+def _fit_graph(plan: Plan, crop: CropBox, ass_rel: str, chosen: SpeakerCrop) -> str:
+    """The fit layout's filter graph for a clip with fit spans (Brief 12.1), without the output
+    label."""
+    assert plan.fit is not None and plan.graphics is not None
+    settings = plan.settings
+    return ffmpeg.fit_graph(
+        crop,
+        settings.width,
+        settings.height,
+        ass_rel,
+        plan.fonts_rel,
+        chosen.sendcmd_rel,
+        frame_w=plan.fit.frame_w,
+        frame_h=plan.fit.frame_h,
+        frame_top=plan.fit.frame_top,
+        spans=chosen.fit_spans,
+        blur=plan.graphics.settings.blur,
+        darken=plan.graphics.settings.darken,
     )
 
 
@@ -869,6 +1056,7 @@ class Inputs:
     segments: list[TranscriptSegment] | None  # set in speaker mode
     track_plan: "TrackPlan | None"
     wordlists: WordLists | None = None  # None: captions.mask_profanity is off
+    graphics_plan: GraphicsPlan | None = None  # Brief 12.1: set in speaker mode when enabled
 
 
 def _load_wordlists(root: Path, app: AppConfig) -> WordLists | None:
@@ -953,10 +1141,20 @@ def _load_inputs(run_dir: Path, root: Path, app: AppConfig) -> Inputs:
     # Speaker mode checks both model files before anything is deleted or rendered.
     track_plan: TrackPlan | None = None
     segments: list[TranscriptSegment] | None = None
+    graphics_plan: GraphicsPlan | None = None
     if app.video.crop == "speaker" and kept:
         segments, track_plan = _load_speaker(run_dir, root, app, meta, video, source)
+        graphics_plan = _load_graphics(run_dir, root, app, meta, video, source)
     return Inputs(
-        fonts_dir, metrics, kept, video, source, segments, track_plan, _load_wordlists(root, app)
+        fonts_dir,
+        metrics,
+        kept,
+        video,
+        source,
+        segments,
+        track_plan,
+        _load_wordlists(root, app),
+        graphics_plan,
     )
 
 
@@ -967,11 +1165,48 @@ def load_source_inputs(run_dir: Path, root: Path, app: AppConfig) -> Inputs:
     meta, video, source = _load_source(run_dir)
     track_plan: TrackPlan | None = None
     segments: list[TranscriptSegment] | None = None
+    graphics_plan: GraphicsPlan | None = None
     if app.video.crop == "speaker":
         segments, track_plan = _load_speaker(run_dir, root, app, meta, video, source)
+        graphics_plan = _load_graphics(run_dir, root, app, meta, video, source)
     return Inputs(
-        fonts_dir, metrics, [], video, source, segments, track_plan, _load_wordlists(root, app)
+        fonts_dir,
+        metrics,
+        [],
+        video,
+        source,
+        segments,
+        track_plan,
+        _load_wordlists(root, app),
+        graphics_plan,
     )
+
+
+def _load_graphics(
+    run_dir: Path,
+    root: Path,
+    app: AppConfig,
+    meta: FetchMeta,
+    video: VideoStreamInfo,
+    source: Path,
+) -> GraphicsPlan | None:
+    """The graphics plan (Brief 12.1) when video.graphics is on: checks the text detector file
+    before anything is rendered. Its clips folder is replaced by the one the plan renders into."""
+    from clipmachine.utils import faces
+
+    if not app.video.graphics.enabled:
+        return None
+    try:
+        return graphics.build_plan(
+            run_dir / CLIPS_DIR,
+            root,
+            app.video.graphics,
+            video=video,
+            source=source,
+            source_sha256=meta.sha256,
+        )
+    except faces.FacesError as exc:
+        raise RunError(str(exc)) from exc
 
 
 def _make_plan(run_dir: Path, clips_dir: Path, app: AppConfig, inputs: Inputs) -> Plan:
@@ -996,6 +1231,24 @@ def _make_plan(run_dir: Path, clips_dir: Path, app: AppConfig, inputs: Inputs) -
             min_pause=app.snap.min_pause_seconds,
             min_cut_gap=app.snap.min_cut_gap,
         )
+    safe = (
+        None
+        if metrics is None
+        else safe_rect(
+            settings.width,
+            settings.height,
+            settings.safe_top,
+            settings.safe_bottom,
+            settings.safe_left,
+            settings.safe_right,
+        )
+    )
+    karaoke = None if metrics is None else KaraokeSettings.from_config(app.captions)
+    graphics_plan: GraphicsPlan | None = None
+    fit: FitLayout | None = None
+    if inputs.graphics_plan is not None and inputs.track_plan is not None:  # Brief 12.1
+        graphics_plan = dataclasses.replace(inputs.graphics_plan, clips_dir=clips_dir)
+        fit = _fit_layout_of(inputs, metrics, karaoke, safe, settings)
     return Plan(
         run_dir=run_dir,
         clips_dir=clips_dir,
@@ -1011,18 +1264,28 @@ def _make_plan(run_dir: Path, clips_dir: Path, app: AppConfig, inputs: Inputs) -
         wordlists=inputs.wordlists,
         zoom=zoom,
         sentences=sentences,
-        karaoke=None if metrics is None else KaraokeSettings.from_config(app.captions),
-        safe=None
-        if metrics is None
-        else safe_rect(
-            settings.width,
-            settings.height,
-            settings.safe_top,
-            settings.safe_bottom,
-            settings.safe_left,
-            settings.safe_right,
-        ),
+        karaoke=karaoke,
+        safe=safe,
+        graphics=graphics_plan,
+        fit=fit,
     )
+
+
+def _fit_layout_of(
+    inputs: Inputs,
+    metrics: FontMetrics | None,
+    karaoke: KaraokeSettings | None,
+    safe: Rect | None,
+    settings: RenderedSettings,
+) -> FitLayout:
+    """The fit layout of this run: the same for every clip (source size, canvas, captions)."""
+    source_w, source_h = display_size(
+        inputs.video.width, inputs.video.height, inputs.video.rotation
+    )
+    caption_h = 0.0
+    if metrics is not None and karaoke is not None and safe is not None:
+        caption_h = (safe.y2 - CAPTION_BOTTOM_GAP_PX) - caption_top(karaoke, metrics, safe)
+    return fit_layout(source_w, source_h, settings.width, settings.height, safe, caption_h)
 
 
 def run(ctx: RunContext) -> None:

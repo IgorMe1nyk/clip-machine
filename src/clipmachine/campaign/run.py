@@ -180,6 +180,8 @@ def _line(moment_name: str, result: MomentResult, closers: int) -> str:
     zooms = ""
     if clip.settings is not None and clip.settings.zoom_enabled:
         zooms = f", {clip.zoom_count} zooms"
+    if clip.settings is not None and clip.settings.graphics_enabled:  # Brief 12.1
+        zooms += f", fit {clip.fit_seconds:.1f} s, {len(clip.static_overlays)} static overlays"
     closer = "" if result.closer_number is None else f"closer {result.closer_number} of {closers}, "
     return (
         f"{label}: rendered {clip.start:.2f}-{clip.end:.2f} s ({clip.duration:.2f} s), {start}, "

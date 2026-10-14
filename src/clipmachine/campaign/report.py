@@ -20,6 +20,7 @@ from clipmachine.campaign.plan import PLAN_FILE
 from clipmachine.campaign.render import META_DIR, POST_SUFFIX, REVIEW_SUFFIX
 from clipmachine.runs import write_text_atomic
 from clipmachine.stages.report import CSS, _esc, _hms
+from clipmachine.utils.graphics import position_word
 from clipmachine.utils.image import color_type_name
 
 REPORT_HTML = "campaign_report.html"
@@ -156,6 +157,17 @@ def _scout_block(record: ScoutRecord | None) -> str:
     )
 
 
+def _fit_line(clip: CampaignClip) -> str:
+    """Seconds in the fit layout against the clip's length, and where the static overlays sit."""
+    length = clip.duration if clip.duration is not None else 0.0
+    spans = ", ".join(f"{s:.1f}-{e:.1f} s" for s, e in clip.fit_spans) or "none"
+    where = ", ".join(position_word(b) for b in clip.static_overlays) or "none"
+    return (
+        f'<p class="muted">fit layout {_esc(f"{clip.fit_seconds:.1f}")} s of '
+        f"{_esc(f'{length:.1f}')} s ({_esc(spans)}); static overlays: {_esc(where)}</p>"
+    )
+
+
 def _card(
     moment: Moment,
     clip: CampaignClip | None,
@@ -214,6 +226,8 @@ def _card(
     parts.append("<p><b>Compliance checklist</b></p>" + _checks(clip) + "\n")
     if badges:
         parts.append(f"<p>{badges}</p>\n")
+    if clip.settings is not None and clip.settings.graphics_enabled:  # Brief 12.1
+        parts.append(_fit_line(clip) + "\n")
     if clip.render_seconds is not None:
         parts.append(f'<p class="muted">rendered in {_esc(f"{clip.render_seconds:.1f}")} s</p>\n')
     parts.append("</div>\n</section>")

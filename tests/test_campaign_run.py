@@ -1276,6 +1276,75 @@ def test_with_zoom_off_everywhere_the_line_and_the_json_say_nothing_about_zooms(
     assert "zooms" not in out_of(capsys)
 
 
+# --- Brief 12.1: the graphics-aware fit layout ---------------------------------------------------
+
+
+def fit_rig(
+    project: Path,
+    fake: FakeFfmpeg,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mutate: Callable[[dict[str, Any]], None] | None = None,
+    scenario: Any = None,
+) -> Rig:
+    import graphics_fakes
+
+    edit_yaml(project / "config" / "default.yaml", lambda d: d["video"].update(crop="speaker"))
+    edit_yaml(
+        project / "config" / "default.yaml",
+        lambda d: d["video"]["graphics"].update(enabled=True),
+    )
+    track_fakes.write_model(project)
+    graphics_fakes.write_text_model(project)
+    fakes = track_fakes.install(
+        monkeypatch, lambda t: [track_fakes.RawFace(0.75, 0.5, 0.1, 0.1, track_fakes.talking(t))]
+    )
+    graphics_fakes.install(
+        monkeypatch,
+        scenario or graphics_fakes.panel_between(0.0, 20.0),
+        track_fakes=fakes,
+    )
+    return make_rig(project, fake, mutate=mutate, width=2560, height=1440)
+
+
+def test_a_fit_shot_renders_through_the_fit_graph_with_the_watermark_on_top(
+    project: Path,
+    fake: FakeFfmpeg,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rig = fit_rig(project, fake, monkeypatch)
+
+    assert rig.go() == 0
+
+    clip = rig.clip("A01_tiktok")
+    assert clip.fit_spans and clip.fit_seconds > 0 and "graphics_fit" in clip.notes
+    assert [b.y1 for b in clip.static_overlays] == [0.04, 0.91]  # the title and the logo
+    assert clip.settings is not None and clip.settings.graphics_enabled
+    graph = graph_of(rig.args_of("A01_tiktok"))
+    assert graph.startswith("[0:v:0]split=3[fit_src][fit_frame][fit_fill];")
+    assert "[base];" in graph and graph.endswith("[v]")  # the watermark wraps the fit graph
+    assert rig.meta("A01_tiktok.graphics.json").is_file()
+    out = out_of(capsys)
+    assert "fit " in out and "static overlays" in out
+    assert "fit layout" in (rig.out / "campaign_report.html").read_text(encoding="utf-8")
+
+
+def test_a_campaign_may_switch_the_fit_layout_off(
+    project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def off(d: dict[str, Any]) -> None:
+        d["video"] = {"graphics": {"enabled": False}}
+
+    rig = fit_rig(project, fake, monkeypatch, mutate=off)
+    assert rig.go() == 0
+    clip = rig.clip("A01_tiktok")
+    assert clip.fit_spans == [] and clip.settings is not None
+    assert clip.settings.graphics_enabled is False
+    assert not rig.meta("A01_tiktok.graphics.json").exists()
+    assert "fit_src" not in graph_of(rig.args_of("A01_tiktok"))
+
+
 def test_a_smooth_zoom_puts_its_ramps_in_the_clip_json(
     project: Path, fake: FakeFfmpeg, monkeypatch: pytest.MonkeyPatch
 ) -> None:

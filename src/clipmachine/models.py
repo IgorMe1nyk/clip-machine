@@ -984,6 +984,16 @@ class RenderedSettings(StrictModel):
     # added in Brief R2.1; an R2 file (a punch) reads as "" and is stale when zoom is on
     zoom_style: str = ""
     zoom_ramp_s: float = 0.0
+    # added in Brief 12.1 (the graphics-aware fit layout). Old files were rendered without it,
+    # so they are not stale while it is off; turning it on or tuning it re-renders
+    graphics_enabled: bool = False
+    graphics_sample_fps: float = 0.0
+    graphics_detect_width: int = 0
+    graphics_min_area_frac: float = 0.0
+    graphics_min_presence: float = 0.0
+    graphics_static_ratio: float = 0.0
+    graphics_blur: int = 0
+    graphics_darken: float = 0.0
 
 
 class RenderedOutput(StrictModel):
@@ -1032,6 +1042,13 @@ class RenderedClip(StrictModel):
     zoom_spans: list[tuple[float, float]] = []
     # added in Brief R2.1: the ease windows (start, end) actually used; none for a punch
     zoom_ramps: list[tuple[float, float]] = []
+    # added in Brief 12.1: the shots shown whole (seconds from the clip start), their total, the
+    # static overlays the detector learned (positions only), and the hash of the graphics.json
+    # the output was rendered from (None: graphics off)
+    fit_spans: list[tuple[float, float]] = []
+    fit_seconds: float = 0.0
+    static_overlays: list["GraphicsBox"] = []
+    graphics_sha256: str | None = None
 
 
 class TrackSource(StrictModel):

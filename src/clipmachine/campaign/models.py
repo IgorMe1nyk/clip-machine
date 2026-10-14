@@ -6,7 +6,13 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from clipmachine.models import ClipLength, RenderedOutput, RenderedSettings, StrictModel
+from clipmachine.models import (
+    ClipLength,
+    GraphicsBox,
+    RenderedOutput,
+    RenderedSettings,
+    StrictModel,
+)
 from clipmachine.utils.captions import clean_word
 
 Platform = Literal["tiktok", "instagram", "youtube"]
@@ -536,6 +542,10 @@ class CampaignClip(StrictModel):
     zoom_count: int = 0
     zoom_spans: list[tuple[float, float]] = Field(default_factory=list)
     zoom_ramps: list[tuple[float, float]] = Field(default_factory=list)  # Brief R2.1
+    # Brief 12.1: the shots shown whole, their total, the overlays learned (positions only)
+    fit_spans: list[tuple[float, float]] = Field(default_factory=list)
+    fit_seconds: float = 0.0
+    static_overlays: list[GraphicsBox] = Field(default_factory=list)
     # n/a (Brief 12): the campaign does not require it (no watermark, no closers)
     checks: dict[str, Literal["pass", "warn", "fail", "n/a"]] = Field(default_factory=dict)
     closer: str | None = None
