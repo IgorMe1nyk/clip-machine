@@ -2,6 +2,49 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-13 — Brief 12: AI scout (built; real run pending Igor's OK)
+
+**Why:** Igor's second campaign allows the AI to pick the moments (40+ episodes, no moment list,
+quality and accuracy rules only) and wants neither a watermark nor a closer line. The normal
+pipeline finds and scores moments; campaign mode renders rule-compliant clips; Brief 12 connects
+them behind a hard gate (D-032). The human-picked path of Brief 11 is unchanged.
+
+**Done** (branch `brief-12-ai-scout` from `main`, 6 commits; nothing pushed or merged)
+- **Optional watermark and closers:** no overlay and one ffmpeg input; the text ends with the
+  hashtags or the caption; the two checks read "not required" (`n/a`). Existing campaigns unchanged.
+- **One campaign folder:** clips, `_meta/`, the report and `posting_plan.csv` now live in
+  `runs/_campaigns/<slug>/` whatever the source video (Igor's decision). An entry may name its
+  own `source:`; each video keeps its run folder; the plan has a `source` column.
+- **Stages:** `RunContext.out_dir` and `scout_block` (a `{scout_block}` placeholder in both
+  prompts, empty on normal runs), `ClientRules.extra`, optional `topic`/`caption` on the scorer's
+  answer and in scored.json, an `extra_check` composed with the id check.
+- **`scout <episode> --campaign <slug> [--dry-run]`:** refused unless `selection: ai`; candidates
+  and scoring with the campaign's rules and clip length; the check asks for a valid topic, a hook
+  of at most 7 words (and `hook.max_chars`) and a caption, repaired once; top `per_episode` kept
+  clips, skipping stretches already listed, rendered, posted or rejected for that source; host-side
+  face heuristic (`likely`/`unsure`/`not_checked`, never drops); entries `S<NN>` appended to
+  moments.yaml as text (Igor's lines and comments byte for byte; `moments.yaml.bak`); scout.json;
+  console: counts, cost, the next `campaign --only` command. No text ever on the console.
+- **`campaign-reject --id`:** recorded in used.json; the render skips it, the scout never proposes
+  the stretch again; a posted moment cannot be rejected.
+- **Report:** scouted cards show score, topic → platform, host check and reason.
+- Config: `campaign.scout_host_seconds` 5.0, `campaign.scout_host_share` 0.5. D-032. Example
+  campaign and README updated; CLAUDE.md names the campaign output folder.
+- Tests: about 70 new (optional watermark/closers, multi-source, stage hooks, scout end to end
+  with the fake client and fake faces, reject, report cards); the whole suite green; ruff,
+  format, mypy and pip-audit clean.
+
+**Not done**
+- The real run (Igor's OK; a few cents of API credits): Igor creates `campaigns/<slug2>/`
+  (`selection: ai`, rules, topics, prefixes, no watermark, no closers) and downloads one episode;
+  `scout <episode> --campaign <slug2>`, then `campaign <episode> --campaign <slug2> --only <ids>`.
+
+**One-time move (done, 2026-10-13):** the first campaign's outputs moved from its run folder to
+`runs/_campaigns/<slug>/` (48 used.json output paths repointed, no file missing; the old flat
+files came along and are listed as old in the report).
+
+**Cost:** $0 so far. No API call (the tests fake the client).
+
 ## 2026-10-13 — Brief 11.2: per-platform outputs and a posting plan (built; real run pending Igor's OK)
 
 **Why:** every moment rendered as "tiktok" into one flat folder: `_tiktok` file names, the TikTok

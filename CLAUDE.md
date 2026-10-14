@@ -26,7 +26,8 @@ writes files in a run folder and can be restarted. Currently a walking skeleton:
 - Never create, change or delete anything outside the repository folder. Build paths from the
   repo root as absolute paths. If a `cd` or path check fails, stop and report; never fall back
   to creating folders.
-- Stage outputs go only inside the current run folder.
+- Stage outputs go only inside the current run folder. Campaign outputs (clips, report, posting
+  plan) go only inside `runs/_campaigns/<slug>/`.
 - Scratch and backup files go only in `<repo>/runs/_scratch/` (git-ignored), never %TEMP% or any
   folder outside the repo.
 - Always run Python through `uv run`, never bare `python`.

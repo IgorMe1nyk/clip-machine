@@ -272,7 +272,10 @@ def _decode_size(plan: TrackPlan) -> tuple[int, int]:
     )
 
 
-def _detect_faces(plan: TrackPlan, start: float, duration: float) -> Detected:
+def detect_faces(plan: TrackPlan, start: float, duration: float) -> Detected:
+    """Decode [start, start + duration) of the source at the sample rate and find the faces in
+    every frame (coordinates normalised to the decoded frame). Also used by the scout's host-side
+    check (Brief 12)."""
     cfg = plan.settings
     frame_w, frame_h = _decode_size(plan)
     args = ffmpeg.frame_args(
@@ -408,7 +411,7 @@ def analyse_clip(
         raise RunError(f"cannot crop the source: {exc}") from exc
     source_w, _ = display_size(video.width, video.height, video.rotation)
 
-    detected = _detect_faces(plan, start, duration)
+    detected = detect_faces(plan, start, duration)
     frames = detected.frames
     times = [round(k / cfg.sample_fps, 3) for k in range(len(frames))]
     cut_samples = camera.find_cuts(detected.signatures, cfg.cut_threshold)

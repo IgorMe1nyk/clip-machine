@@ -18,3 +18,4 @@
   hook: THREE TRICKS FOR A QUIET MORNING
   caption: shares three tricks for a quiet morning.
   platform: youtube
+  source: episodes/example-2.mp4   # optional (Brief 12): this moment's own source video; left out, the one on the command line

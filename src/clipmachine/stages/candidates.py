@@ -155,6 +155,8 @@ def rules_summary(rules: ClientRules) -> str:
         parts.append("prefer: " + "; ".join(rules.prefer))
     if rules.avoid:
         parts.append("avoid: " + "; ".join(rules.avoid))
+    if rules.extra:  # Brief 12: a campaign's own rules, as written
+        parts.append("rules: " + "; ".join(rules.extra))
     return _one_line(". ".join(parts))
 
 
@@ -191,12 +193,13 @@ def invalid_reason(moment: FoundMoment, block: Block) -> str | None:
 
 
 def run(ctx: RunContext) -> None:
-    run_dir = ctx.run_dir.resolve()
-    _remove_outputs(run_dir, strict=True)  # a rerun replaces the output cleanly
+    out_dir = ctx.stage_dir.resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _remove_outputs(out_dir, strict=True)  # a rerun replaces the output cleanly
     try:
-        _find(ctx, run_dir)
+        _find(ctx, ctx.run_dir.resolve(), out_dir)
     except BaseException:
-        _remove_outputs(run_dir, strict=False)
+        _remove_outputs(out_dir, strict=False)
         raise
 
 
@@ -214,7 +217,7 @@ def _load_transcript(run_dir: Path) -> Transcript:
         ) from exc
 
 
-def _find(ctx: RunContext, run_dir: Path) -> None:
+def _find(ctx: RunContext, run_dir: Path, out_dir: Path) -> None:
     app = ctx.config.app
     cfg = app.candidates
     root = ctx.project_root if ctx.project_root is not None else REPO_ROOT
@@ -244,6 +247,7 @@ def _find(ctx: RunContext, run_dir: Path) -> None:
     for block in blocks:
         values = {
             "rules_summary": summary_rules,
+            "scout_block": ctx.scout_block,
             "min_seconds": f"{min_length:g}",
             "max_seconds": f"{max_length:g}",
             "preferred_min": f"{preferred_min:g}",
@@ -348,7 +352,7 @@ def _find(ctx: RunContext, run_dir: Path) -> None:
         candidates=candidates,
         warnings=warnings,
     )
-    write_json_atomic(run_dir / CANDIDATES_JSON, output.model_dump(mode="json"))
+    write_json_atomic(out_dir / CANDIDATES_JSON, output.model_dump(mode="json"))
     for candidate in candidates:
         log.info(
             f"candidates: {candidate.id} {candidate.start:.2f}-{candidate.end:.2f} s "

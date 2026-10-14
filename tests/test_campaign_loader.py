@@ -200,12 +200,16 @@ def test_duplicate_closers_and_spelling_entries_are_refused(project: Path) -> No
         load(project, spelling)
 
 
-def test_closers_must_exist_and_not_be_empty(project: Path) -> None:
+def test_closers_may_be_left_out_but_not_blank(project: Path) -> None:
     def none(d: dict[str, Any]) -> None:
         d["post"]["closers"] = []
 
-    with pytest.raises(ConfigError, match="at least one closer"):
-        load(project, none)
+    assert load(project, none).config.post.closers == []  # Brief 12: no closer line wanted
+
+    def absent(d: dict[str, Any]) -> None:
+        del d["post"]["closers"]
+
+    assert load(project, absent).config.post.closers == []
 
     def blank(d: dict[str, Any]) -> None:
         d["post"]["closers"] = ["fine", "  "]

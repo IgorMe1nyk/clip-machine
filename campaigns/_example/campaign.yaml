@@ -1,5 +1,15 @@
 name: Example Campaign
 source_note: one authorized source video only   # free text, shown in the report
+selection: human      # human (default): you list the moments. ai: `scout` may propose them (only where the campaign's rules allow it; Brief 12)
+# scout:              # needed with selection: ai
+#   per_episode: 8    # moments proposed per source video, at most
+#   rules:            # the campaign's rules, as written, passed to the AI as hard constraints
+#     - skip ad reads and sponsor segments
+#     - never cut mid-thought; every clip has one clear idea or story with a payoff
+#   topics:           # topic key -> platform; the AI tags every proposed moment with one key
+#     values_purpose_growth: youtube
+#     dating_relationships: instagram
+#   host_side: left   # optional: left | right; a face on that side in the first seconds is a hint in the report
 clip_length: { min: 20, max: 60 }
 hook:
   mode: full            # full = on screen the whole clip; intro = the first seconds only
@@ -7,7 +17,7 @@ hook:
   # seconds: 3          # optional, intro mode only; left out, hook.seconds from config/default.yaml
   # position: top       # optional: top | avoid_faces; left out, hook.position from config/default.yaml
   max_chars: 48
-watermark:
+watermark:              # optional (Brief 12): leave the whole section out when the campaign wants no watermark
   file: assets/watermark.png
   position: auto        # chosen once by face overlap and background darkness, locked in auto_position.json
   # position: { x_center: 0.5, y_center: 0.18 }   # or fixed: fractions of 1080x1920; never a corner
@@ -22,7 +32,7 @@ platforms: [tiktok, instagram, youtube]      # "platform: auto" in moments.yaml 
 posting_times: ["12:30", "15:30", "18:30"]    # posting_plan.csv: one slot each per platform per day, 24-hour Eastern, in quotes
 post:
   prefix: { tiktok: "@example", instagram: "@example", youtube: "@example" }   # youtube's goes first in the description
-  closers:
+  closers:              # optional (Brief 12): leave empty when the campaign wants no closer line
     - "watch the full episode of the example show @example"
     - "the whole example conversation is on the channel @example"
     - "more from the example show, link on the channel @example"

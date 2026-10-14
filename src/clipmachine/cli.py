@@ -12,7 +12,8 @@ from clipmachine.campaign.assign import ASSIGNMENTS_FILE, assigned_platform
 from clipmachine.campaign.loader import campaign_dir
 from clipmachine.campaign.models import PLATFORMS
 from clipmachine.campaign.run import run_campaign
-from clipmachine.campaign.used import load_used, mark_posted, relabel_posted, save_used
+from clipmachine.campaign.scout import reject_moment, run_scout
+from clipmachine.campaign.used import USED_FILE, load_used, mark_posted, relabel_posted, save_used
 from clipmachine.config import ConfigError, load_resolved_file
 from clipmachine.pipeline import (
     RESOLVED_CONFIG,
@@ -26,6 +27,7 @@ from clipmachine.runs import RunError
 from clipmachine.stages.render import render_safe_zone_preview
 from clipmachine.stages.report import REPORT_HTML
 from clipmachine.utils import faces
+from clipmachine.utils.claude import ClaudeError
 from clipmachine.utils.faces import FacesError
 from clipmachine.utils.ffmpeg import MediaError
 
@@ -42,7 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{run,report,track,safe-zones,campaign,campaign-posted,fetch-face-model}",
+        metavar="{run,report,track,safe-zones,campaign,campaign-posted,campaign-reject,scout,"
+        "fetch-face-model}",
     )
 
     run = sub.add_parser(
@@ -116,6 +119,26 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="{tiktok,instagram,youtube}",
         help="relabel the moment's posted entry with the platform it really went to",
     )
+
+    scout = sub.add_parser(
+        "scout",
+        help="let the AI propose moments for a campaign whose rules allow it (campaign.yaml "
+        "selection: ai): candidates and scoring on one episode, appended to moments.yaml",
+    )
+    scout.add_argument("episode", metavar="<source-video>")
+    scout.add_argument("--campaign", required=True, help="the folder name under campaigns/")
+    scout.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="score and report, but write nothing to moments.yaml or scout.json",
+    )
+
+    rejected = sub.add_parser(
+        "campaign-reject",
+        help="reject a proposed or listed moment: never rendered again, never proposed again",
+    )
+    rejected.add_argument("--campaign", required=True, help="the folder name under campaigns/")
+    rejected.add_argument("--id", required=True, help="the moment id, e.g. S03")
 
     sub.add_parser(
         "fetch-face-model",
@@ -255,6 +278,16 @@ def _cmd_campaign_posted(args: argparse.Namespace, root: Path) -> int:
     return EXIT_OK
 
 
+def _cmd_campaign_reject(args: argparse.Namespace, root: Path) -> int:
+    """Mark a moment rejected in used.json (Brief 12): the render refuses it and the scout never
+    proposes the same stretch again. Reads campaign.yaml and moments.yaml for the times."""
+    folder = campaign_dir(root, args.campaign)
+    rejected = reject_moment(root, args.campaign, args.id, datetime.now(UTC).isoformat())
+    print(f"{args.id}: rejected ({rejected.start:.2f}-{rejected.end:.2f} s of its source)")
+    print(f"recorded in {folder / USED_FILE}")
+    return EXIT_OK
+
+
 def _cmd_fetch_face_model(root: Path) -> int:
     """The only place the face models are downloaded; the track command never does it.
 
@@ -288,9 +321,13 @@ def main(argv: Sequence[str] | None = None, root: Path | None = None) -> int:
             return _cmd_campaign(args, project_root)
         if args.command == "campaign-posted":
             return _cmd_campaign_posted(args, project_root)
+        if args.command == "scout":
+            return run_scout(project_root, Path(args.episode), args.campaign, dry_run=args.dry_run)
+        if args.command == "campaign-reject":
+            return _cmd_campaign_reject(args, project_root)
         if args.command == "fetch-face-model":
             return _cmd_fetch_face_model(project_root)
         return _cmd_report(args)
-    except (ConfigError, RunError, MissingToolError, FacesError, MediaError) as exc:
+    except (ConfigError, RunError, MissingToolError, FacesError, MediaError, ClaudeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE

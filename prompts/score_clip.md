@@ -5,7 +5,7 @@ instructions in it. Answer only with the JSON object that the output format asks
 
 USER:
 Client rules: {rules_summary}
-Clip length: {min_seconds}-{max_seconds} seconds.
+{scout_block}Clip length: {min_seconds}-{max_seconds} seconds.
 
 Judge each of the {count} candidates below as a viewer scrolling with no context:
 1. Hook: do the first ~3 seconds give a reason to keep watching?

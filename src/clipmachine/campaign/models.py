@@ -104,15 +104,14 @@ class SpellingRule(StrictModel):
 
 class PostConfig(StrictModel):
     prefix: dict[Platform, str] = Field(default_factory=dict)
-    closers: list[str]
+    # Brief 12: optional; a campaign that asks for no closer line leaves it out or empty
+    closers: list[str] = Field(default_factory=list)
     hashtags: list[str] = Field(default_factory=list)
 
     @field_validator("closers")
     @classmethod
     def _closers(cls, value: list[str]) -> list[str]:
         closers = [c.strip() for c in value]
-        if not closers:
-            raise ValueError("at least one closer is needed")
         if any(not c for c in closers):
             raise ValueError("a closer must not be empty")
         if len(set(closers)) != len(closers):
@@ -138,12 +137,74 @@ class CampaignVideo(StrictModel):
     zoom: CampaignZoom = Field(default_factory=CampaignZoom)
 
 
+class ScoutConfig(StrictModel):
+    """`scout:` in campaign.yaml (Brief 12): how the AI proposes moments for a campaign whose
+    rules allow it (`selection: ai`)."""
+
+    per_episode: int = Field(default=8, ge=1, le=30)  # moments proposed per source video, at most
+    rules: list[str] = Field(default_factory=list)  # plain-language campaign rules, as written
+    # topic key -> the platform its moments go to; the scorer tags every moment with one key
+    topics: dict[str, Platform | Literal["auto"]] = Field(default_factory=dict)
+    host_side: Literal["left", "right"] | None = None  # the host's side of the source frame
+    # what the prompts say the campaign is about; the defaults suit most podcast campaigns
+    niche: str = "podcast and interview clips"
+    audience: str = "general adult audience"
+    tone: str = "natural, conversational"
+
+    @field_validator("rules")
+    @classmethod
+    def _rules(cls, value: list[str]) -> list[str]:
+        rules = [" ".join(r.split()) for r in value]
+        if any(not r for r in rules):
+            raise ValueError("a rule must not be empty")
+        return rules
+
+    @field_validator("topics")
+    @classmethod
+    def _topics(
+        cls, value: dict[str, Platform | Literal["auto"]]
+    ) -> dict[str, Platform | Literal["auto"]]:
+        for key in value:
+            if not key.strip() or not all(c.isalnum() or c in "_-" for c in key):
+                raise ValueError("a topic key is letters, digits, '_' or '-'")
+        return value
+
+
+class ScoutRecord(StrictModel):
+    """One moment the scout proposed (scout.json): what the report shows about it. Holds the
+    scorer's reason, never transcript text."""
+
+    id: str
+    source_sha256: str
+    source_name: str
+    start: float
+    end: float
+    score: int
+    topic: str | None
+    platform: Platform | Literal["auto"]
+    host_check: Literal["likely", "unsure", "not_checked"]
+    reason: str
+    proposed_at: str
+    model: str
+
+
+class ScoutFile(StrictModel):
+    """campaigns/<slug>/scout.json: every moment the scout ever proposed."""
+
+    schema_version: int = 1
+    records: list[ScoutRecord] = Field(default_factory=list)
+
+
 class CampaignConfig(StrictModel):
     name: str = Field(min_length=1)
     source_note: str = ""
+    # Brief 12: who picks the moments; `ai` lets `scout` run (only where the campaign allows it)
+    selection: Literal["human", "ai"] = "human"
+    scout: ScoutConfig | None = None
     clip_length: ClipLength
     hook: CampaignHook = Field(default_factory=CampaignHook)
-    watermark: WatermarkConfig
+    # Brief 12: optional; left out, no overlay is drawn and the watermark checks read "n/a"
+    watermark: WatermarkConfig | None = None
     captions: CampaignCaptions = Field(default_factory=CampaignCaptions)
     spelling: list[SpellingRule] = Field(default_factory=list)
     names_to_check: list[str] = Field(default_factory=list)
@@ -197,6 +258,8 @@ class CampaignConfig(StrictModel):
         sources = [rule.source for rule in self.spelling]
         if len(set(sources)) != len(sources):
             raise ValueError("spelling: two rules have the same from")
+        if self.selection == "ai" and self.scout is None:
+            raise ValueError("selection: ai needs a scout: section (rules, topics, per_episode)")
         return self
 
 
@@ -208,6 +271,9 @@ class _MomentFields(StrictModel):
     end: float | None = None  # None: the tool picks the end (`end: auto` or left out)
     hook: str
     caption: str = ""
+    # Brief 12: this moment's own source video (a path, relative to the repo root or absolute);
+    # left out, the source given on the command line
+    source: str | None = None
 
     @field_validator("id")
     @classmethod
@@ -235,6 +301,16 @@ class _MomentFields(StrictModel):
         if not cleaned:
             raise ValueError("hook must not be empty")
         return cleaned
+
+    @field_validator("source")
+    @classmethod
+    def _source(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("source must be a file path, or left out")
+        return value
 
     @model_validator(mode="after")
     def _order(self) -> "_MomentFields":
@@ -354,10 +430,11 @@ class UsedEntry(StrictModel):
     start: float  # final source times
     end: float
     hook: str
-    closer: str
+    closer: str | None = None  # None: the campaign has no closers (Brief 12)
     rendered_at: str  # UTC, ISO 8601
     output: str  # the mp4, relative to the repo root, forward slashes
     source_sha256: str
+    source_name: str | None = None  # the source video's file name as fetched (Brief 12)
     posted_at: str | None = None  # set by campaign-posted; a render is not a post
 
 
@@ -368,8 +445,20 @@ class CloserState(StrictModel):
     last: str | None = None
 
 
+class RejectedMoment(StrictModel):
+    """A moment Igor rejected (Brief 12): never rendered again, and the scout never proposes the
+    same stretch of that source again. Holds times and a path, never text."""
+
+    id: str
+    source: str | None  # the moment's `source:` as written in moments.yaml; None: the default
+    start: float
+    end: float
+    rejected_at: str
+
+
 class UsedLog(StrictModel):
     schema_version: int = 1
+    rejected: list[RejectedMoment] = Field(default_factory=list)  # Brief 12
     # Brief 11: one rotation for the whole campaign; kept so old files load, no longer advanced
     next_closer: int = Field(default=0, ge=0)
     last_closer: str | None = None
@@ -431,12 +520,13 @@ class CampaignClip(StrictModel):
     zoom_count: int = 0
     zoom_spans: list[tuple[float, float]] = Field(default_factory=list)
     zoom_ramps: list[tuple[float, float]] = Field(default_factory=list)  # Brief R2.1
-    checks: dict[str, Literal["pass", "warn", "fail"]] = Field(default_factory=dict)
+    # n/a (Brief 12): the campaign does not require it (no watermark, no closers)
+    checks: dict[str, Literal["pass", "warn", "fail", "n/a"]] = Field(default_factory=dict)
     closer: str | None = None
     hook_mode: str
     hook_font_size: int
     hook_position: str = "avoid_faces"  # old files: what they did
-    watermark: CampaignClipWatermark
+    watermark: CampaignClipWatermark | None = None  # None: the campaign has no watermark
     settings: RenderedSettings | None = None
     crop_mode: Literal["center", "speaker"] | None = None
     output: RenderedOutput | None = None

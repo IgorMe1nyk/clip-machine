@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from clipmachine.campaign.assign import count_by_platform
 from clipmachine.campaign.loader import Campaign
-from clipmachine.campaign.models import CHECKS, AutoSpelling, CampaignClip, Moment
+from clipmachine.campaign.models import CHECKS, AutoSpelling, CampaignClip, Moment, ScoutRecord
 from clipmachine.campaign.plan import PLAN_FILE
 from clipmachine.campaign.render import META_DIR, POST_SUFFIX, REVIEW_SUFFIX
 from clipmachine.runs import write_text_atomic
@@ -35,7 +35,13 @@ CHECK_LABELS = {
     "names_listed": "names to check listed",
 }
 # a word and a symbol, never colour alone
-CHECK_WORDS = {"pass": "&#10003; pass", "warn": "&#9650; warning", "fail": "&#10007; FAIL"}
+CHECK_WORDS = {
+    "pass": "&#10003; pass",
+    "warn": "&#9650; warning",
+    "fail": "&#10007; FAIL",
+    "n/a": "&ndash; not required",  # Brief 12: no watermark or no closers in this campaign
+}
+CHECK_CSS = {"pass": "ck-pass", "warn": "ck-warn", "fail": "ck-fail", "n/a": "ck-none"}
 BACKGROUNDS = {
     "transparent": "transparent",
     "opaque_black": "opaque black",
@@ -77,7 +83,7 @@ def _checks(clip: CampaignClip) -> str:
         if status is None:
             word, css = "&ndash; not checked", "ck-none"
         else:
-            word, css = CHECK_WORDS[status], f"ck-{status}"
+            word, css = CHECK_WORDS[status], CHECK_CSS[status]
         items.append(f'<li><span class="ck {css}">{word}</span> {_esc(CHECK_LABELS[name])}</li>')
     return '<ul class="checks">' + "".join(items) + "</ul>"
 
@@ -138,8 +144,24 @@ def _review_block(clip: CampaignClip, review: str | None) -> str:
     return "".join(parts)
 
 
+def _scout_block(record: ScoutRecord | None) -> str:
+    """What the scout said about a moment it proposed (Brief 12), so Igor can judge it fast."""
+    if record is None:
+        return ""
+    topic = _esc(record.topic) if record.topic is not None else "none"
+    return (
+        f"<p><b>Scout:</b> score {record.score} of 10 &middot; topic {topic} &rarr; "
+        f"{_esc(record.platform)} &middot; host {_esc(record.host_check.replace('_', ' '))}"
+        f"</p>\n<p><b>Why:</b> {_esc(record.reason)}</p>\n"
+    )
+
+
 def _card(
-    moment: Moment, clip: CampaignClip | None, post: str | None, review: str | None = None
+    moment: Moment,
+    clip: CampaignClip | None,
+    post: str | None,
+    review: str | None = None,
+    scout: ScoutRecord | None = None,
 ) -> str:
     heading = f"<h2>{_esc(moment.id)} &middot; {_esc(moment.platform)}</h2>"
     if clip is None:
@@ -149,7 +171,7 @@ def _card(
             f'<div class="info">\n{heading}\n'
             f'<p class="muted">requested {_hms(moment.start)}&ndash;'
             f"{'auto' if moment.end is None else _hms(moment.end)}</p>\n"
-            f"<p><b>Hook:</b> {_esc(moment.hook)}</p>\n</div>\n</section>"
+            f"<p><b>Hook:</b> {_esc(moment.hook)}</p>\n{_scout_block(scout)}</div>\n</section>"
         )
     if clip.status == "rendered":
         src = f"{moment.platform}/{moment.id}.mp4"  # Brief 11.2: the platform folder
@@ -175,13 +197,15 @@ def _card(
         parts.append(f"<p><b>Snapping and warnings</b></p>{notes}\n")
     if clip.status == "rendered":
         parts.append(f"<p><b>Hook:</b> {_esc(moment.hook)}</p>\n")
+        parts.append(_scout_block(scout))
         if post is not None:
             parts.append(
                 f'<p><b>Post caption</b> (copy this)</p><pre class="post">{_esc(post)}</pre>\n'
             )
         else:
             parts.append('<p class="muted">The post text file is missing.</p>\n')
-        parts.append(f"<p><b>Closer:</b> {_esc(clip.closer or '')}</p>\n")
+        if clip.closer is not None:
+            parts.append(f"<p><b>Closer:</b> {_esc(clip.closer)}</p>\n")
         parts.append(f"<p>{_esc(clip.spelling_replacements)} spelling fixes</p>\n")
         parts.append(_names(clip.names_to_check) + "\n")
     block = _review_block(clip, review)
@@ -289,8 +313,17 @@ def _header(
         if wm is not None
         else "position not chosen yet"
     )
-    alpha = "yes" if asset.info.has_alpha else "no"
-    background = BACKGROUNDS.get(asset.background, asset.background)
+    if asset is None or cfg.watermark is None:  # Brief 12
+        watermark_line = "<p>No watermark required by this campaign</p>"
+    else:
+        alpha = "yes" if asset.info.has_alpha else "no"
+        background = BACKGROUNDS.get(asset.background, asset.background)
+        watermark_line = (
+            f"<p>Watermark {_esc(cfg.watermark.file)}: "
+            f"format PNG ({_esc(color_type_name(asset.info.color_type))}), alpha {alpha}, "
+            f"background {_esc(background)}, "
+            f"blend {_esc(asset.blend)}; {where}</p>"
+        )
     lines = [
         f"<h1>{_esc(cfg.name)}</h1>",
         f'<p class="muted">{_esc(cfg.source_note)}</p>' if cfg.source_note else "",
@@ -304,12 +337,9 @@ def _header(
         + (f" ({campaign.hook_seconds:g} s)" if cfg.hook.mode == "intro" else "")
         + f", font size {_esc(campaign.hook_font_size)}"
         + f", position {_esc(campaign.hook_position)}</p>",
-        f"<p>Watermark {_esc(cfg.watermark.file)}: "
-        f"format PNG ({_esc(color_type_name(asset.info.color_type))}), alpha {alpha}, "
-        f"background {_esc(background)}, "
-        f"blend {_esc(asset.blend)}; {where}</p>",
+        watermark_line,
     ]
-    if cfg.watermark.position == "auto":
+    if cfg.watermark is not None and cfg.watermark.position == "auto":
         lines.append(_auto_position(campaign))
     if campaign.warnings:
         lines.append("<p><b>Warnings</b></p>" + _list(campaign.warnings))
@@ -328,13 +358,22 @@ def build_html(
     reviews: Mapping[str, str] | None = None,
     auto: AutoSpelling | None = None,
     old_files: Sequence[str] = (),
+    scout: Mapping[str, ScoutRecord] | None = None,
 ) -> str:
     """The whole page. `clips`, `posts` and `reviews` (the .review.txt texts) are keyed by
     Moment.clip_name; a moment with no clip is listed as not rendered yet. `old_files` are the
-    names of flat-layout files from before Brief 11.2 found next to the platform folders."""
+    names of flat-layout files from before Brief 11.2 found next to the platform folders.
+    `scout` holds the scout's records by moment id (Brief 12)."""
     found = reviews or {}
+    records = scout or {}
     cards = [
-        _card(m, clips.get(m.clip_name), posts.get(m.clip_name), found.get(m.clip_name))
+        _card(
+            m,
+            clips.get(m.clip_name),
+            posts.get(m.clip_name),
+            found.get(m.clip_name),
+            records.get(m.id),
+        )
         for m in moments
     ]
     body = "\n".join([_header(campaign, run_name, moments, clips, auto, old_files), *cards])
@@ -354,11 +393,12 @@ def write_report(
     run_name: str,
     *,
     auto: AutoSpelling | None = None,
+    scout: Mapping[str, ScoutRecord] | None = None,
 ) -> Path:
     """Build the page from the jsons and review files in `out_dir/_meta` and the post texts in
     the platform folders, and write it to `out_dir`. A json that is missing or does not validate
     counts as not rendered yet. Clip files lying flat in `out_dir` (the layout before Brief 11.2)
-    are listed as old."""
+    are listed as old. `scout`: the scout's records by moment id (Brief 12)."""
     meta = out_dir / META_DIR
     clips: dict[str, CampaignClip] = {}
     posts: dict[str, str] = {}
@@ -395,6 +435,7 @@ def write_report(
             reviews=reviews,
             auto=auto,
             old_files=old_files,
+            scout=scout,
         ),
     )
     return path

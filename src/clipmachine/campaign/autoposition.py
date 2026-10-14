@@ -93,7 +93,7 @@ class _Score:
 def candidates(ctx: MomentContext) -> tuple[list[Candidate], int]:
     """The grid positions whose visible box passes the geometry checks and stays clear of the
     caption envelope, and how many positions the grid had."""
-    app, plan, asset = ctx.app, ctx.plan, ctx.campaign.asset
+    app, plan, asset = ctx.app, ctx.plan, ctx.campaign.measured
     karaoke, metrics, safe = plan.karaoke, plan.metrics, plan.safe
     assert karaoke is not None and metrics is not None and safe is not None
     width, height = app.video.width, app.video.height
@@ -375,10 +375,10 @@ def choose_position(
     app, campaign = ctx.app, ctx.campaign
     grid, tried = candidates(ctx)
     if not grid:
-        w, h = campaign.asset.box_size
+        w, h = campaign.measured.box_size
         raise RunError(
             f"watermark.position: auto found no place for the visible watermark ({w:g}x{h:g} px at "
-            f"scale {campaign.asset.scale:g}) inside the safe area above the captions; lower "
+            f"scale {campaign.measured.scale:g}) inside the safe area above the captions; lower "
             "watermark.scale or set an explicit position"
         )
     samples: list[_Sample] = []
@@ -421,9 +421,9 @@ def choose_position(
         candidates=tried,
         placeable=len(grid),
         scored=len(ranked),
-        watermark_sha256=campaign.asset.sha256,
-        scale=campaign.asset.scale,
-        blend=campaign.asset.blend,
+        watermark_sha256=campaign.measured.sha256,
+        scale=campaign.measured.scale,
+        blend=campaign.measured.blend,
         frame=(app.video.width, app.video.height),
         safe=(app.safe.top, app.safe.bottom, app.safe.left, app.safe.right),
         button_column=(app.safe.button_left, app.safe.button_top),
@@ -433,7 +433,7 @@ def choose_position(
         chosen_at=datetime.now(UTC).isoformat(),
     )
     write_json_atomic(campaign.folder / AUTO_POSITION_FILE, lock.model_dump(mode="json"))
-    placed = place_watermark(campaign.asset, lock.x_center, lock.y_center, app)
+    placed = place_watermark(campaign.measured, lock.x_center, lock.y_center, app)
     return dataclasses.replace(campaign, watermark=placed, auto=lock), lock
 
 

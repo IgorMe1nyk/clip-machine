@@ -11,7 +11,13 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from clipmachine.campaign.models import CloserState, Platform, UsedEntry, UsedLog
+from clipmachine.campaign.models import (
+    CloserState,
+    Platform,
+    RejectedMoment,
+    UsedEntry,
+    UsedLog,
+)
 from clipmachine.config import ConfigError
 from clipmachine.runs import write_json_atomic
 
@@ -131,6 +137,23 @@ def record_render(log: UsedLog, entry: UsedEntry) -> UsedLog:
         if not (e.id == entry.id and e.platform == entry.platform and not e.posted_at)
     ]
     return log.model_copy(update={"entries": [*kept, entry]})
+
+
+def is_rejected(log: UsedLog, moment_id: str) -> bool:
+    return any(r.id == moment_id for r in log.rejected)
+
+
+def reject(
+    log: UsedLog, moment_id: str, source: str | None, start: float, end: float, when: str
+) -> UsedLog:
+    """Add a rejected moment (Brief 12). A posted moment cannot be rejected; a second rejection
+    of the same id is an error, so Igor sees that it was already done."""
+    if latest_posted(log, moment_id) is not None:
+        raise ConfigError(f"moment {moment_id} is posted; a posted moment cannot be rejected")
+    if is_rejected(log, moment_id):
+        raise ConfigError(f"moment {moment_id} is already rejected")
+    entry = RejectedMoment(id=moment_id, source=source, start=start, end=end, rejected_at=when)
+    return log.model_copy(update={"rejected": [*log.rejected, entry]})
 
 
 def mark_posted(

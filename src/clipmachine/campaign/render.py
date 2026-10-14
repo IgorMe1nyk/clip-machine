@@ -31,7 +31,13 @@ from clipmachine.campaign.models import (
 )
 from clipmachine.campaign.post import post_text
 from clipmachine.campaign.spelling import apply_spelling, find_names
-from clipmachine.campaign.used import overlapping_posted, posted_entry, record_render, take_closer
+from clipmachine.campaign.used import (
+    is_rejected,
+    overlapping_posted,
+    posted_entry,
+    record_render,
+    take_closer,
+)
 from clipmachine.models import AppConfig, RenderedOutput
 from clipmachine.runs import RunError, write_json_atomic, write_text_atomic
 from clipmachine.stages import render as stage
@@ -41,8 +47,8 @@ from clipmachine.utils.image import color_type_name
 from clipmachine.utils.snapping import EPSILON, SentenceIndex, auto_end, snap_near
 from clipmachine.utils.wordlists import Hit, sensitive_hits
 
-Check = Literal["pass", "warn", "fail"]
-Outcome = Literal["rendered", "failed", "refused"]
+Check = Literal["pass", "warn", "fail", "n/a"]  # n/a: the campaign does not require it
+Outcome = Literal["rendered", "failed", "refused", "rejected"]  # rejected: Brief 12
 
 # The clip length is compared with this much slack, as the render stage's checks are.
 LENGTH_SLACK = 0.001
@@ -81,6 +87,7 @@ class MomentContext:
     names_to_check: tuple[str, ...] = ()
     # Brief 11.2: words a YouTube title keeps as written (names, acronyms)
     title_keep: tuple[str, ...] = ()
+    source_name: str = ""  # the source video's file name as fetched (Brief 12)
 
     @property
     def meta_dir(self) -> Path:
@@ -181,9 +188,23 @@ def _clip_json(
     render_seconds: float | None = None,
     rendered_at: str | None = None,
 ) -> CampaignClip:
-    wm = ctx.campaign.placed
+    wm = ctx.campaign.watermark  # None: no watermark required (Brief 12)
     moment = work.moment
     known = work.start is not None and work.end is not None
+    watermark = None
+    if wm is not None:
+        watermark = CampaignClipWatermark(
+            sha256=wm.sha256,
+            blend=wm.blend,
+            position_mode="auto" if ctx.campaign.auto is not None else "explicit",
+            x=wm.x,
+            y=wm.y,
+            width=wm.size[0],
+            height=wm.size[1],
+            rect=(wm.rect.x1, wm.rect.y1, wm.rect.x2, wm.rect.y2),
+            background=wm.background,
+            color_type=color_type_name(wm.info.color_type),
+        )
     return CampaignClip(
         id=moment.id,
         platform=moment.platform,
@@ -213,20 +234,7 @@ def _clip_json(
         hook_mode=ctx.campaign.config.hook.mode,
         hook_font_size=ctx.campaign.hook_font_size,
         hook_position=ctx.campaign.hook_position,
-        watermark=CampaignClipWatermark(
-            sha256=wm.sha256,
-            blend=wm.blend,
-            position_mode="auto"
-            if ctx.campaign.config.watermark.position == "auto"
-            else "explicit",
-            x=wm.x,
-            y=wm.y,
-            width=wm.size[0],
-            height=wm.size[1],
-            rect=(wm.rect.x1, wm.rect.y1, wm.rect.x2, wm.rect.y2),
-            background=wm.background,
-            color_type=color_type_name(wm.info.color_type),
-        ),
+        watermark=watermark,
         settings=ctx.plan.settings if status == "rendered" else None,
         crop_mode=crop_mode,
         output=output,
@@ -321,7 +329,7 @@ def _render_moment(
 ) -> MomentResult:
     name = moment.clip_name
     plan, app, campaign = ctx.plan, ctx.app, ctx.campaign
-    wm = campaign.placed
+    wm = campaign.placed if campaign.has_watermark else None  # Brief 12: optional
     settings = plan.settings
     started = time.perf_counter()
 
@@ -354,8 +362,9 @@ def _render_moment(
         seconds, fade = length, 0
     else:  # intro: the first seconds only; faces are checked over that window
         seconds, fade = campaign.hook_seconds, app.hook.fade_ms
+    avoid = () if wm is None else (wm.rect,)
     spec = stage.HookSpec(
-        seconds, fade, campaign.hook_font_size, (wm.rect,), position=campaign.hook_position
+        seconds, fade, campaign.hook_font_size, avoid, position=campaign.hook_position
     )
     captions = stage._karaoke_captions(plan, clip, words, chosen, length, spec)
     work.notes.extend(captions.notes)
@@ -371,9 +380,9 @@ def _render_moment(
     band = captions.hook_band
     if band is None or not captions.hook_shown:
         raise MomentFailed("the hook could not be placed", "hook_from_start")
-    if band.intersects(wm.rect):
+    if wm is not None and band.intersects(wm.rect):
         raise MomentFailed("the hook overlaps the watermark", "watermark_full_and_clear")
-    if any(box.intersects(wm.rect) for box in captions.caption_boxes):
+    if wm is not None and any(box.intersects(wm.rect) for box in captions.caption_boxes):
         raise MomentFailed(
             "a caption would cover the watermark; move the watermark", "watermark_full_and_clear"
         )
@@ -385,11 +394,12 @@ def _render_moment(
         raise MomentFailed(
             "the hook or a caption would sit outside the safe area", "hook_from_start"
         )
-    faces = stage._face_boxes(plan, chosen, length)
-    if faces is None:
-        work.notes.append("watermark_faces_unknown")
-    elif any(face.intersects(wm.rect) for face in faces):
-        work.notes.append("watermark_over_face")
+    if wm is not None:
+        faces = stage._face_boxes(plan, chosen, length)
+        if faces is None:
+            work.notes.append("watermark_faces_unknown")
+        elif any(face.intersects(wm.rect) for face in faces):
+            work.notes.append("watermark_over_face")
 
     ass = ctx.meta_dir / f"{name}.ass"
     write_text_atomic(ass, captions.text)
@@ -402,23 +412,27 @@ def _render_moment(
         plan.fonts_rel,
         None if chosen is None else chosen.sendcmd_rel,
     )
-    graph = ffmpeg.overlay_graph(
-        chain,
-        x=wm.x,
-        y=wm.y,
-        size=None if wm.size == (wm.info.width, wm.info.height) else wm.size,
-        blend=wm.blend,
-        frame=(settings.width, settings.height),
-    )
     temp = ctx.meta_dir / f"{name}{stage.TEMP_SUFFIX}"
     mp4 = ctx.mp4_path(moment)
+    graph: str | None = None
+    if wm is not None:
+        graph = ffmpeg.overlay_graph(
+            chain,
+            x=wm.x,
+            y=wm.y,
+            size=None if wm.size == (wm.info.width, wm.info.height) else wm.size,
+            blend=wm.blend,
+            frame=(settings.width, settings.height),
+        )
+    # no watermark: the plain filter chain and one input; else the overlay graph and the PNG
     args = ffmpeg.render_args(
         plan.source,
         temp,
         start=start,
         duration=length,
+        vf=chain if wm is None else None,
         filter_complex=graph,
-        overlay_image=wm.file,
+        overlay_image=None if wm is None else wm.file,
         crf=settings.crf,
         preset=settings.preset,
         audio_bitrate=settings.audio_bitrate,
@@ -437,9 +451,11 @@ def _render_moment(
         raise MomentFailed("the output has no video, audio or duration")
 
     closers = campaign.config.post.closers
-    platforms = campaign.config.platforms
-    first = platforms.index(moment.platform) if moment.platform in platforms else 0
-    closer, used = take_closer(used, closers, moment.platform, first=first % len(closers))
+    closer: str | None = None
+    if closers:  # Brief 12: a campaign may ask for no closer line
+        platforms = campaign.config.platforms
+        first = platforms.index(moment.platform) if moment.platform in platforms else 0
+        closer, used = take_closer(used, closers, moment.platform, first=first % len(closers))
     work.closer = closer
     post_path = ctx.post_path(moment)
     text, post_hits = post_text(
@@ -463,18 +479,20 @@ def _render_moment(
             rendered_at=rendered_at,
             output=mp4.relative_to(ctx.root).as_posix(),
             source_sha256=ctx.source_sha256,
+            source_name=ctx.source_name or None,
         ),
     )
 
     last_line = post_path.read_text(encoding="utf-8").rstrip("\n").split("\n")[-1]
     reused = bool(work.warnings) or was_posted
+    closer_check: Check = "n/a" if closer is None else ("pass" if last_line == closer else "fail")
     work.checks.update(
         {
             "hook_from_start": "pass",
             "captions_on": "pass" if captions.lines >= 1 else "fail",
-            "watermark_full_and_clear": "pass",
+            "watermark_full_and_clear": "n/a" if wm is None else "pass",
             "source_audio_only": "pass",
-            "closer_present": "pass" if last_line == closer else "fail",
+            "closer_present": closer_check,
             "not_previously_used": "warn" if reused else "pass",
             "names_listed": "pass" if set(work.names) == set(ctx.names_to_check) else "fail",
         }
@@ -503,7 +521,7 @@ def _render_moment(
         record,
         start_moved=start_moved,
         end_moved=end_moved,
-        closer_number=closers.index(closer) + 1,
+        closer_number=None if closer is None else closers.index(closer) + 1,
         variant_times=variant_times,
     )
 
@@ -513,6 +531,8 @@ def render_moment(
 ) -> MomentResult:
     """Render one moment. Returns the outcome with the (possibly updated) used log."""
     name = moment.clip_name
+    if is_rejected(used, moment.id):
+        return MomentResult("rejected", used)  # Igor said no (Brief 12); nothing is touched
     was_posted = posted_entry(used, moment.id, moment.platform) is not None
     if was_posted and not force_reuse:
         return MomentResult("refused", used)  # nothing of this moment is touched

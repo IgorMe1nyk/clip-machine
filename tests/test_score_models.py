@@ -22,6 +22,8 @@ def clip(**update: Any) -> dict[str, Any]:
         "suggested_title": "A title",
         "reason": "because",
         "keep_sentences": None,
+        "topic": None,
+        "caption": None,
     }
     data.update(update)
     return data
@@ -48,7 +50,7 @@ def test_wire_schema_stays_inside_the_documented_limits() -> None:
             assert node["additionalProperties"] is False
             assert set(node["properties"]) == set(node["required"])  # nothing optional
     unions = sum(1 for n in nodes if "anyOf" in n)
-    assert unions == 2  # reject_reason and keep_sentences; the API allows 16
+    assert unions == 4  # reject_reason, keep_sentences, topic and caption; the API allows 16
     assert set(REJECT_REASONS) == {
         "no_payoff",
         "needs_context",

@@ -414,6 +414,10 @@ class CampaignModeConfig(StrictModel):
     title_keep_case: list[str] = Field(
         default_factory=lambda: ["NBA", "NFL", "NHL", "MLB", "UFC", "MMA", "MPJ", "US", "UK"]
     )
+    # Brief 12 (scout): the host-side check looks at the first seconds of a proposed moment and
+    # says "likely" when a face sits on the host's side in at least this share of the frames
+    scout_host_seconds: float = Field(default=5.0, gt=0, le=30)
+    scout_host_share: float = Field(default=0.5, gt=0, le=1)
 
 
 class RenderConfig(StrictModel):
@@ -655,6 +659,8 @@ class ClientRules(StrictModel):
     prefer: list[str] = Field(default_factory=list)
     avoid: list[str] = Field(default_factory=list)
     clip_length: ClipLength | None = None
+    # Brief 12: plain-language rules passed to both prompts as written (a campaign's `scout.rules`)
+    extra: list[str] = Field(default_factory=list)
 
 
 class FoundMoment(StrictModel):
@@ -779,6 +785,14 @@ class ClipScore(StrictModel):
             "before and after it), or null"
         )
     )
+    # Brief 12 (scout): asked for only when the prompt says so; null otherwise. Required in the
+    # wire schema like every other field (the API wants no optional keys), nullable.
+    topic: str | None = Field(
+        description="One of the topic keys listed in the prompt, or null when none are listed"
+    )
+    caption: str | None = Field(
+        description="One sentence that leads with the idea in the clip, when asked; else null"
+    )
 
     @field_validator("verdict", "reject_reason", mode="before")
     @classmethod
@@ -813,6 +827,8 @@ class ScoredClip(StrictModel):
     hook_line: str
     suggested_title: str
     reason: str
+    topic: str | None = None  # Brief 12 (scout): the model's topic key, when asked for
+    caption: str | None = None  # Brief 12 (scout): the model's post caption, when asked for
     start: float  # final, after any trim
     end: float
     candidate_start: float

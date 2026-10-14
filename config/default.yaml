@@ -148,3 +148,5 @@ campaign:                    # campaign mode (Brief 11): the rules live in campa
   auto_watermark_x_step: 0.05        # grid steps as fractions of the frame
   auto_watermark_y_step: 0.02
   title_keep_case: [NBA, NFL, NHL, MLB, UFC, MMA, MPJ, US, UK]   # kept as written in a YouTube title (otherwise the hook in sentence case; Brief 11.2)
+  scout_host_seconds: 5.0    # scout (Brief 12): seconds of a proposed moment the host-side check looks at
+  scout_host_share: 0.5      # "likely" when a face is on the host's side in at least this share of those frames
