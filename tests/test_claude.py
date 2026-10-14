@@ -554,6 +554,38 @@ def test_invalid_output_gets_one_retry_naming_the_problem(rig: Rig) -> None:
     assert record.purpose.endswith(":repair")
 
 
+def test_a_validator_failure_is_named_with_its_message_in_the_repair(rig: Rig) -> None:
+    # Brief 12.1 fix: "value_error" alone gave the model nothing to fix; the validator's own
+    # words go into the repair note (never the offending value, which pydantic keeps out of msg).
+    from pydantic import ValidationError
+
+    from clipmachine.models import ScoreBatch
+
+    bad = {
+        "clips": [
+            {
+                "id": "c01",
+                "score": 7,
+                "verdict": "keep",
+                "reject_reason": None,
+                "hook_line": "",
+                "suggested_title": "SECRET TITLE",
+                "reason": "r",
+                "keep_sentences": None,
+                "topic": None,
+                "caption": None,
+            }
+        ]
+    }
+    with pytest.raises(ValidationError) as caught:
+        ScoreBatch.model_validate(bad)
+    problem = claude._summarise_problem(caught.value)
+    assert problem == (
+        "clips.0: value_error (Value error, hook_line and suggested_title must not be empty)"
+    )
+    assert "SECRET TITLE" not in problem
+
+
 def test_invalid_output_twice_fails_the_call_and_books_both(rig: Rig) -> None:
     fake = rig.script([answer("not json"), answer('{"moments": [{"start": 1}]}')])
     with pytest.raises(InvalidModelOutput, match="still invalid"):

@@ -23,7 +23,7 @@ from clipmachine.campaign.models import (
     WatermarkPosition,
 )
 from clipmachine.config import ConfigError, _read_yaml, _validate
-from clipmachine.models import AppConfig, ZoomConfig
+from clipmachine.models import AppConfig, GraphicsConfig, ZoomConfig
 from clipmachine.utils.image import (
     ImageError,
     PngInfo,
@@ -87,6 +87,8 @@ class Campaign:
     warnings: tuple[str, ...]
     auto: AutoPosition | None = None  # the lock, with `position: auto` once it is chosen
     zoom: ZoomConfig = field(default_factory=ZoomConfig)  # video.zoom with the campaign's keys
+    # video.graphics with the campaign's keys (Brief 12.1)
+    graphics: GraphicsConfig = field(default_factory=GraphicsConfig)
 
     @property
     def has_watermark(self) -> bool:
@@ -290,6 +292,12 @@ def load_campaign(root: Path, slug: str, app: AppConfig) -> Campaign:
         watermark = place_watermark(asset, where.x_center, where.y_center, app)
     own = cfg.video.zoom.model_dump(exclude_none=True)
     zoom = _validate(ZoomConfig, {**app.video.zoom.model_dump(), **own}, "campaign.yaml video.zoom")
+    own_graphics = cfg.video.graphics.model_dump(exclude_none=True)
+    graphics = _validate(
+        GraphicsConfig,
+        {**app.video.graphics.model_dump(), **own_graphics},
+        "campaign.yaml video.graphics",
+    )
     return Campaign(
         slug,
         folder,
@@ -302,6 +310,7 @@ def load_campaign(root: Path, slug: str, app: AppConfig) -> Campaign:
         tuple(warnings),
         lock,
         zoom,
+        graphics,
     )
 
 

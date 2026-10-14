@@ -30,3 +30,14 @@ def check_face_models(root: Path) -> None:
         faces.ensure_model(faces.model_dir(root, faces.DETECTOR), spec=faces.DETECTOR)
     except faces.FacesError as exc:
         raise faces.FacesError(f"{exc}. Or set video.crop: center in the config") from exc
+
+
+def check_text_model(root: Path) -> None:
+    """The graphics-aware layout (Brief 12.1) needs the text detector file. Raises
+    faces.FacesError naming the file and the fetch command; nothing is downloaded here."""
+    try:
+        faces.ensure_model(faces.model_dir(root, faces.TEXT_DETECTOR), spec=faces.TEXT_DETECTOR)
+    except faces.FacesError as exc:
+        raise faces.FacesError(
+            f"{exc}. Or set video.graphics.enabled: false in the config"
+        ) from exc

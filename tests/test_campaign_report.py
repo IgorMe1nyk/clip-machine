@@ -118,6 +118,42 @@ def test_there_is_one_card_per_moment_in_order(project: Path) -> None:
     assert positions == sorted(positions)
 
 
+def test_a_card_shows_the_fit_seconds_and_the_overlay_positions(project: Path) -> None:
+    from clipmachine.models import GraphicsBox, RenderedSettings
+
+    settings = RenderedSettings(
+        width=1080,
+        height=1920,
+        crf=20,
+        preset="medium",
+        audio_bitrate="160k",
+        font="F",
+        font_file="f.ttf",
+        font_size=96,
+        margin_v=0,
+        words_per_line=3,
+        highlight_color="#FFD400",
+        graphics_enabled=True,
+    )
+    shown = clip(
+        settings=settings,
+        fit_spans=[(4.05, 7.98)],
+        fit_seconds=3.93,
+        static_overlays=[
+            GraphicsBox(x1=0.05, y1=0.04, x2=0.3, y2=0.07),
+            GraphicsBox(x1=0.87, y1=0.91, x2=0.96, y2=0.97),
+        ],
+    )
+    html = page(project, [mom()], {"A01_tiktok": shown})
+    assert "fit layout 3.9 s of 34.0 s (4.0-8.0 s); static overlays: top-left, bottom-right" in html
+    plain = page(
+        project,
+        [mom()],
+        {"A01_tiktok": clip(settings=settings.model_copy(update={"graphics_enabled": False}))},
+    )
+    assert "fit layout" not in plain
+
+
 def test_the_video_source_is_the_platform_folder_and_the_id(project: Path) -> None:
     html = page(project, [mom()], {"A01_tiktok": clip()})
     assert '<video controls preload="metadata" width="360" src="tiktok/A01.mp4">' in html

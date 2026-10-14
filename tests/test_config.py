@@ -1032,6 +1032,43 @@ def test_default_yaml_has_every_zoom_key(project: Path) -> None:
     assert set(data["video"]["zoom"]) == set(ZoomConfig.model_fields)
 
 
+# --- Brief 12.1: graphics-aware layout -----------------------------------------------------------
+
+
+def test_graphics_defaults_match_default_yaml_and_ship_enabled() -> None:
+    from clipmachine.models import GraphicsConfig
+
+    repo_root = Path(__file__).resolve().parents[1]
+    shipped = load_app_config(repo_root).video.graphics
+    assert shipped.enabled is True
+    assert shipped.model_copy(update={"enabled": False}) == GraphicsConfig()
+
+
+def test_default_yaml_has_every_graphics_key(project: Path) -> None:
+    from clipmachine.models import GraphicsConfig
+
+    data = yaml.safe_load((project / "config" / "default.yaml").read_text(encoding="utf-8"))
+    assert set(data["video"]["graphics"]) == set(GraphicsConfig.model_fields)
+    assert load_app_config(project).video.graphics.enabled is False  # the fixture runs without
+
+
+def test_config_without_a_graphics_block_loads_with_it_off(project: Path) -> None:
+    from clipmachine.models import GraphicsConfig
+
+    _default(project, lambda d: d["video"].pop("graphics"))
+    assert load_app_config(project).video.graphics == GraphicsConfig()
+
+
+@pytest.mark.parametrize(
+    "keys",
+    [{"layout": "stack"}, {"min_presence": 0}, {"static_ratio": 1.5}, {"blur": -1}, {"darken": 2}],
+)
+def test_invalid_graphics_settings_are_rejected(project: Path, keys: dict[str, Any]) -> None:
+    _default(project, lambda d: d["video"]["graphics"].update(keys))
+    with pytest.raises(ConfigError, match="graphics"):
+        load_app_config(project)
+
+
 def test_the_project_fixture_runs_with_zoom_off(project: Path) -> None:
     assert load_app_config(project).video.zoom.enabled is False
 

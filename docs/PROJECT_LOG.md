@@ -2,6 +2,66 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-14 — Brief 12.1: graphics-aware layout (built; real re-render done; Igor's phone check pending)
+
+**Why:** the second campaign's episodes carry on-screen text (chapter title, logo, citation
+footnotes, definition panels). The speaker crop cut a footnote in three of the first five scouted
+clips and lost a definition panel in one. Igor's rule: graphics must never look cut off (D-033).
+
+**Done** (branch `brief-12-1-graphics` from `main`, 2 fix commits + 7 brief commits; not merged,
+not pushed)
+- **Two fixes first:** a kept clip whose adjustment only broke the length limits keeps the
+  candidate's own cut (`trims_recovered`; the first scout run had dropped its best-scored clip
+  this way), and repair notes carry the validator's message, not only "value_error".
+- **Text detector:** OpenCV's DB detector with the model zoo's PP-OCRv3 English model
+  (`models/textdet/`, 2,423,490 bytes, Apache-2.0, pinned commit and SHA-256), fetched once by
+  `fetch-text-model`; preflight names the command. 105-150 ms per 640-wide frame on the CPU.
+- **Rules (`utils/graphics.py`):** 2 frames a second at 960 wide; boxes at the same place in 80%
+  of a clip's samples are static overlays (title, logo) and ignored; a shot has graphics when the
+  rest cover 2% of the frame in 30% of its samples and one reaches outside the crop window in
+  force; fit shots become spans on the exact cut times. `clips/<id>.graphics.json`, reused like
+  the track; kept through the resume sweep.
+- **Fit layout (`utils/layout.py`, `ffmpeg.fit_graph`):** the whole frame scaled to 1080 wide on
+  a blurred (boxblur 20), darkened (0.35) copy of itself; frame and caption box centred as a
+  group in the safe area (frame at y 448-1056 for 1080p sources); captions of a fit shot placed
+  under the frame; hook at its usual top; no zoom starts in a fit span; one ffmpeg graph with
+  `split`, the speaker crop as `crop@spk` (the sendcmd lines name it), an `overlay` switched by
+  `enable=between(t,...)` on the spans, subtitles last; the watermark graph wraps it.
+- **Records:** `fit_spans`, `fit_seconds`, `static_overlays`, `graphics_sha256` in the clip
+  JSONs, the graphics keys in `RenderedSettings` (a toggle or a tuning re-renders on resume),
+  console `fit N s in M spans, K static overlays`, a report line per card. `enabled: false`:
+  no call, no file, the old ffmpeg arguments byte for byte. A campaign may override the keys.
+- Tests: 50 new (rules, cache, geometry, graph, render stage, campaign, report, preflight,
+  fetch) plus one ffmpeg-marked real render with a magenta panel; the whole suite green.
+
+**Real re-render** (the four unposted scouted clips of the first ai campaign, $0):
+
+| clip | length | fit | speaker | static overlays | analysis | render |
+|---|---|---|---|---|---|---|
+| S01 | 35.3 s | 4.0 s (0-4.0) | 31.3 s | 3 (top-left, bottom-right x2) | 11.2 s | 40.7 s |
+| S02 | 53.3 s | 0 | 53.3 s | 3 | 13.4 s | 31.5 s |
+| S04 | 26.9 s | 14.5 s (0.1-14.6) | 12.4 s | 3 | 7.6 s | 28.1 s |
+| S05 | 38.2 s | 13.5 s (10.1-23.6) | 24.7 s | 3 | 10.2 s | 37.8 s |
+
+The static overlays are the chapter title (top-left) and the two lines of the show logo
+(bottom-right) in every clip. S04's "85% rule" card and S05's "Hormesis" card are shown whole;
+S01's fit shot is the citation footnote. Analysis adds about 10 s per clip on the CPU (frames
+decoded once more); the fit graph adds about 5-10 s to the render.
+
+**Scout rerun for the length fix:** refused by the $1 per-run cap at first (the folder had
+booked $0.87), then, with the cap at 2.00 for one run (Igor's OK), it died in scoring again:
+four hooks over 7 words in one chunk, one still over after the repair ($0.21 more, nothing
+written; the run folder now holds $1.08). Measured at $0 on the last good scored.json instead:
+the fix recovers 3 of the 4 dropped clips (scores 9, 7, 7); the fourth failed on a weak
+boundary and stays dropped. See the note below.
+
+**Not done / next**
+- Igor's phone check: S04 and S05 with graphics, S01's footnote shot; is the switch natural?
+- The scout's hook rule fails whole chunks: a hook over 7 words after the repair should drop
+  that clip, not the run (a Brief 12 follow-up; three of four scout runs on this episode died
+  this way). Candidates are re-fetched on every scout rerun ($0.02).
+- `stages/report.py` (the normal run report) does not show the fit seconds yet.
+
 ## 2026-10-13 — Brief 12: AI scout (built; real run pending Igor's OK)
 
 **Why:** Igor's second campaign allows the AI to pick the moments (40+ episodes, no moment list,

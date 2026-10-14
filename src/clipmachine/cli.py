@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="command",
         required=True,
         metavar="{run,report,track,safe-zones,campaign,campaign-posted,campaign-reject,scout,"
-        "fetch-face-model}",
+        "fetch-face-model,fetch-text-model}",
     )
 
     run = sub.add_parser(
@@ -144,6 +144,11 @@ def build_parser() -> argparse.ArgumentParser:
         "fetch-face-model",
         help="download the face models still missing: the MediaPipe Face Landmarker into "
         "models/mediapipe/ and the YuNet face detector into models/yunet/ (once)",
+    )
+    sub.add_parser(
+        "fetch-text-model",
+        help="download the PP-OCRv3 text detector into models/textdet/ (once); the "
+        "graphics-aware layout (video.graphics) needs it",
     )
     return parser
 
@@ -289,11 +294,19 @@ def _cmd_campaign_reject(args: argparse.Namespace, root: Path) -> int:
 
 
 def _cmd_fetch_face_model(root: Path) -> int:
-    """The only place the face models are downloaded; the track command never does it.
+    """The only place the face models are downloaded; the track command never does it."""
+    return _fetch_models(root, (faces.LANDMARKER, faces.DETECTOR))
 
-    A file that is already there and has the right hash is left alone; one with the wrong hash is
-    an error."""
-    for spec in (faces.LANDMARKER, faces.DETECTOR):
+
+def _cmd_fetch_text_model(root: Path) -> int:
+    """The only place the text detector is downloaded (Brief 12.1)."""
+    return _fetch_models(root, (faces.TEXT_DETECTOR,))
+
+
+def _fetch_models(root: Path, specs: tuple[faces.ModelSpec, ...]) -> int:
+    """A file that is already there and has the right hash is left alone; one with the wrong
+    hash is an error."""
+    for spec in specs:
         folder = faces.model_dir(root, spec)
         if (folder / spec.name).exists():
             print(f"already present: {faces.ensure_model(folder, spec=spec)}")
@@ -327,6 +340,8 @@ def main(argv: Sequence[str] | None = None, root: Path | None = None) -> int:
             return _cmd_campaign_reject(args, project_root)
         if args.command == "fetch-face-model":
             return _cmd_fetch_face_model(project_root)
+        if args.command == "fetch-text-model":
+            return _cmd_fetch_text_model(project_root)
         return _cmd_report(args)
     except (ConfigError, RunError, MissingToolError, FacesError, MediaError, ClaudeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -68,7 +68,7 @@ def _no_tools_needed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
 def _no_pinned_model_hash(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests write tiny fake model files; the real models' pinned SHA-256 must not apply to them.
     Tests of the hash check pass `expected_sha256` explicitly."""
-    for name in ("LANDMARKER", "DETECTOR"):
+    for name in ("LANDMARKER", "DETECTOR", "TEXT_DETECTOR"):
         spec = getattr(faces, name)
         monkeypatch.setattr(faces, name, dataclasses.replace(spec, sha256=None))
 
@@ -98,6 +98,13 @@ def project(tmp_path: Path) -> Path:
     text = text.replace(
         "    enabled: true            # false = the crop",
         "    enabled: false           # false = the crop",
+        1,
+    )
+    # And the graphics-aware layout (Brief 12.1), which needs the text detector file.
+    assert "    enabled: true            # false = today's output" in text
+    text = text.replace(
+        "    enabled: true            # false = today's output",
+        "    enabled: false           # false = today's output",
         1,
     )
     default_yaml.write_text(text, encoding="utf-8")

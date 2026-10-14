@@ -614,6 +614,33 @@ def test_the_campaign_may_switch_zoom_on(project: Path) -> None:
     assert load(project, zoom_keys(enabled=True)).zoom.enabled
 
 
+# --- video.graphics (Brief 12.1) -----------------------------------------------------------------
+
+
+def graphics_keys(**keys: Any) -> Mutate:
+    def mutate(d: dict[str, Any]) -> None:
+        d.setdefault("video", {})["graphics"] = keys
+
+    return mutate
+
+
+def test_a_campaign_without_graphics_keys_uses_the_app_graphics_exactly(project: Path) -> None:
+    assert load(project).graphics == app_of(project).video.graphics
+    assert load(project, graphics_keys()).graphics == app_of(project).video.graphics
+
+
+def test_one_campaign_graphics_key_overrides_and_the_rest_fall_back(project: Path) -> None:
+    app = app_of(project).video.graphics
+    graphics = load(project, graphics_keys(enabled=True, min_presence=0.5)).graphics
+    assert graphics.enabled and graphics.min_presence == 0.5
+    assert graphics == app.model_copy(update={"enabled": True, "min_presence": 0.5})
+
+
+def test_an_invalid_campaign_graphics_key_is_a_config_error(project: Path) -> None:
+    with pytest.raises(ConfigError, match="graphics"):
+        load(project, graphics_keys(static_ratio=0))
+
+
 def test_a_zoom_that_is_invalid_after_merging_is_a_config_error(project: Path) -> None:
     assert app_of(project).video.zoom.min_gap_s == 4.0
 

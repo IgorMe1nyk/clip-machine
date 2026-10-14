@@ -56,6 +56,16 @@ Without them `run` stops before the first stage with a one-line error. Set `vide
 in `config/default.yaml` for a fixed centre crop, which needs no model files. A run folder keeps
 the crop mode it was started with (`config.resolved.yaml`).
 
+The speaker crop also keeps on-screen graphics whole (`video.graphics`, Brief 12.1): a camera
+shot with a text panel outside the crop window is shown as the whole frame on a blurred fill,
+with the captions below it. That needs one more model file, fetched once:
+
+```powershell
+uv run python -m clipmachine fetch-text-model
+```
+
+Set `video.graphics.enabled: false` to render every shot in the speaker crop as before.
+
 ## Run
 
 Run commands from the repository root (that is where `config/`, `clients/` and `runs/` are found).

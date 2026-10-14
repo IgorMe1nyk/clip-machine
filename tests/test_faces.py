@@ -356,6 +356,26 @@ def test_the_fetch_command_prints_path_size_and_hash_for_each_model(
     assert out.count(f"sha256: {hashlib.sha256(data).hexdigest()}") == 2
 
 
+def test_the_text_model_command_fetches_only_the_text_detector(
+    tmp_path: Path, served: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["fetch-text-model"], root=tmp_path) == 0
+
+    out = capsys.readouterr().out
+    assert served == [faces.TEXT_DETECTOR.url]
+    assert str(tmp_path / "models" / "textdet" / faces.TEXT_DETECTOR.name) in out
+    assert out.count("sha256: ") == 1
+    assert faces.TEXT_DETECTOR.url.startswith("https://")
+    assert "b32d27c8f138ffd625efc52e2d82f8b7d54dabc7" in faces.TEXT_DETECTOR.url  # pinned commit
+
+
+def test_a_missing_text_model_names_its_own_fetch_command(tmp_path: Path) -> None:
+    with pytest.raises(faces.FacesError, match="clipmachine fetch-text-model"):
+        faces.ensure_model(faces.model_dir(tmp_path, faces.TEXT_DETECTOR), spec=faces.TEXT_DETECTOR)
+    with pytest.raises(faces.FacesError, match="clipmachine fetch-face-model"):
+        faces.ensure_model(faces.model_dir(tmp_path, faces.DETECTOR), spec=faces.DETECTOR)
+
+
 def test_the_fetch_command_fetches_only_the_missing_model_and_reports_the_other(
     tmp_path: Path, served: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:

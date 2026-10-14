@@ -38,7 +38,7 @@ from clipmachine.campaign.used import (
     record_render,
     take_closer,
 )
-from clipmachine.models import AppConfig, RenderedOutput
+from clipmachine.models import AppConfig, GraphicsBox, RenderedOutput
 from clipmachine.runs import RunError, write_json_atomic, write_text_atomic
 from clipmachine.stages import render as stage
 from clipmachine.utils import ffmpeg
@@ -146,6 +146,10 @@ class _Work:
     zoom_count: int = 0
     zoom_spans: list[tuple[float, float]] = field(default_factory=list)
     zoom_ramps: list[tuple[float, float]] = field(default_factory=list)
+    # Brief 12.1
+    fit_spans: list[tuple[float, float]] = field(default_factory=list)
+    fit_seconds: float = 0.0
+    static_overlays: list[GraphicsBox] = field(default_factory=list)
 
 
 def _now() -> str:
@@ -229,6 +233,9 @@ def _clip_json(
         zoom_count=work.zoom_count,
         zoom_spans=work.zoom_spans,
         zoom_ramps=work.zoom_ramps,
+        fit_spans=work.fit_spans,
+        fit_seconds=work.fit_seconds,
+        static_overlays=work.static_overlays,
         checks={name: work.checks[name] for name in CHECKS if name in work.checks},
         closer=work.closer,
         hook_mode=ctx.campaign.config.hook.mode,
@@ -355,6 +362,11 @@ def _render_moment(
         work.zoom_count = len(chosen.zooms)
         work.zoom_spans = [(round(z.start, 3), round(z.end, 3)) for z in chosen.zooms]
         work.zoom_ramps = [(round(r.start, 3), round(r.end, 3)) for r in chosen.ramps]
+        if chosen.fit_spans:  # Brief 12.1
+            work.notes.append("graphics_fit")
+        work.fit_spans = list(chosen.fit_spans)
+        work.fit_seconds = stage.fit_seconds(chosen.fit_spans)
+        work.static_overlays = list(chosen.static)
     elif plan.zoom is not None:  # centre-crop mode has no followed face
         work.notes.append("zoom_no_track")
     hook_cfg = campaign.config.hook
@@ -404,17 +416,21 @@ def _render_moment(
     ass = ctx.meta_dir / f"{name}.ass"
     write_text_atomic(ass, captions.text)
     crop = plan.crop if chosen is None else chosen.crop
-    chain = ffmpeg.video_filter(
-        crop,
-        settings.width,
-        settings.height,
-        stage._relative(ctx.run_dir, ass),
-        plan.fonts_rel,
-        None if chosen is None else chosen.sendcmd_rel,
-    )
+    fit = chosen is not None and bool(chosen.fit_spans)  # Brief 12.1: a graph, not a chain
+    if chosen is not None and fit:
+        chain = stage._fit_graph(plan, crop, stage._relative(ctx.run_dir, ass), chosen)
+    else:
+        chain = ffmpeg.video_filter(
+            crop,
+            settings.width,
+            settings.height,
+            stage._relative(ctx.run_dir, ass),
+            plan.fonts_rel,
+            None if chosen is None else chosen.sendcmd_rel,
+        )
     temp = ctx.meta_dir / f"{name}{stage.TEMP_SUFFIX}"
     mp4 = ctx.mp4_path(moment)
-    graph: str | None = None
+    graph: str | None = f"{chain}[v]" if fit else None
     if wm is not None:
         graph = ffmpeg.overlay_graph(
             chain,
@@ -424,13 +440,14 @@ def _render_moment(
             blend=wm.blend,
             frame=(settings.width, settings.height),
         )
-    # no watermark: the plain filter chain and one input; else the overlay graph and the PNG
+    # no watermark: the plain filter chain and one input; else the overlay graph and the PNG;
+    # a fit layout is always a graph (one input without a watermark)
     args = ffmpeg.render_args(
         plan.source,
         temp,
         start=start,
         duration=length,
-        vf=chain if wm is None else None,
+        vf=chain if graph is None else None,
         filter_complex=graph,
         overlay_image=None if wm is None else wm.file,
         crf=settings.crf,

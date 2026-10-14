@@ -180,6 +180,8 @@ def _line(moment_name: str, result: MomentResult, closers: int) -> str:
     zooms = ""
     if clip.settings is not None and clip.settings.zoom_enabled:
         zooms = f", {clip.zoom_count} zooms"
+    if clip.settings is not None and clip.settings.graphics_enabled:  # Brief 12.1
+        zooms += f", fit {clip.fit_seconds:.1f} s, {len(clip.static_overlays)} static overlays"
     closer = "" if result.closer_number is None else f"closer {result.closer_number} of {closers}, "
     return (
         f"{label}: rendered {clip.start:.2f}-{clip.end:.2f} s ({clip.duration:.2f} s), {start}, "
@@ -260,8 +262,15 @@ def run_campaign(
     if app.captions.style != "box_karaoke":
         raise ConfigError("campaign mode needs captions.style: box_karaoke in config/default.yaml")
     campaign = load_campaign(root, slug, app)
-    # the campaign's video.zoom keys win; everything below reads the merged zoom from `app`
-    app = app.model_copy(update={"video": app.video.model_copy(update={"zoom": campaign.zoom})})
+    # the campaign's video.zoom and video.graphics keys win; everything below reads the merged
+    # settings from `app`
+    app = app.model_copy(
+        update={
+            "video": app.video.model_copy(
+                update={"zoom": campaign.zoom, "graphics": campaign.graphics}
+            )
+        }
+    )
     used = load_used(campaign.folder)
     specs = load_moments(campaign)
     all_moments, assignments, assignments_changed = assign_platforms(

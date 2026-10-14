@@ -347,7 +347,9 @@ def _summarise_problem(exc: ValidationError) -> str:
     items = []
     for err in exc.errors()[:MAX_PROBLEM_ITEMS]:
         where = ".".join(str(p) for p in err["loc"]) or "(root)"
-        items.append(f"{where}: {err['type']}")  # the error code, never the offending value
+        # The error code and pydantic's message (our validators' own words); never the
+        # offending value, which pydantic keeps out of `msg`.
+        items.append(f"{where}: {err['type']} ({err['msg']})")
     return "; ".join(items) or "does not match the schema"
 
 

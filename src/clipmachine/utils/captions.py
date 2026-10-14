@@ -483,6 +483,9 @@ def line_k_values(line: KaraokeLine) -> list[int]:
     return values
 
 
+ANCHOR_SLACK_S = 1e-9  # a line starting exactly at a span's edge counts as inside it
+
+
 def place_line(
     line: KaraokeLine, settings: KaraokeSettings, metrics: FontMetrics, safe: Rect
 ) -> LinePlacement:
@@ -566,16 +569,23 @@ def build_karaoke(
     *,
     clip_seconds: float,
     offset_seconds: float = 0.0,
+    anchors: Sequence[tuple[float, float, Rect]] = (),
 ) -> KaraokeResult:
     """Lines, placement and events for a clip's words. Pass the events (plus any extra ones) to
-    `build_ass_v2`. `boxes` are the rectangles to check against the safe area."""
+    `build_ass_v2`. `boxes` are the rectangles to check against the safe area. `anchors` (Brief
+    12.1) are (start, end, rect) spans: a line that starts inside one is placed on that rect
+    instead of `safe` (the fit layout's caption rectangle, below the fitted frame)."""
     built = karaoke_lines(
         words, settings, metrics, clip_seconds=clip_seconds, offset_seconds=offset_seconds
     )
     events: list[AssEvent] = []
     boxes: list[Rect] = []
     for line in built.lines:
-        placement = place_line(line, settings, metrics, safe)
+        rect = next(
+            (r for s, e, r in anchors if s - ANCHOR_SLACK_S <= line.start < e - ANCHOR_SLACK_S),
+            safe,
+        )
+        placement = place_line(line, settings, metrics, rect)
         events.extend(line_events(line, placement, settings, metrics))
         boxes.append(placement.box)
     notes: list[str] = []

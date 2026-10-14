@@ -339,14 +339,15 @@ def _filter_path(path: str, what: str) -> str:
     return path
 
 
-def crop_commands(path: Sequence[tuple[float, int]]) -> str:
+def crop_commands(path: Sequence[tuple[float, int]], target: str = "crop") -> str:
     """The text of a `sendcmd` file that moves the crop: one `<time> crop x <x>;` line for every
     change point after the first (the first x goes into the crop filter itself). Times are
-    seconds from the seek point. Empty when the crop never moves."""
-    return "".join(f"{t:.6f} crop x {x};\n" for t, x in path[1:])
+    seconds from the seek point. Empty when the crop never moves. `target` is the filter the
+    lines address: the class `crop`, or an instance name such as `crop@spk` (Brief 12.1)."""
+    return "".join(f"{t:.6f} {target} x {x};\n" for t, x in path[1:])
 
 
-def crop_box_commands(path: Sequence[tuple[float, CropBox]]) -> str:
+def crop_box_commands(path: Sequence[tuple[float, CropBox]], target: str = "crop") -> str:
     """The text of a `sendcmd` file that moves and resizes the crop (punch-in zooms): one line
     for every change point after the first, like `<time> crop w 964, crop h 1714, crop x 120;`
     with only the fields that changed. Times are seconds from the seek point. Empty when the
@@ -355,13 +356,13 @@ def crop_box_commands(path: Sequence[tuple[float, CropBox]]) -> str:
     The commands of a line run in order and the crop filter checks the window against the frame
     after each one, so the order keeps every in-between state inside the frame: size first
     (w, h, x, y) when the window gets smaller, position first (x, y, w, h) otherwise. A change
-    of x alone is exactly the line `crop_commands` writes."""
+    of x alone is exactly the line `crop_commands` writes. `target` as in crop_commands."""
     lines: list[str] = []
     for (_, before), (t, after) in zip(path, path[1:], strict=False):
         shrinks = after.w < before.w or after.h < before.h
         fields = ("w", "h", "x", "y") if shrinks else ("x", "y", "w", "h")
         changed = [
-            f"crop {name} {getattr(after, name)}"
+            f"{target} {name} {getattr(after, name)}"
             for name in fields
             if getattr(after, name) != getattr(before, name)
         ]
@@ -396,6 +397,57 @@ def video_filter(
     if sendcmd_rel is None:
         return chain
     return f"sendcmd=f={_filter_path(sendcmd_rel, 'crop command file path')},{chain}"
+
+
+# The fit layout (Brief 12.1): pad names of the graph; none may look like an audio pad
+FIT_CROP_INSTANCE = "crop@spk"  # the speaker crop's instance name: the sendcmd lines target it
+
+
+def fit_graph(
+    crop: CropBox,
+    width: int,
+    height: int,
+    subtitles_rel: str,
+    fontsdir_rel: str,
+    sendcmd_rel: str | None,
+    *,
+    frame_w: int,
+    frame_h: int,
+    frame_top: int,
+    spans: Sequence[tuple[float, float]],
+    blur: int,
+    darken: float,
+) -> str:
+    """The filter graph of a clip with fit shots, from `[0:v:0]` to its last filter (no output
+    label: the caller appends `[v]`, or overlay_graph wraps it for a watermark).
+
+    The source is split three ways: the speaker crop as video_filter makes it (the sendcmd lines
+    address the crop by its instance name, so the fill's own crop never receives them), the whole
+    frame scaled to frame_w x frame_h, and the fill (the frame scaled to cover the canvas, cropped,
+    blurred and darkened). The frame sits on the fill at y frame_top; that picture replaces the
+    speaker crop during the spans (seconds from the clip start), and the subtitles are drawn last
+    on whichever is showing. Plain integers and relative paths only.
+    """
+    if not spans:
+        raise MediaError("fit_graph needs at least one span")
+    ass = _filter_path(subtitles_rel, "subtitle file path")
+    fonts = _filter_path(fontsdir_rel, "font folder path")
+    speaker = (
+        f"{FIT_CROP_INSTANCE}={crop.w}:{crop.h}:{crop.x}:{crop.y},scale={width}:{height},setsar=1"
+    )
+    if sendcmd_rel is not None:
+        speaker = f"sendcmd=f={_filter_path(sendcmd_rel, 'crop command file path')},{speaker}"
+    enable = "+".join(f"between(t,{start:.3f},{end:.3f})" for start, end in spans)
+    return (
+        "[0:v:0]split=3[fit_src][fit_frame][fit_fill];"
+        f"[fit_src]{speaker}[fit_spk];"
+        f"[fit_frame]scale={frame_w}:{frame_h},setsar=1[fit_fg];"
+        f"[fit_fill]scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},boxblur={blur},eq=brightness=-{darken:.3f},setsar=1[fit_bg];"
+        f"[fit_bg][fit_fg]overlay=x=0:y={frame_top}[fit_full];"
+        f"[fit_spk][fit_full]overlay=x=0:y=0:enable='{enable}',"
+        f"subtitles=filename={ass}:fontsdir={fonts}"
+    )
 
 
 # TikTok's button column, in pixels on a 1080x1920 canvas: about 300 px wide, from y 840 down
@@ -444,7 +496,8 @@ def overlay_graph(
 ) -> str:
     """The `-filter_complex` text that puts the watermark image on the video.
 
-    `chain` is what video_filter() returns: crop, scale, subtitles. Draw order: video, then the
+    `chain` is what video_filter() returns: crop, scale, subtitles; or what fit_graph() returns,
+    a graph that already starts at `[0:v:0]` (Brief 12.1). Draw order: video, then the
     subtitles (the captions, and the hook on higher ASS layers), then the watermark, so the
     watermark is on top of both. The image stays for the whole clip: there is no `enable=`, and
     `eof_action=repeat` holds its one frame. `size` is the scaled image size, or None to use the
@@ -462,10 +515,11 @@ def overlay_graph(
     else:
         wm, scaled = "[wm]", f"[1:v:0]scale={size[0]}:{size[1]}[wm];"
     place = f"overlay=x={x}:y={y}:eof_action=repeat"
+    base = chain if chain.startswith("[0:v:0]") else f"[0:v:0]{chain}"
     if blend == "normal":
-        return f"[0:v:0]{chain}[base];{scaled}[base]{wm}{place}[v]"
+        return f"{base}[base];{scaled}[base]{wm}{place}[v]"
     return (
-        f"[0:v:0]{chain},format=gbrp[base];"
+        f"{base},format=gbrp[base];"
         f"color=black:s={frame[0]}x{frame[1]}[blk];{scaled}"
         f"[blk]{wm}{place},format=gbrp[mark];"
         "[base][mark]blend=all_mode=screen:shortest=1[v]"
@@ -494,12 +548,12 @@ def render_args(
     cut never clicks. Audio timestamps start at 0 after the input seek, so the fade times are
     seconds from the clip start. With 0, or a clip shorter than two fades, there is no `-af`.
 
-    Exactly one of `vf` and `filter_complex` is given. `filter_complex` (see overlay_graph) goes
-    with `overlay_image`, a PNG that becomes the second input; the output is its `[v]` pad and
-    the source's own audio, `0:a:0`."""
+    Exactly one of `vf` and `filter_complex` is given. `filter_complex` (see overlay_graph and
+    fit_graph) may come with `overlay_image`, a PNG that becomes the second input; the output is
+    its `[v]` pad and the source's own audio, `0:a:0`."""
     if (vf is None) == (filter_complex is None):
         raise MediaError("render_args needs exactly one of vf and filter_complex")
-    if (overlay_image is None) != (filter_complex is None):
+    if overlay_image is not None and filter_complex is None:
         raise MediaError("an overlay image goes with filter_complex, and only with it")
     fade = (
         [

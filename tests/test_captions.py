@@ -336,6 +336,22 @@ def karaoke(
     return build_karaoke(words, settings, metrics, SAFE, clip_seconds=clip, offset_seconds=offset)
 
 
+def test_a_line_starting_inside_an_anchor_span_is_placed_on_that_rect(
+    metrics: FontMetrics,
+) -> None:
+    # Brief 12.1: lines of a fit shot go under the fitted frame, the rest stay on `safe`
+    words = [cw("one", 0.0, 1.0), cw("two", 4.0, 5.0), cw("three", 9.0, 10.0)]
+    higher = Rect(SAFE.x1, SAFE.y1, SAFE.x2, 900.0)
+    result = build_karaoke(
+        words, SETTINGS, metrics, SAFE, clip_seconds=12.0, anchors=[(4.0, 8.0, higher)]
+    )
+    plain = build_karaoke(words, SETTINGS, metrics, SAFE, clip_seconds=12.0)
+    assert len(result.boxes) == len(plain.boxes) == 3
+    assert result.boxes[0] == plain.boxes[0] and result.boxes[2] == plain.boxes[2]
+    assert result.boxes[1].y2 == pytest.approx(900.0 - 12, abs=1)  # the anchor of `higher`
+    assert result.boxes[1].y2 < plain.boxes[1].y2
+
+
 def lines_of(
     metrics: FontMetrics,
     words: list[CaptionWord],

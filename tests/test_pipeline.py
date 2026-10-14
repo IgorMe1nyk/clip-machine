@@ -358,6 +358,31 @@ def test_speaker_with_both_models_present_passes_the_check(
     assert outcome.ok and ran == list(STAGE_NAMES)
 
 
+def test_speaker_with_graphics_on_needs_the_text_model(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    speaker_project(project)
+    edit_yaml(
+        project / "config" / "default.yaml",
+        lambda d: d["video"]["graphics"].update(enabled=True),
+    )
+    track_fakes.write_model(project)
+    ran = record_stages(monkeypatch)
+    media = project / "sample.mp4"
+    media.write_bytes(b"")
+
+    with pytest.raises(
+        FacesError, match=r"clipmachine fetch-text-model.*video\.graphics\.enabled: false"
+    ):
+        start_new_run(project, media, "example-client", TODAY)
+    assert ran == [] and list((project / "runs").iterdir()) == []
+
+    (faces.model_dir(project, faces.TEXT_DETECTOR)).mkdir(parents=True)
+    (faces.model_dir(project, faces.TEXT_DETECTOR) / faces.TEXT_DETECTOR.name).write_bytes(b"t")
+    run_dir = new_run(project)
+    assert run_pipeline(run_dir, project_root=project).ok and ran == list(STAGE_NAMES)
+
+
 def test_center_needs_no_model_files(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ran = record_stages(monkeypatch)
     run_dir = new_run(project)

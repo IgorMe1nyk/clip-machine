@@ -244,6 +244,26 @@ class ZoomConfig(StrictModel):
         return self
 
 
+class GraphicsConfig(StrictModel):
+    """Graphics-aware layout (Brief 12.1): per camera shot, on-screen text graphics outside the
+    speaker crop switch the shot to the fit layout (the whole frame on a blurred fill). Every key
+    has a default and `enabled` defaults to off, so configs and run folders from before this
+    section load unchanged."""
+
+    enabled: bool = False
+    layout: Literal["fit"] = "fit"  # the only layout so far
+    sample_fps: float = Field(default=2, gt=0, le=30)  # frames analysed per second of clip
+    detect_width: int = Field(default=960, ge=64)  # frames are scaled to this width
+    # a shot has graphics when non-static text boxes cover at least min_area_frac of the frame
+    # in at least min_presence of its samples, and any of them reaches outside the crop window
+    min_area_frac: float = Field(default=0.02, gt=0, le=1)
+    min_presence: float = Field(default=0.3, gt=0, le=1)
+    # a box at the same place in this share of the clip's samples is a static overlay (ignored)
+    static_ratio: float = Field(default=0.8, gt=0, le=1)
+    blur: int = Field(default=20, ge=0, le=100)  # boxblur radius of the fill behind the frame
+    darken: float = Field(default=0.35, ge=0, le=1)  # the fill is this much darker
+
+
 class VideoConfig(StrictModel):
     width: int = Field(gt=0)
     height: int = Field(gt=0)
@@ -259,6 +279,7 @@ class VideoConfig(StrictModel):
         return value
 
     zoom: ZoomConfig = Field(default_factory=ZoomConfig)  # added in Brief R2
+    graphics: GraphicsConfig = Field(default_factory=GraphicsConfig)  # Brief 12.1
 
 
 class SpeakerConfig(StrictModel):
@@ -863,6 +884,7 @@ class ScoredSummary(StrictModel):
     trimmed: int
     trims_applied: int = 0  # same number as trimmed
     trims_ignored: int = 0  # outside clip.min_seconds..max_seconds
+    trims_recovered: int = 0  # of those, kept at the candidate's own cut (Brief 12.1)
     trims_out_of_range: int = 0  # sentence numbers outside the candidate
     adjusts_on_weak_boundary: int = 0  # Brief 10: adjustment would start or end at a weak edge
     reject_reasons: dict[str, int]  # the model's reasons only; every reason is present
@@ -962,6 +984,16 @@ class RenderedSettings(StrictModel):
     # added in Brief R2.1; an R2 file (a punch) reads as "" and is stale when zoom is on
     zoom_style: str = ""
     zoom_ramp_s: float = 0.0
+    # added in Brief 12.1 (the graphics-aware fit layout). Old files were rendered without it,
+    # so they are not stale while it is off; turning it on or tuning it re-renders
+    graphics_enabled: bool = False
+    graphics_sample_fps: float = 0.0
+    graphics_detect_width: int = 0
+    graphics_min_area_frac: float = 0.0
+    graphics_min_presence: float = 0.0
+    graphics_static_ratio: float = 0.0
+    graphics_blur: int = 0
+    graphics_darken: float = 0.0
 
 
 class RenderedOutput(StrictModel):
@@ -1010,6 +1042,13 @@ class RenderedClip(StrictModel):
     zoom_spans: list[tuple[float, float]] = []
     # added in Brief R2.1: the ease windows (start, end) actually used; none for a punch
     zoom_ramps: list[tuple[float, float]] = []
+    # added in Brief 12.1: the shots shown whole (seconds from the clip start), their total, the
+    # static overlays the detector learned (positions only), and the hash of the graphics.json
+    # the output was rendered from (None: graphics off)
+    fit_spans: list[tuple[float, float]] = []
+    fit_seconds: float = 0.0
+    static_overlays: list["GraphicsBox"] = []
+    graphics_sha256: str | None = None
 
 
 class TrackSource(StrictModel):
@@ -1099,6 +1138,52 @@ class TrackFile(StrictModel):
     # Every kept face of every sample (also when the track fell back to the centre crop), for
     # overlays that must not cover a face. Numbers only. Empty in files written before schema 4.
     faces: list[TrackFace] = []
+
+
+# --- graphics (Brief 12.1) ----------------------------------------------------------------------
+
+GRAPHICS_SCHEMA_VERSION = 1
+
+
+class GraphicsBox(StrictModel):
+    """A text box as fractions (0..1) of the analysed frame; x2 and y2 are the right and bottom
+    edges. Positions only, never the text."""
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
+class ShotGraphics(StrictModel):
+    """One camera shot's verdict."""
+
+    start: float  # seconds from the clip start, the shot's real boundaries
+    end: float
+    fit: bool  # rendered in the fit layout
+    area: float  # mean share of the frame the non-static text covered, in the samples it was in
+    presence: float  # share of the shot's samples with enough non-static text
+    outside: bool  # one of those samples had a box reaching outside the crop window
+
+
+class GraphicsFile(StrictModel):
+    """The contents of clips/<id>.graphics.json: what the text detector found in a clip and
+    which shots are shown whole. Numbers only."""
+
+    schema_version: int = GRAPHICS_SCHEMA_VERSION
+    clip_id: str
+    clip_start: float
+    clip_end: float
+    source_sha256: str
+    model_sha256: str
+    opencv_version: str | None
+    settings: GraphicsConfig
+    frame: TrackFrame
+    samples: int
+    static: list[GraphicsBox]  # the overlays learned and ignored
+    shots: list[ShotGraphics]
+    fit_spans: list[tuple[float, float]]  # the fit shots, neighbours merged
+    analysis_seconds: float
 
 
 CostStatus = Literal["ok", "refused", "failed", "unconfirmed"]
