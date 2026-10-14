@@ -863,6 +863,7 @@ class ScoredSummary(StrictModel):
     trimmed: int
     trims_applied: int = 0  # same number as trimmed
     trims_ignored: int = 0  # outside clip.min_seconds..max_seconds
+    trims_recovered: int = 0  # of those, kept at the candidate's own cut (Brief 12.1)
     trims_out_of_range: int = 0  # sentence numbers outside the candidate
     adjusts_on_weak_boundary: int = 0  # Brief 10: adjustment would start or end at a weak edge
     reject_reasons: dict[str, int]  # the model's reasons only; every reason is present

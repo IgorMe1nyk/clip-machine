@@ -406,8 +406,11 @@ def select(drafts: list[Draft], min_score: int, keep_top: int) -> Selection:
     no better clip overlaps it by more than half of the shorter one; best score first, ties to the
     earlier candidate; the first keep_top get rank 1..N.
 
-    A clip whose adjustment was ignored is not kept: its score described a clip we did not cut. A
-    low score is reported as min_score first, whatever else is wrong with the clip. Overlap is
+    A clip whose adjustment was ignored for its range or a weak boundary is not kept: its score
+    described a clip we did not cut. One whose adjustment only broke the length limits keeps the
+    candidate's own cut (Brief 12.1: the candidate itself passed every check, and the real run
+    lost its best-scored clips this way). A low score is reported as min_score first, whatever
+    else is wrong with the clip. Overlap is
     judged on the final (adjusted) times, in score order, before the keep_top cut, so a clip
     dropped as an overlap never takes a rank.
     """
@@ -418,7 +421,7 @@ def select(drafts: list[Draft], min_score: int, keep_top: int) -> Selection:
             continue
         if draft.clip.score < min_score:
             dropped[draft.candidate.id] = "min_score"
-        elif draft.adjust.ignored is not None:
+        elif draft.adjust.ignored is not None and draft.adjust.ignored != "length":
             dropped[draft.candidate.id] = "adjust_ignored"
         else:
             eligible.append(draft)
@@ -581,6 +584,10 @@ def _score(ctx: RunContext, run_dir: Path, out_dir: Path) -> None:
             notes.append("overlaps a better clip by more than half of the shorter one")
         elif dropped_by == "top_n":
             notes.append(f"outside the top {app.clip.keep_top}")
+        if clip.verdict == "keep" and draft.adjust.ignored == "length" and dropped_by is None:
+            notes.append(
+                "kept at the candidate's own cut; the model's length adjustment was ignored"
+            )
         scored.append(
             ScoredClip(
                 id=candidate_id,
@@ -631,6 +638,9 @@ def _score(ctx: RunContext, run_dir: Path, out_dir: Path) -> None:
         trimmed=sum(1 for s in scored if s.trimmed),
         trims_applied=sum(1 for d in drafts if d.adjust.trimmed),
         trims_ignored=sum(1 for d in drafts if d.adjust.ignored == "length"),
+        trims_recovered=sum(
+            1 for d in drafts if d.adjust.ignored == "length" and d.candidate.id in selection.ranks
+        ),
         trims_out_of_range=sum(1 for d in drafts if d.adjust.ignored == "range"),
         adjusts_on_weak_boundary=sum(1 for d in drafts if d.adjust.ignored == "boundary"),
         reject_reasons=reasons,
@@ -669,6 +679,6 @@ def _score(ctx: RunContext, run_dir: Path, out_dir: Path) -> None:
         f"score: {summary.kept} kept of {summary.candidates} ({summary.rejected} rejected, "
         f"{ours} dropped by our rules ({summary.dropped_overlap} overlaps), "
         f"{summary.trims_applied} trims applied, {summary.extensions_applied} extended, "
-        f"{ignored} ignored); "
+        f"{ignored} ignored, {summary.trims_recovered} recovered at their own cut); "
         f"cost ${summary.actual_usd:.4f}"
     )

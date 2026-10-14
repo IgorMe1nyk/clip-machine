@@ -841,8 +841,9 @@ def test_an_extension_over_the_maximum_is_ignored_and_recorded(rig: Rig) -> None
     (only,) = out.clips
     assert (only.start, only.end) == (26.9, 62.9) and only.extended_start == 0
     assert any("ignored: 98.9 s is over the 90 s maximum" in n for n in only.notes)
-    assert only.dropped_by == "adjust_ignored" and only.kept is False
-    assert (out.summary.trims_ignored, out.summary.adjust_ignored) == (1, 1)
+    assert only.dropped_by is None and only.kept is True  # Brief 12.1: kept at its own cut
+    assert (out.summary.trims_ignored, out.summary.adjust_ignored) == (1, 0)
+    assert out.summary.trims_recovered == 1
 
 
 def test_a_trim_under_the_minimum_length_is_ignored_with_a_note(rig: Rig) -> None:
@@ -1033,19 +1034,36 @@ def test_untrimmed_clips_carry_the_cut_and_no_kept_sentences(rig: Rig) -> None:
     assert (only.start_boundary, only.end_boundary) == ("start", ".")
 
 
-def test_a_kept_clip_whose_trim_was_ignored_for_length_is_not_kept(rig: Rig) -> None:
+def test_a_kept_clip_whose_trim_was_ignored_for_length_keeps_its_own_cut(rig: Rig) -> None:
+    # Brief 12.1: the candidate itself passed every check, so an adjustment that only broke the
+    # length limits does not cost the clip; the real run lost its best-scored clips this way.
     rig.candidates((2, 6))
     rig.script(answer(batch(clip("c01", score=9, keep=(2, 3)))))  # 18.0 s: under the minimum
     out = rig.run()
     (only,) = out.clips
     assert only.verdict == "keep" and only.reject_reason is None  # the model's words are kept
-    assert only.dropped_by == "adjust_ignored"
-    assert only.kept is False and only.rank is None and only.trimmed is False
-    assert any("adjustment was ignored, so its score does not describe" in n for n in only.notes)
-    assert out.summary.kept == 0 and out.summary.adjust_ignored == 1
+    assert only.dropped_by is None and only.kept is True and only.rank == 1
+    assert only.trimmed is False and only.kept_sentences is None
+    assert (only.start, only.end) == (only.candidate_start, only.candidate_end)
+    assert any("ignored: 18.0 s is under the 20 s minimum" in n for n in only.notes)
+    assert (
+        "kept at the candidate's own cut; the model's length adjustment was ignored" in only.notes
+    )
+    assert out.summary.kept == 1 and out.summary.adjust_ignored == 0
     assert out.summary.dropped_trim_ignored == 0
     assert (out.summary.trims_ignored, out.summary.trims_out_of_range) == (1, 0)
-    assert out.warnings == ["c01: kept by the model but its adjustment was ignored: not kept"]
+    assert out.summary.trims_recovered == 1
+    assert out.warnings == []
+
+
+def test_a_recovered_clip_still_loses_to_a_low_score_or_the_top_n(rig: Rig) -> None:
+    rig.candidates((2, 6), (7, 10))  # no overlap between them
+    rig.script(answer(batch(clip("c01", score=9, keep=(2, 3)), clip("c02", score=8, keep=(2, 3)))))
+    out = rig.run(keep_top=1)
+    one, two = out.clips
+    assert one.kept is True and one.rank == 1
+    assert two.kept is False and two.dropped_by == "top_n"  # not adjust_ignored
+    assert (out.summary.trims_ignored, out.summary.trims_recovered) == (2, 1)
 
 
 def test_a_kept_clip_whose_trim_was_out_of_range_is_not_kept(rig: Rig) -> None:
@@ -1077,10 +1095,18 @@ def test_a_rejected_clip_with_an_ignored_trim_is_just_rejected(rig: Rig) -> None
 def test_selection_does_not_rank_a_clip_with_an_ignored_adjustment() -> None:
     good = draft(0, 7)
     bad = draft(1, 9)
-    bad.adjust = Adjust(0, 1, False, "note", ignored="length")
+    bad.adjust = Adjust(0, 1, False, "note", ignored="range")
     selection = select([good, bad], min_score=6, keep_top=8)
     assert selection.ranks == {"c01": 1}
     assert selection.dropped == {"c02": "adjust_ignored"}
+
+
+def test_selection_ranks_a_clip_whose_adjustment_was_ignored_for_length() -> None:
+    good = draft(0, 7)
+    long = draft(1, 9)
+    long.adjust = Adjust(10.0, 19.0, False, "note", ignored="length")  # its own window
+    selection = select([good, long], min_score=6, keep_top=8)
+    assert selection.ranks == {"c02": 1, "c01": 2} and selection.dropped == {}
 
 
 # --- overlap rule --------------------------------------------------------------------------------
