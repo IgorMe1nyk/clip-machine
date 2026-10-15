@@ -9,12 +9,20 @@ from pathlib import Path
 
 from clipmachine import tracking
 from clipmachine.campaign.assign import ASSIGNMENTS_FILE, assigned_platform
+from clipmachine.campaign.init import run_init
 from clipmachine.campaign.loader import campaign_dir
 from clipmachine.campaign.models import PLATFORMS
+from clipmachine.campaign.produce import run_produce
 from clipmachine.campaign.run import run_campaign
+from clipmachine.campaign.schedule import (
+    load_schedule,
+    rebuild_plans,
+    report_backups,
+    run_plan,
+)
 from clipmachine.campaign.scout import reject_moment, run_scout
 from clipmachine.campaign.used import USED_FILE, load_used, mark_posted, relabel_posted, save_used
-from clipmachine.config import ConfigError, load_resolved_file
+from clipmachine.config import ConfigError, load_app_config, load_resolved_file
 from clipmachine.pipeline import (
     RESOLVED_CONFIG,
     STAGE_NAMES,
@@ -44,8 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{run,report,track,safe-zones,campaign,campaign-posted,campaign-reject,scout,"
-        "fetch-face-model,fetch-text-model}",
+        metavar="{run,report,track,safe-zones,campaign-init,produce,campaign,campaign-posted,"
+        "campaign-reject,scout,plan,fetch-face-model,fetch-text-model}",
     )
 
     run = sub.add_parser(
@@ -101,6 +109,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="render moments that are already marked as posted again",
     )
 
+    init = sub.add_parser(
+        "campaign-init",
+        help="draft campaigns/<name>/campaign.yaml from the campaign's brief with one model call "
+        "(Brief 12.2); review every line before the first run",
+    )
+    init.add_argument("slug", metavar="<name>", help="the new folder name under campaigns/")
+    init.add_argument(
+        "--brief", required=True, type=Path, help="the brief as .txt, .md or .pdf (text only)"
+    )
+    init.add_argument("--watermark", type=Path, help="the campaign's watermark PNG, if required")
+    init.add_argument(
+        "--moments", type=Path, help="a text list of timestamped moments the campaign supplied"
+    )
+    init.add_argument(
+        "--force", action="store_true", help="replace an existing file (the old one goes to .bak)"
+    )
+
+    produce = sub.add_parser(
+        "produce",
+        help="one command per episode (Brief 12.2): scout it when campaign.yaml says "
+        "selection: ai, render this episode's unposted moments into the campaign folder, and "
+        "rebuild the report and the posting plan; posted and rejected moments are left alone",
+    )
+    produce.add_argument("episode", metavar="<source-video | run-folder>")
+    produce.add_argument("--campaign", required=True, help="the folder name under campaigns/")
+    produce.add_argument(
+        "--rerender",
+        action="store_true",
+        help="render again the clips whose moments.yaml entry did not change (kept by default)",
+    )
+
     posted = sub.add_parser(
         "campaign-posted",
         help="mark a campaign moment as posted, so it is not reused by accident",
@@ -145,6 +184,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rejected.add_argument("--campaign", required=True, help="the folder name under campaigns/")
     rejected.add_argument("--id", required=True, help="the moment id, e.g. S03")
+
+    sub.add_parser(
+        "plan",
+        help="rebuild the combined posting plan runs/_campaigns/posting_plan.csv from every "
+        "campaign, as campaigns/schedule.yaml says (Brief 12.2)",
+    )
 
     sub.add_parser(
         "fetch-face-model",
@@ -270,6 +315,7 @@ def _cmd_campaign_posted(args: argparse.Namespace, root: Path) -> int:
         if before.platform != after.platform:
             save_used(folder, log)
             print(f"{args.id}: posted entry relabelled {before.platform} -> {after.platform}")
+            _replan(root)
         else:
             print(f"{args.id}: posted entry is already {after.platform}")
         return EXIT_OK
@@ -286,7 +332,20 @@ def _cmd_campaign_posted(args: argparse.Namespace, root: Path) -> int:
         save_used(folder, log)
     state = "marked as posted" if changed else "already marked as posted"
     print(f"{args.id} {platform}: {state}")
+    if changed:
+        _replan(root)
     return EXIT_OK
+
+
+def _replan(root: Path) -> None:
+    """Brief 12.2: with a campaigns/schedule.yaml, the combined plan follows used.json."""
+    if load_schedule(root) is None:
+        return
+    result = rebuild_plans(root, load_app_config(root), now=datetime.now())
+    if result is not None:
+        path, backups = result
+        report_backups(backups)
+        print(f"posting plan: {path}")
 
 
 def _cmd_campaign_reject(args: argparse.Namespace, root: Path) -> int:
@@ -338,6 +397,19 @@ def main(argv: Sequence[str] | None = None, root: Path | None = None) -> int:
             return _cmd_safe_zones(args, project_root)
         if args.command == "campaign":
             return _cmd_campaign(args, project_root)
+        if args.command == "campaign-init":
+            return run_init(
+                project_root,
+                args.slug,
+                brief=args.brief,
+                watermark=args.watermark,
+                moments=args.moments,
+                force=args.force,
+            )
+        if args.command == "produce":
+            return run_produce(
+                project_root, Path(args.episode), args.campaign, rerender=args.rerender
+            )
         if args.command == "campaign-posted":
             return _cmd_campaign_posted(args, project_root)
         if args.command == "scout":
@@ -350,6 +422,8 @@ def main(argv: Sequence[str] | None = None, root: Path | None = None) -> int:
             )
         if args.command == "campaign-reject":
             return _cmd_campaign_reject(args, project_root)
+        if args.command == "plan":
+            return run_plan(project_root)
         if args.command == "fetch-face-model":
             return _cmd_fetch_face_model(project_root)
         if args.command == "fetch-text-model":

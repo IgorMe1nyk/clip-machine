@@ -853,6 +853,16 @@ def test_only_selects_the_named_moments(rig: Rig) -> None:
     assert (rig.mp4("A02_instagram")).is_file() and (rig.mp4("A03_youtube")).is_file()
 
 
+def test_only_keeps_the_source_column_of_the_other_unposted_rows(rig: Rig) -> None:
+    three(rig)
+    assert rig.go() == 0
+    assert rig.go("--only", "A02") == 0  # Brief 12.2: A01 and A03 keep their source name
+    text = (rig.out / "posting_plan.csv").read_text(encoding="utf-8")
+    rows = list(csv.DictReader(text.splitlines()))
+    assert sorted(r["id"] for r in rows) == ["A01", "A02", "A03"]
+    assert len({r["source"] for r in rows}) == 1 and rows[0]["source"]
+
+
 def test_an_unknown_id_in_only_is_exit_2(rig: Rig, capsys: pytest.CaptureFixture[str]) -> None:
     assert rig.go("--only", "Z9") == 2
     assert "no moment with id Z9" in capsys.readouterr().err
@@ -1663,3 +1673,62 @@ def test_an_unsupported_source_type_is_refused(
     rig.moments(moment(id="A01", start="0:24", end="0:58", source="notes.txt"))
     assert rig.go() == 2
     assert "moment A01: source: unsupported input type" in capsys.readouterr().err
+
+
+# --- Brief 12.2: a clip whose entry did not change is kept by `produce` ------------------------
+
+
+def pass_again(rig: Rig) -> dict[str, int]:
+    from clipmachine.campaign.run import open_campaign, render_moments
+
+    opened = open_campaign(rig.project, "demo", quiet=True)
+    outcome = render_moments(
+        rig.project, opened, opened.moments, rig.run_dir, force_reuse=False, skip_unchanged=True
+    )
+    return outcome.counts
+
+
+def test_an_unchanged_moment_is_kept_and_a_changed_one_is_rendered_again(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    three(rig)
+    assert rig.go() == 0
+    assert all(e.spec_sha256 for e in rig.used().entries)
+    calls = len(rig.fake.calls)
+
+    counts = pass_again(rig)
+    assert counts["unchanged"] == 3 and counts["rendered"] == 0
+    assert len(rig.fake.calls) == calls
+    assert "A01 tiktok: unchanged since the last render, kept" in out_of(capsys)
+
+    rig.moments(
+        moment(id="A01", start="0:24", end="0:58", platform="tiktok", hook="ANOTHER HOOK"),
+        moment(id="A02", start="0:12", end="0:40", platform="instagram", caption="a second one."),
+        moment(id="A03", start="0:34", end="1:04", platform="youtube", caption="a third one."),
+    )
+    counts = pass_again(rig)
+    assert counts["rendered"] == 2 and counts["unchanged"] == 1  # the hook and the start changed
+    assert len(rig.fake.calls) == calls + 2
+
+
+def test_a_missing_file_or_an_entry_from_before_12_2_is_rendered_again(rig: Rig) -> None:
+    three(rig)
+    assert rig.go() == 0
+    rig.mp4("A01_tiktok").unlink()
+    data = json.loads((rig.folder / USED_FILE).read_text(encoding="utf-8"))
+    for entry in data["entries"]:
+        if entry["id"] == "A02":
+            del entry["spec_sha256"]  # a used.json written before Brief 12.2
+    (rig.folder / USED_FILE).write_text(json.dumps(data), encoding="utf-8")
+
+    counts = pass_again(rig)
+    assert counts["rendered"] == 2 and counts["unchanged"] == 1
+    assert rig.mp4("A01_tiktok").is_file()
+
+
+def test_a_posted_moment_is_refused_not_kept_as_unchanged(rig: Rig) -> None:
+    three(rig)
+    assert rig.go() == 0
+    assert cli.main(["campaign-posted", "--campaign", "demo", "--id", "A02"], root=rig.project) == 0
+    counts = pass_again(rig)
+    assert counts == {"rendered": 0, "failed": 0, "refused": 1, "rejected": 0, "unchanged": 2}

@@ -21,7 +21,13 @@ def test_gitignore_keeps_only_the_example_campaign() -> None:
 
 
 def test_the_example_campaign_has_its_files() -> None:
-    for name in ("README.md", "campaign.yaml", "moments.yaml", "assets/watermark.png"):
+    for name in (
+        "README.md",
+        "campaign.yaml",
+        "moments.yaml",
+        "schedule.yaml",
+        "assets/watermark.png",
+    ):
         assert (EXAMPLE / name).is_file(), name
 
 

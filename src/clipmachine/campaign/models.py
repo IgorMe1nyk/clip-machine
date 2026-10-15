@@ -1,5 +1,6 @@
 """The campaign's files as models (Brief 11): campaign.yaml and one entry of moments.yaml."""
 
+import hashlib
 import math
 import re
 from typing import Any, Literal
@@ -75,8 +76,9 @@ class WatermarkPosition(StrictModel):
 class WatermarkConfig(StrictModel):
     file: str
     # where the centre of the visible content goes; "auto" (Brief 11.1) lets the tool choose by
-    # face overlap and background darkness, once per campaign (auto_position.json)
-    position: WatermarkPosition | Literal["auto"]
+    # face overlap and background darkness, once per campaign (auto_position.json); the default
+    # since Brief 12.2
+    position: WatermarkPosition | Literal["auto"] = "auto"
     scale: float = Field(default=1.0, gt=0, le=10)  # uniform only
     blend: Literal["normal", "screen"] = "normal"
 
@@ -266,15 +268,7 @@ class CampaignConfig(StrictModel):
     @field_validator("posting_times")
     @classmethod
     def _posting_times(cls, value: list[str]) -> list[str]:
-        times = [t.strip() for t in value]
-        if not times:
-            raise ValueError("at least one posting time is needed")
-        for text in times:
-            if not _CLOCK_RE.fullmatch(text):
-                raise ValueError(f'bad posting time {text!r}: use 24-hour "HH:MM" in quotes')
-        if len(set(times)) != len(times):
-            raise ValueError("a posting time is listed twice")
-        return times
+        return validate_posting_times(value)
 
     @model_validator(mode="after")
     def _unique_spelling(self) -> "CampaignConfig":
@@ -444,6 +438,60 @@ class AutoSpelling(StrictModel):
     variants: list[AutoVariant]
 
 
+def validate_posting_times(value: list[str]) -> list[str]:
+    """Non-empty, 24-hour "HH:MM", no repeats (campaign.yaml and schedule.yaml). Returned
+    zero-padded and in clock order, so "9:00" sorts and compares before "12:30"."""
+    times = []
+    for raw in value:
+        text = raw.strip()
+        match = _CLOCK_RE.fullmatch(text)
+        if match is None:
+            raise ValueError(f'bad posting time {text!r}: use 24-hour "HH:MM" in quotes')
+        times.append(f"{int(match.group(1)):02d}:{match.group(2)}")
+    if not times:
+        raise ValueError("at least one posting time is needed")
+    if len(set(times)) != len(times):
+        raise ValueError("a posting time is listed twice")
+    return sorted(times)
+
+
+class PriorityEntry(StrictModel):
+    """One campaign in schedule.yaml's priority list (Brief 12.2)."""
+
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,40}$")
+    max_per_day: int | None = Field(default=None, ge=1)  # of a platform's slots a day; None: all
+
+
+class ScheduleConfig(StrictModel):
+    """campaigns/schedule.yaml (Brief 12.2): one plan across every campaign."""
+
+    posting_times: list[str]
+    max_per_platform_per_day: int | None = Field(default=None, ge=1)  # None: len(posting_times)
+    priority: list[PriorityEntry] = Field(default_factory=list)
+
+    @field_validator("posting_times")
+    @classmethod
+    def _times(cls, value: list[str]) -> list[str]:
+        return validate_posting_times(value)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "ScheduleConfig":
+        cap = self.max_per_platform_per_day
+        if cap is not None and cap > len(self.posting_times):
+            raise ValueError(
+                f"max_per_platform_per_day {cap} is more than the {len(self.posting_times)} "
+                "posting times"
+            )
+        slugs = [p.slug for p in self.priority]
+        if len(set(slugs)) != len(slugs):
+            raise ValueError("priority lists a campaign twice")
+        return self
+
+    @property
+    def per_day(self) -> int:
+        return self.max_per_platform_per_day or len(self.posting_times)
+
+
 class UsedEntry(StrictModel):
     """One rendered moment in used.json. Holds times and a path, never transcript text."""
 
@@ -458,6 +506,27 @@ class UsedEntry(StrictModel):
     source_sha256: str
     source_name: str | None = None  # the source video's file name as fetched (Brief 12)
     posted_at: str | None = None  # set by campaign-posted; a render is not a post
+    # Brief 12.2: moment_fingerprint() of the entry as it was in moments.yaml when rendered, so
+    # `produce` can skip a clip whose entry did not change; None in files from before 12.2
+    spec_sha256: str | None = None
+
+
+SEPARATOR = chr(31)  # the ASCII unit separator, never in a hook or caption (clean_word)
+
+
+def moment_fingerprint(moment: Moment, source_sha256: str) -> str:
+    """A hash of what decides a render: id, platform, start, end (or auto), hook, caption and the
+    source video. Only the hash is stored, never the text (Brief 12.2)."""
+    parts = [
+        moment.id,
+        moment.platform,
+        repr(moment.start),
+        "auto" if moment.end is None else repr(moment.end),
+        moment.hook,
+        moment.caption,
+        source_sha256,
+    ]
+    return hashlib.sha256(SEPARATOR.join(parts).encode("utf-8")).hexdigest()
 
 
 class CloserState(StrictModel):

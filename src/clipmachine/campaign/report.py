@@ -436,6 +436,7 @@ def write_report(
         for p in out_dir.iterdir()
         if p.is_file()
         and p.name not in (REPORT_HTML, PLAN_FILE)
+        and not p.name.startswith("posting_plan")  # the pre-12.2 backup (Brief 12.2)
         and p.suffix in (".mp4", ".txt", ".json", ".ass", ".cmd")
     )
     path = out_dir / REPORT_HTML

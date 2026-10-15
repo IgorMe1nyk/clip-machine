@@ -2,6 +2,84 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-14 — Brief 12.2, parts 10 and 11: the allocator fix, the data-loss fix, first real runs
+
+**Part 10** (`d979f3d`): posts already made on a day use up that platform's slots and the
+campaign's `max_per_day` for that day; the free slots left take the day's latest times.
+
+**Part 11** (`81c0c33`): a campaign that does not load during a combined-plan rebuild no longer
+loses its rows. Before, the rebuild rewrote `posting_plan.csv` from the campaigns that loaded
+only, so one broken file dropped another campaign's rows, typed result columns included, for
+good. Now its rows are kept exactly as they are, its unposted rows hold their slots (no other
+campaign is given them), its view is left alone and the warning says so. A broken campaign in
+the `priority` list no longer fails the whole rebuild; a moments.yaml that is not UTF-8 is a
+warning too; plan times saved as "17:30" or "5:30PM" are read. Three tests (the new ones fail
+on the old code); a fresh-context review of the diff found no row loss, and two of its points
+were fixed before the commit.
+
+**Checks at 81c0c33:** ruff, format, mypy, pip-audit (no known vulnerabilities), pytest (2257
+passed, 3 skipped), each run separately, all exit 0.
+
+**Real runs** (one campaign with `selection: ai`):
+
+| Run | Source | API cost | Result |
+|---|---|---|---|
+| `produce`, episode 1 | 102 min | $0.0917, 14 calls | 6 clips (instagram 6) of 21 candidates; transcribe 393 s on the GPU; render 372 s |
+| `produce`, episode 2 | 229 min | $0.0981, 25 calls | 0 clips: 22 of 23 rejected by the scorer, 1 dropped (adjustment ignored) |
+| `produce`, episode 3 | 250 min | $0 | refused at fetch: over `fetch.max_duration_minutes` (240) |
+| `campaign-init` on a real brief | 5 KB text | $0.0198, 1 call | about 14 s; `selection: human`; 6 `# confirm:` notes |
+
+- After each `produce` the combined plan was compared against a copy: posted rows and result
+  columns unchanged, only the new rows added. Deleting a test campaign and rebuilding left the
+  combined plan and both views byte-identical.
+- The first `produce` on a new episode re-renders nothing from other episodes: only that
+  episode's moments are rendered, so the fingerprint re-render of older clips happens on their
+  own episode's next run.
+- An episode whose scout proposes nothing leaves no scout.json record, so `produce` on it again
+  scouts and pays again.
+- The `campaign-init` draft against the hand-written campaign.yaml: platforms, prefixes, clip
+  length, caption style and hook limit identical; differs in `selection` (human against ai),
+  `hook.mode` (full against intro), `scout.per_episode` (8 against 15), topic keys, and names
+  that include handles.
+
+## 2026-10-14 — Brief 12.2: one-command campaigns and one posting plan across campaigns (built; real run pending Igor's OK)
+
+**Built** on branch `brief-12-2-one-command` (D-034, D-035), eight commits, no real campaign
+data touched:
+
+- `campaign-init <slug> --brief <file>`: the brief (.txt/.md/.pdf; pypdf text extraction only,
+  10 MB and 50 pages at most, encrypted or malformed files refused cleanly) is cleaned, cut at
+  60k characters, fenced between `<brief>` tags and treated as data; one Sonnet call with an
+  API-enforced draft schema and one repair; the draft is validated as a CampaignConfig and
+  written under a DRAFT header with the model's reasons and `# confirm:` notes as comments.
+  `selection` falls back to `human`. `--watermark` needs a real PNG under 5 MB; `--moments`
+  drafts moments.yaml from a timestamped list with no model call. Costs land in
+  `runs/_campaigns/<slug>/_init/costs.json`.
+- `produce <episode> --campaign <slug>`: scout once per episode where allowed, render this
+  episode's unposted moments, keep unchanged clips (fingerprint in used.json; the first `produce`
+  after this change re-renders every unposted clip once, since older entries have none),
+  rebuild report and plan, print the new clips' slots and the cost. A sourceless moment rendered
+  from another episode is refused, not guessed.
+- `campaigns/schedule.yaml` and `runs/_campaigns/posting_plan.csv`: the combined plan (strict
+  priority, per-campaign `max_per_day`, `max_per_platform_per_day`, no slot whose time has
+  passed today). First build: per-campaign plans backed up to `posting_plan.pre-12-2.bak` and
+  their result columns carried over; per-campaign plans are read-only views from then on.
+  `plan` rebuilds; `campaign`, `produce`, `campaign-posted` and `--fix-platform` rebuild too.
+- Refactor: `run_campaign` is now `open_campaign` → `render_moments` → `finalize`; the
+  `campaign --only` source-column bug is fixed; `watermark.position` defaults to `auto`.
+- Docs: `docs/RUNBOOK.md`, the example README (5 steps, combined plan), the example
+  `schedule.yaml`, COSTS row for pypdf.
+
+**Checks:** ruff, format, mypy, pytest (2251 passed, 3 skipped), pip-audit, each run separately
+and green at every commit. A fresh-context security and reliability review of the full diff
+followed (see the session report).
+
+**Pending (Igor):** write the real `campaigns/schedule.yaml` (first campaign `max_per_day: 3`,
+then the second; 4 times a day), rehearse the migration on a copy under `runs/_scratch/`, then
+`plan`; `campaign-init` on the second campaign's saved brief (compare with the hand-written
+YAML); `produce` on one new episode.
+
+
 ## 2026-10-14 — Scout robustness, the recovered clips, and the 1440p switch of the ai campaign
 
 **Scout robustness** (branch `scout-robustness`, merged into main): a hook still over 7 words

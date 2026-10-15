@@ -69,6 +69,7 @@ Column key:
 | Python 3.11 | Language | Free [fact] | PSF license, commercial OK [fact] | n/a | — | $0 |
 | uv | Virtual env, lock file, installs | Free [fact] | MIT or Apache-2.0 [fact] | n/a | pip + pip-tools | $0 |
 | pydantic, PyYAML | Data models, config | Free [fact] | MIT [fact] | n/a | — | $0 |
+| pypdf | campaign-init: the text of a PDF campaign brief (extraction only, Brief 12.2) | Free [fact] | BSD-3-Clause [fact] | n/a | save the brief as .txt | $0 |
 | ruff, mypy, pytest, pip-audit | Lint, types, tests, audit | Free [fact] | MIT (pip-audit: Apache-2.0) [fact] | n/a | — | $0 |
 | Git + GitHub Free | Version control, portfolio | Unlimited public and private repos. Actions: free on public repos; 2,000 min/mo on private (Linux $0.006/min after that). [fact] | Service terms | Private CI over 2,000 min/mo gets billed; we're nowhere near it [estimate] | Public repo | $0 |
 

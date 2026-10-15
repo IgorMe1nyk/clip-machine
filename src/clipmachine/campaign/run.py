@@ -14,8 +14,9 @@ campaign live together in `runs/_campaigns/<slug>/` (Igor, 2026-10-13).
 import dataclasses
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -24,7 +25,7 @@ from clipmachine import pipeline
 from clipmachine.campaign.assign import ASSIGNMENTS_FILE, assign_platforms, count_by_platform
 from clipmachine.campaign.autoposition import choose_position, describe
 from clipmachine.campaign.loader import Campaign, load_campaign, load_moments, select_moments
-from clipmachine.campaign.models import Moment, SpellingRule
+from clipmachine.campaign.models import CampaignConfig, Moment, SpellingRule, UsedLog
 from clipmachine.campaign.names import (
     AUTO_SPELLING_FILE,
     Variant,
@@ -32,10 +33,11 @@ from clipmachine.campaign.names import (
     find_variants,
     record,
 )
-from clipmachine.campaign.plan import write_posting_plan
+from clipmachine.campaign.plan import PLAN_FILE, write_posting_plan
 from clipmachine.campaign.post import keep_words
 from clipmachine.campaign.render import META_DIR, MomentContext, MomentResult, render_moment
 from clipmachine.campaign.report import write_report
+from clipmachine.campaign.schedule import PlanInput, rebuild_plans, report_backups
 from clipmachine.campaign.scoutlog import latest_records, load_scout_file
 from clipmachine.campaign.used import load_used, save_used
 from clipmachine.config import ConfigError, load_app_config
@@ -167,6 +169,8 @@ def _line(moment_name: str, result: MomentResult, closers: int) -> str:
         return f"{label}: refused: already posted (use --force-reuse to render it again)"
     if result.outcome == "rejected":
         return f"{label}: skipped: rejected with campaign-reject"
+    if result.outcome == "unchanged":
+        return f"{label}: unchanged since the last render, kept (--rerender to redo it)"
     if result.outcome == "failed":
         return f"{label}: FAILED: {result.reason}"
     clip = result.clip
@@ -253,11 +257,38 @@ def _prepare_source(
     return _Source(run_dir, ctx, variants, auto, covered, {v.text: [] for v in variants})
 
 
-def run_campaign(
-    root: Path, target: Path, slug: str, *, only: str | None, force_reuse: bool
-) -> int:
-    """The exit code: 1 when a moment failed or one named in `only` was refused, else 0."""
-    root = root.resolve()
+@dataclass
+class OpenCampaign:
+    """What every campaign command starts from (Brief 12.2): the merged app config, the campaign,
+    its used log and every moment with its platform decided."""
+
+    app: AppConfig
+    campaign: Campaign
+    used: UsedLog
+    moments: list[Moment]
+
+    @property
+    def cfg(self) -> CampaignConfig:
+        return self.campaign.config
+
+
+@dataclass
+class RenderOutcome:
+    """What a render pass did, for the summary, the report and the plans."""
+
+    counts: dict[str, int]
+    used: UsedLog
+    campaign: Campaign  # with the watermark position chosen, when it was auto
+    sources: list[_Source]
+    source_names: dict[str, str]
+    rendered: list[Moment]  # rendered this time, in order
+    refused_named: bool
+    seconds: float
+
+
+def open_campaign(root: Path, slug: str, *, quiet: bool = False) -> OpenCampaign:
+    """Load the app config and the campaign, decide every moment's platform (locking new
+    assignments) and print the platform shares unless `quiet`."""
     app = load_app_config(root)  # the current config, not the run's resolved copy
     if app.captions.style != "box_karaoke":
         raise ConfigError("campaign mode needs captions.style: box_karaoke in config/default.yaml")
@@ -278,12 +309,29 @@ def run_campaign(
     )
     if assignments_changed:
         write_json_atomic(campaign.folder / ASSIGNMENTS_FILE, assignments.model_dump(mode="json"))
-    counts_by = count_by_platform(all_moments, campaign.config.platforms)
-    shares = ", ".join(f"{platform} {n}" for platform, n in counts_by.items())
-    new = sum(1 for s in specs if s.platform == "auto")
-    print(f"platforms: {shares} ({new} auto; locked in {ASSIGNMENTS_FILE})")
-    moments = select_moments(all_moments, only)
-    groups = group_by_source(root, moments, target)
+    if not quiet:
+        counts_by = count_by_platform(all_moments, campaign.config.platforms)
+        shares = ", ".join(f"{platform} {n}" for platform, n in counts_by.items())
+        new = sum(1 for s in specs if s.platform == "auto")
+        print(f"platforms: {shares} ({new} auto; locked in {ASSIGNMENTS_FILE})")
+    return OpenCampaign(app, campaign, used, all_moments)
+
+
+def render_moments(
+    root: Path,
+    opened: OpenCampaign,
+    moments: Sequence[Moment],
+    target: Path,
+    *,
+    force_reuse: bool,
+    skip_unchanged: bool = False,
+    wanted: frozenset[str] = frozenset(),
+) -> RenderOutcome:
+    """Render `moments` (grouped by source; a moment without `source:` uses `target`) into the
+    campaign folder, saving used.json after every render. No API call is made. `wanted` names
+    the ids Igor asked for by name, so a refused one is reported."""
+    app, campaign, used = opened.app, opened.campaign, opened.used
+    groups = group_by_source(root, list(moments), target)
     if len(groups) > 1:
         print(f"sources: {len(groups)} videos")
     for warning in campaign.warnings:
@@ -302,17 +350,17 @@ def run_campaign(
     pipeline.check_ffmpeg()
     started = time.perf_counter()
     cfg = campaign.config
-    out_dir = campaign_out_dir(root, slug)
+    out_dir = campaign_out_dir(root, campaign.slug)
     (out_dir / META_DIR).mkdir(parents=True, exist_ok=True)
     for platform in cfg.platforms:
         (out_dir / platform).mkdir(exist_ok=True)
 
     closers = len(cfg.post.closers)
-    wanted = {part.strip() for part in only.split(",")} if only else set()
-    counts = {"rendered": 0, "failed": 0, "refused": 0, "rejected": 0}
+    counts = {"rendered": 0, "failed": 0, "refused": 0, "rejected": 0, "unchanged": 0}
     refused_named = False
     sources: list[_Source] = []
     source_names: dict[str, str] = {}
+    rendered: list[Moment] = []
     with claude.no_api():
         ledger = root / claude.LEDGER_PATH
         ledger_before = _size(ledger)
@@ -330,10 +378,13 @@ def run_campaign(
             ctx = dataclasses.replace(ctx, campaign=campaign)
             for moment in group:
                 source_names[moment.id] = ctx.source_name
-                result = render_moment(ctx, moment, used, force_reuse=force_reuse)
+                result = render_moment(
+                    ctx, moment, used, force_reuse=force_reuse, skip_unchanged=skip_unchanged
+                )
                 used = result.used
                 counts[result.outcome] += 1
                 if result.outcome == "rendered":
+                    rendered.append(moment)
                     save_used(campaign.folder, used)
                     for text, times in (result.variant_times or {}).items():
                         current.heard[text].extend((moment.clip_name, t) for t in times)
@@ -348,6 +399,19 @@ def run_campaign(
             raise RunError("campaign mode made an API call; this must never happen")
 
     seconds = time.perf_counter() - started
+    return RenderOutcome(
+        counts, used, campaign, sources, source_names, rendered, refused_named, seconds
+    )
+
+
+def finalize(
+    root: Path, opened: OpenCampaign, outcome: RenderOutcome, *, now: datetime
+) -> tuple[Path, Path]:
+    """After a render pass: the names scan, the summary line, the report and the posting plan(s).
+    Returns (report path, plan path: the combined plan when campaigns/schedule.yaml exists)."""
+    app, campaign, cfg = opened.app, outcome.campaign, opened.cfg
+    counts, sources = outcome.counts, outcome.sources
+    out_dir = campaign_out_dir(root, campaign.slug)
     auto_spelling = None
     if cfg.names and sources:
         # the names scan is recorded for the first source (the one on the command line)
@@ -370,25 +434,47 @@ def run_campaign(
             f"{len(first.covered)} already in spelling; see {AUTO_SPELLING_FILE} and the report"
         )
     rejected = f", {counts['rejected']} rejected" if counts["rejected"] else ""
+    unchanged = f", {counts['unchanged']} unchanged" if counts["unchanged"] else ""
     print(
         f"campaign: {counts['rendered']} rendered, {counts['failed']} failed, "
-        f"{counts['refused']} refused{rejected}; API calls: 0; {seconds:.1f} s"
+        f"{counts['refused']} refused{rejected}{unchanged}; API calls: 0; {outcome.seconds:.1f} s"
     )
     print(f"output: {out_dir}")
     run_names = ", ".join(dict.fromkeys(s.run_dir.name for s in sources))
     scouted = latest_records(load_scout_file(campaign.folder))
     report = write_report(
-        out_dir, campaign, all_moments, run_names, auto=auto_spelling, scout=scouted
+        out_dir, campaign, opened.moments, run_names, auto=auto_spelling, scout=scouted
     )
     print(f"report: {report}")
+    current = PlanInput(campaign.slug, cfg, list(opened.moments), outcome.used, out_dir)
+    combined = rebuild_plans(root, app, now=now, current=current)
+    if combined is not None:
+        plan_path, backups = combined
+        report_backups(backups)
+        print(f"posting plan: {plan_path} (this campaign's view: {out_dir / PLAN_FILE})")
+        return report, plan_path
     plan_path = write_posting_plan(
         out_dir,
         cfg,
-        all_moments,
-        used,
+        opened.moments,
+        outcome.used,
         root=root,
-        today=date.today(),
-        sources=source_names,
+        today=now.date(),
+        sources=outcome.source_names,
     )
     print(f"posting plan: {plan_path}")
-    return EXIT_MOMENT_FAILED if counts["failed"] or refused_named else EXIT_OK
+    return report, plan_path
+
+
+def run_campaign(
+    root: Path, target: Path, slug: str, *, only: str | None, force_reuse: bool
+) -> int:
+    """The exit code: 1 when a moment failed or one named in `only` was refused, else 0."""
+    root = root.resolve()
+    opened = open_campaign(root, slug)
+    moments = select_moments(opened.moments, only)
+    wanted = frozenset(part.strip() for part in only.split(",")) if only else frozenset()
+    outcome = render_moments(root, opened, moments, target, force_reuse=force_reuse, wanted=wanted)
+    finalize(root, opened, outcome, now=datetime.now())
+    failed = outcome.counts["failed"] or outcome.refused_named
+    return EXIT_MOMENT_FAILED if failed else EXIT_OK

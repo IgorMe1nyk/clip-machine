@@ -176,7 +176,7 @@ def _same_file(a: Path, b: Path) -> bool:
     return os.path.normcase(str(a.resolve())) == os.path.normcase(str(b.resolve()))
 
 
-def _source_matches(root: Path, source: str | None, episode: Path) -> bool:
+def source_matches(root: Path, source: str | None, episode: Path) -> bool:
     """A moments.yaml `source:` (or None, the default source) counts as this episode when it is
     this file; the default always counts, so a list without sources is never duplicated."""
     if source is None:
@@ -200,9 +200,9 @@ def taken_stretches(
     taken = [
         (s.start, s.end if s.end is not None else s.start + auto_end)
         for s in specs
-        if _source_matches(root, s.source, episode)
+        if source_matches(root, s.source, episode)
     ]
-    taken.extend((r.start, r.end) for r in rejected if _source_matches(root, r.source, episode))
+    taken.extend((r.start, r.end) for r in rejected if source_matches(root, r.source, episode))
     taken.extend((a, b) for sha, a, b in rendered if sha == source_sha256)
     return taken
 
@@ -318,12 +318,37 @@ def _source_label(root: Path, episode: Path, run_dir: Path) -> str:
 # --- the command ---------------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class ScoutOutcome:
+    """What one scout pass did (Brief 12.2: `produce` reads it)."""
+
+    proposed: int
+    cost_usd: float
+    calls: int
+    source_sha256: str
+
+
+def already_scouted(folder: Path, source_sha256: str) -> int:
+    """How many proposals scout.json holds for this source (Brief 12.2: `produce` never pays for
+    the same episode twice)."""
+    records = load_scout_file(folder).records
+    return sum(1 for r in records if r.source_sha256 == source_sha256)
+
+
 def run_scout(
     root: Path, episode: Path, slug: str, *, dry_run: bool = False, reuse_scored: bool = False
 ) -> int:
     """`reuse_scored`: no API call; the kept list comes from the episode's scored.json of this
     campaign (or the copy kept from the last run that finished), so a run that died after the
     scoring, or a moments.yaml that lost entries, is rebuilt for free."""
+    scout_episode(root, episode, slug, dry_run=dry_run, reuse_scored=reuse_scored)
+    return EXIT_OK
+
+
+def scout_episode(
+    root: Path, episode: Path, slug: str, *, dry_run: bool = False, reuse_scored: bool = False
+) -> ScoutOutcome:
+    """The scout pass itself; see run_scout. Prints what it did and returns the counts."""
     root = root.resolve()
     app = load_app_config(root)
     campaign = load_campaign(root, slug, app)
@@ -481,7 +506,7 @@ def run_scout(
             "next: uv run python -m clipmachine campaign "
             f"{episode} --campaign {slug} --only {','.join(p.id for p in proposals)}"
         )
-    return EXIT_OK
+    return ScoutOutcome(len(proposals), cost, calls, meta.sha256)
 
 
 def _last_scored(out_dir: Path) -> ScoredFile:

@@ -187,7 +187,7 @@ def test_count_by_platform_keeps_the_list_order_and_zeroes() -> None:
 
 def test_campaign_yaml_validates_the_new_lists() -> None:
     assert cfg().posting_times == ["12:30", "15:30", "18:30"]
-    assert cfg(posting_times=["9:00", "23:59"]).posting_times == ["9:00", "23:59"]
+    assert cfg(posting_times=["9:00", "23:59"]).posting_times == ["09:00", "23:59"]  # padded
     for bad in ([], ["tiktok", "tiktok"], ["myspace"]):
         with pytest.raises(ValueError, match="platform"):
             cfg(platforms=bad)

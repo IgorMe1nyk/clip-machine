@@ -108,12 +108,18 @@ class Campaign:
         return self.watermark
 
 
-def campaign_dir(root: Path, slug: str) -> Path:
+def check_slug(slug: str) -> None:
+    """A campaign name must be safe as a folder name (Brief 12.2: campaign-init checks it before
+    the folder exists)."""
     if not SLUG_RE.fullmatch(slug):
         raise ConfigError(
             f"invalid campaign name {slug!r}: use lowercase letters, digits and '-', "
             "starting with a letter or digit (a leading '_' is allowed), at most 41 characters"
         )
+
+
+def campaign_dir(root: Path, slug: str) -> Path:
+    check_slug(slug)
     folder = root / "campaigns" / slug
     if not folder.is_dir():
         raise ConfigError(f"unknown campaign {slug!r}: no folder {folder}")
