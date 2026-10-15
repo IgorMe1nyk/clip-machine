@@ -2,6 +2,24 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-15 — Igor's hooks rendered; N3on's last clips rejected
+
+- **N3on:** the 5 unposted clips (C02, C04, C05, C08, C13) are rejected (budget nearly gone);
+  their files are kept. No N3on clip is left in the plan or in the Oct 16-22 sheets.
+- **Hooks:** Igor's hooks went into `campaigns/solved/moments.yaml` for S33, S40, S41, S46, S48,
+  S49, S57, S59, S60, S69 and S80 (backup `moments.yaml.bak`; the older .bak was copied to
+  `runs/_scratch/`). **S61 is rejected:** the clip says the top value is what you'd give up
+  everything else for, not what you want most. It never brings up "need", so the proposed hook
+  isn't its idea.
+- **Renders:** `produce` on the five episodes with `CLIPMACHINE_NO_API=1`: every episode was
+  already scouted, $0, 0 API calls. 11 rendered, 0 failed; every other clip was kept unchanged.
+- **S76:** the YouTube title is "The friend who called me out", set by hand in
+  `runs/_campaigns/solved/youtube/S76.txt`. A re-render of S76 would reset it from the hook.
+- **Pinned comments:** written for the 11 clips and appended to `pinned_comments_batch-a.md`
+  (rules checked by a script; 5 of 11 end with a new follow line). S80 is scheduled for Oct 23.
+- **Plan** rebuilt (instagram 33, youtube 29 scheduled); Oct 16-22 sheets regenerated, 8 a day.
+  No code changed, so the checks were not re-run.
+
 ## 2026-10-15 — Day run: the Oct 15 swap, Batch A fixes, re-renders
 
 **Oct 15 swap (fixed first):** it had not been applied. `used.json` still had C02, C04, C05,
