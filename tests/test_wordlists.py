@@ -206,3 +206,23 @@ def test_the_committed_lists_load_and_do_not_contradict_each_other() -> None:
     assert [h.kind for h in sensitive_hits("line of coke", lists)] == ["context"]
     masked, _ = mask_text("cocaine and coke", lists)
     assert masked == "c*** and c***"
+
+
+def test_self_harm_is_flagged_not_masked() -> None:
+    # Masked, "self -harm" showed as "s*** -h***", which reads like a swear word in a caption.
+    lists = load_wordlists(REPO_ROOT)
+    words = [
+        CaptionWord("of", 0.0, 0.2),
+        CaptionWord("self", 0.2, 0.5),
+        CaptionWord("-harm", 0.5, 0.9),
+    ]
+    masked, hits = mask_words(words, lists)
+    assert [w.text for w in masked] == ["of", "self", "-harm"]
+    assert hits == []
+    assert mask_text("an act of self harm", lists) == ("an act of self harm", [])
+    assert [(h.word, h.kind) for h in sensitive_hits("an act of self harm", lists)] == [
+        ("self harm", "flag")
+    ]
+    assert [h.word for h in sensitive_hits("no self-harming", lists)] == ["self-harming"]
+    # flag-only, so it no longer makes a context word next to it masked
+    assert mask_text("self harm and cutting", lists)[0] == "self harm and cutting"

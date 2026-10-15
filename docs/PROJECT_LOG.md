@@ -2,6 +2,15 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-14 — Word lists: "self harm" is flagged, no longer masked (Igor's request)
+
+A deviation from Brief 11.1 (Tier 1 lists self-harm as masked), asked for by Igor on 2026-10-14.
+Whisper writes "self-harm" as the caption words "self" and "-harm", so the mask showed
+"s*** -h***", which reads like a swear word in a clip that has none. "self harm" and "self-harm"
+moved to flag.txt: a warning in the report for hooks and post captions, never masked. Side
+effect: "cutting" next to it is now flagged only, not masked. Test:
+`test_self_harm_is_flagged_not_masked`.
+
 ## 2026-10-14 — Brief 12.2, parts 10 and 11: the allocator fix, the data-loss fix, first real runs
 
 **Part 10** (`d979f3d`): posts already made on a day use up that platform's slots and the

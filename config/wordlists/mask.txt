@@ -67,7 +67,6 @@ kill myself
 kill yourself
 kys
 overdose
-self harm
 context: cutting
 
 # Slurs (racial, ethnic, homophobic, transphobic, ableist): always masked and flagged

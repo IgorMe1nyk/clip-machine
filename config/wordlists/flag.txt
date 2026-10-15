@@ -39,3 +39,7 @@ scam
 fraud
 stolen
 robbery
+
+# Self-harm, flagged only: masked, it showed as s*** -h***, which reads like a swear word
+self harm
+self-harm

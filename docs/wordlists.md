@@ -15,7 +15,7 @@ porn, porno, pornhub, onlyfans, sex, sexual, sexy, nude, nudes, naked, horny, or
 cocaine, coke (see note), crack (see note), meth, heroin, fentanyl, molly, ecstasy, lsd, ketamine, xanax, percocet, oxy, lean, shrooms
 
 ### Self-harm
-suicide, suicidal, "kill myself", "kill yourself", kys, overdose, "self harm", cutting (see note)
+suicide, suicidal, "kill myself", "kill yourself", kys, overdose, cutting (see note)
 
 ### Slurs
 Always masked AND flagged. Claude Code fills this list from the slurs the platforms' hate-speech policies name (racial, ethnic, homophobic, transphobic, ableist). It's kept in the file only, never printed in chat, logs or commits messages.
@@ -26,11 +26,12 @@ These have normal meanings in sports and podcast talk, so masking them would wre
 - **Gambling:** gambling, casino, stake, betting, bet, slots, roulette
 - **Alcohol/weed:** weed, drunk, high, alcohol, vodka, blunt
 - **Crime:** scam, fraud, stolen, robbery
+- **Self-harm:** "self harm", self-harm (not masked: masking showed it as s\*\*\* -h\*\*\*, which reads like a swear word)
 
 ## Tier 3: NEVER touch (normal language)
 death, dead, died, die, jail, prison, arrested, fake, faked, hell, damn, crap, sucks, ass (as in "kick ass" / "my ass" stays; only "asshole" is masked)
 
 ## Notes
-- **coke / crack / cutting** have innocent meanings (Coca-Cola, "crack a joke", "cutting the clip"). They're masked only when next to drug or harm words (e.g. "line of coke", "smoking crack"). Otherwise they're flagged.
+- **coke / crack / cutting** have innocent meanings (Coca-Cola, "crack a joke", "cutting the clip"). They're masked only when next to drug or harm words (e.g. "line of coke", "smoking crack"). Otherwise they're flagged. "self harm" is flag-only now, so it no longer makes "cutting" masked.
 - **Per campaign:** `allowed:` (e.g. a show called "High Stakes") and `extra_masked:` in campaign.yaml.
 - The **audio is never changed.** Campaigns require the original podcast audio, so a spoken swear stays audible; only the text is masked.
