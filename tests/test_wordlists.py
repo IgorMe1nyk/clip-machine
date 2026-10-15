@@ -228,6 +228,23 @@ def test_self_harm_is_flagged_not_masked() -> None:
     assert mask_text("self harm and cutting", lists)[0] == "self harm and cutting"
 
 
+def test_sex_sexual_and_sexy_are_flagged_not_masked() -> None:
+    # Masked, they showed as "s***", which reads like a swear word in a clean clip (S45, S66)
+    lists = load_wordlists(REPO_ROOT)
+    words = [CaptionWord("so", 0.0, 0.2), CaptionWord("sexy,", 0.2, 0.5)]
+    masked, hits = mask_words(words, lists)
+    assert [w.text for w in masked] == ["so", "sexy,"]
+    assert hits == []
+    text = "sex and sexual tension, so sexy"
+    assert mask_text(text, lists) == (text, [])
+    assert [(h.word, h.kind) for h in sensitive_hits(text, lists)] == [
+        ("sex", "flag"),
+        ("sexual", "flag"),
+        ("sexy", "flag"),
+    ]
+    assert mask_text("the porn site", lists)[0] == "the p*** site"  # the rest still masked
+
+
 def test_only_fans_as_two_words_is_masked_like_onlyfans() -> None:
     lists = load_wordlists(REPO_ROOT)
     assert mask_text("the onlyfans girls", lists)[0] == "the o*** girls"

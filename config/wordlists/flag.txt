@@ -43,3 +43,8 @@ robbery
 # Self-harm, flagged only: masked, it showed as s*** -h***, which reads like a swear word
 self harm
 self-harm
+
+# Sexual words, flagged only: masked, "sexy" showed as s***, which reads like a swear word
+sex
+sexual
+sexy

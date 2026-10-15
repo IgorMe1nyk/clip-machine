@@ -9,7 +9,7 @@ Inflections are matched too: -s, -es, -ed, -ing, -er, -ers, -in.
 fuck, motherfucker, shit, bullshit, bitch, asshole, dick, pussy, cunt, bastard, cock, dickhead, prick, whore, slut, hoe, thot
 
 ### Sexual / adult
-porn, porno, pornhub, onlyfans, "only fans", sex, sexual, sexy, nude, nudes, naked, horny, orgasm, blowjob, hooker, stripper, escort
+porn, porno, pornhub, onlyfans, "only fans", nude, nudes, naked, horny, orgasm, blowjob, hooker, stripper, escort
 
 ### Hard drugs
 cocaine, coke (see note), crack (see note), meth, heroin, fentanyl, molly, ecstasy, lsd, ketamine, xanax, percocet, oxy, lean, shrooms
@@ -27,6 +27,7 @@ These have normal meanings in sports and podcast talk, so masking them would wre
 - **Alcohol/weed:** weed, drunk, high, alcohol, vodka, blunt
 - **Crime:** scam, fraud, stolen, robbery
 - **Self-harm:** "self harm", self-harm (not masked: masking showed it as s\*\*\* -h\*\*\*, which reads like a swear word)
+- **Sexual:** sex, sexual, sexy (not masked: masking showed them as s\*\*\*, which reads like a swear word)
 
 ## Tier 3: NEVER touch (normal language)
 death, dead, died, die, jail, prison, arrested, fake, faked, hell, damn, crap, sucks, ass (as in "kick ass" / "my ass" stays; only "asshole" is masked)
