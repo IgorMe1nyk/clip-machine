@@ -126,20 +126,12 @@ def score_block(scout: ScoutConfig, max_chars: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def scout_check(topics: Sequence[str], max_chars: int) -> Callable[[ScoreBatch], str | None]:
+def scout_check(topics: Sequence[str]) -> Callable[[ScoreBatch], str | None]:
     """A check for call_structured, run with the id check: every kept clip has a valid topic (when
-    the campaign has topics), a hook of at most MAX_HOOK_WORDS words and `max_chars` characters,
-    and a caption. The message names ids and rules only, never the model's text.
-
-    The hook rule asks for one repair and no more: the second answer for the same clips is taken
-    even with a long hook (the scout then leaves that hook empty with a note, see run_scout), so
-    one stubborn hook never fails the run. Topic and caption stay strict."""
-    hooks_asked: set[frozenset[str]] = set()
+    the campaign has topics) and a caption. The message names ids and rules only, never the
+    model's text."""
 
     def check(batch: ScoreBatch) -> str | None:
-        ids = frozenset(clip.id for clip in batch.clips)
-        hooks_strict = ids not in hooks_asked
-        hooks_asked.add(ids)
         problems: list[str] = []
         for clip in batch.clips:
             if clip.verdict != "keep":
@@ -147,15 +139,33 @@ def scout_check(topics: Sequence[str], max_chars: int) -> Callable[[ScoreBatch],
             faults: list[str] = []
             if topics and clip.topic not in topics:
                 faults.append("topic must be one of " + ", ".join(topics))
-            hook = " ".join(clip.hook_line.split())
-            if hooks_strict and (len(hook.split()) > MAX_HOOK_WORDS or len(hook) > max_chars):
-                faults.append(
-                    f"hook_line must be at most {MAX_HOOK_WORDS} words and {max_chars} characters"
-                )
             if not (clip.caption or "").strip():
                 faults.append("caption is missing")
             if faults:
                 problems.append(f"clip {clip.id}: " + "; ".join(faults))
+        return "; ".join(problems) if problems else None
+
+    return check
+
+
+def hook_check(max_chars: int) -> Callable[[ScoreBatch], str | None]:
+    """The soft check for call_structured: every kept clip's hook is at most MAX_HOOK_WORDS words
+    and `max_chars` characters. It asks for a repair while one is left and never fails the call,
+    whichever answer broke which rule: a hook still too long is left empty with a note (see
+    scout_episode), so one stubborn hook never fails the run (Batch A lost two tries when the
+    first answer failed the schema and the repair was then judged strictly on its hooks)."""
+
+    def check(batch: ScoreBatch) -> str | None:
+        problems: list[str] = []
+        for clip in batch.clips:
+            hook = " ".join(clip.hook_line.split())
+            if clip.verdict == "keep" and (
+                len(hook.split()) > MAX_HOOK_WORDS or len(hook) > max_chars
+            ):
+                problems.append(
+                    f"clip {clip.id}: hook_line must be at most {MAX_HOOK_WORDS} words and "
+                    f"{max_chars} characters"
+                )
         return "; ".join(problems) if problems else None
 
     return check
@@ -391,7 +401,8 @@ def scout_episode(
             dataclasses.replace(
                 ctx,
                 scout_block=score_block(scout, limit),
-                extra_check=scout_check(list(scout.topics), limit),
+                extra_check=scout_check(list(scout.topics)),
+                soft_check=hook_check(limit),
             )
         )
         found = CandidatesFile.model_validate_json(

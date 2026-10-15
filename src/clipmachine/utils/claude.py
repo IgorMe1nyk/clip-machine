@@ -507,6 +507,7 @@ class ClaudeClient:
         thinking: str | None = None,
         effort: str | None = None,
         check: Callable[[T], str | None] | None = None,
+        soft_check: Callable[[T], str | None] | None = None,
         repairs: int = 1,
     ) -> tuple[T, CostRecord]:
         """Ask for JSON matching `schema`; return it parsed, plus the record of the call.
@@ -517,7 +518,9 @@ class ClaudeClient:
 
         `check` sees the parsed answer and returns None when it is fine, or a one-line problem.
         The problem is sent to the model and logged, so it must never contain the model's own
-        text or any transcript text.
+        text or any transcript text. `soft_check` works the same way for a rule worth a repair
+        but never a failure: its problem asks for the repair while one is left, and the last
+        answer is taken whatever it says (the caller deals with what still breaks the rule).
         """
         if repairs not in (0, 1):
             raise ValueError("repairs must be 0 or 1")
@@ -529,10 +532,12 @@ class ClaudeClient:
                 label, model, system, prompt, schema, max_tokens, thinking, effort
             )
             parsed, problem = self._parse(schema, text, record.stop_reason)
-            if parsed is not None and check is not None:
-                found = check(parsed)
+            if parsed is not None:
+                last = round_number == repairs
+                checks = (check, None if last else soft_check)
+                found = [p for p in (c(parsed) for c in checks if c is not None) if p]
                 if found:
-                    parsed, problem = None, found
+                    parsed, problem = None, "; ".join(found)
             if parsed is not None:
                 return parsed, record
             log.info(f"claude: {label} gave an invalid answer ({problem})")

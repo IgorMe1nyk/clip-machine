@@ -523,6 +523,7 @@ def _score(ctx: RunContext, run_dir: Path, out_dir: Path) -> None:
             thinking=cfg.thinking,
             effort=cfg.effort,
             check=both_checks(ids_problem([item.candidate.id for item in group]), ctx.extra_check),
+            soft_check=ctx.soft_check,
             repairs=cfg.repair_attempts,
         )
         for clip in batch.clips:

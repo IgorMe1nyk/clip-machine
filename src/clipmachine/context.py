@@ -26,6 +26,9 @@ class RunContext:
     # Brief 12 (scout): one more check of the scorer's answer, run with the id check; a message
     # sends the answer back for a repair, like the id check does
     extra_check: Callable[[ScoreBatch], str | None] | None = None
+    # the scout's hook length: worth one repair, never a failed stage (call_structured's
+    # soft_check); the scout keeps a clip whose hook is still too long, with an empty hook
+    soft_check: Callable[[ScoreBatch], str | None] | None = None
 
     @property
     def stage_dir(self) -> Path:

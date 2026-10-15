@@ -618,6 +618,22 @@ def test_check_failing_twice_raises_and_books_both(rig: Rig) -> None:
     assert rig.costs().totals.calls == 2
 
 
+def test_a_soft_check_asks_for_the_repair_but_never_fails_the_call(rig: Rig) -> None:
+    fake = rig.script([answer(), answer()])
+    parsed, record = rig.call(soft_check=lambda parsed: "hook too long")
+    assert parsed.moments and record.purpose.endswith(":repair")  # the repair's answer, taken
+    assert "hook too long" in fake.create_calls[1]["messages"][0]["content"]
+    # the first answer fails the schema: the repair is the last answer and is taken as it is
+    fake = rig.script([answer("not json"), answer()])
+    parsed, _ = rig.call(soft_check=lambda parsed: "hook too long")
+    assert parsed.moments and len(fake.create_calls) == 2
+    # a strict problem still fails, and the soft one rides along in the repair
+    fake = rig.script([answer(), answer()])
+    with pytest.raises(InvalidModelOutput, match="still invalid after one retry: bad ids$"):
+        rig.call(check=lambda parsed: "bad ids", soft_check=lambda parsed: "hook too long")
+    assert "bad ids; hook too long" in fake.create_calls[1]["messages"][0]["content"]
+
+
 def test_check_that_passes_costs_no_extra_call(rig: Rig) -> None:
     fake = rig.script([answer()])
     rig.call(check=lambda parsed: None)

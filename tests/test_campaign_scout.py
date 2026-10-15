@@ -15,6 +15,7 @@ from clipmachine import cli
 from clipmachine.campaign.models import ScoutFile, UsedEntry, UsedLog
 from clipmachine.campaign.scout import (
     format_entries,
+    hook_check,
     next_ids,
     overlaps,
     score_block,
@@ -340,25 +341,28 @@ def test_a_render_of_another_source_does_not_block(rig: Rig) -> None:
 
 
 def test_scout_check_names_the_rules_and_the_ids_only() -> None:
-    check = scout_check(["a", "b"], 30)
+    check = scout_check(["a", "b"])
     good = ScoreBatch.model_validate({"clips": [clip("c01", topic="a")]})
-    assert check(good) is None
+    assert check(good) is None and hook_check(30)(good) is None
     bad = ScoreBatch.model_validate(
         {
             "clips": [
                 clip("c01", topic="zzz", hook="one two three four five six seven eight"),
                 clip("c02", topic="a", caption=None),
                 clip("c03", topic="zzz", verdict="reject"),  # rejected clips are not checked
+                clip("c04", topic="a", hook="x" * 31),
             ]
         }
     )
     message = check(bad) or ""
-    assert "clip c01: topic must be one of a, b; hook_line must be at most 7 words" in message
+    assert "clip c01: topic must be one of a, b" in message and "hook" not in message
     assert "clip c02: caption is missing" in message and "c03" not in message
     assert "zzz" not in message and "eight" not in message
-    assert (
-        scout_check([], 30)(ScoreBatch.model_validate({"clips": [clip("c01", topic=None)]})) is None
-    )
+    hooks = hook_check(30)(bad) or ""
+    assert "clip c01: hook_line must be at most 7 words and 30 characters" in hooks
+    assert "clip c04: hook_line" in hooks and "c02" not in hooks and "c03" not in hooks
+    assert "eight" not in hooks and "xxx" not in hooks
+    assert scout_check([])(ScoreBatch.model_validate({"clips": [clip("c01", topic=None)]})) is None
 
 
 def test_a_bad_topic_is_repaired_once_and_a_second_bad_answer_stops_scout(
@@ -405,6 +409,25 @@ def test_a_hook_still_too_long_after_the_repair_keeps_the_clip_with_an_empty_hoo
     assert records[0].notes == ["hook_too_long"] and records[1].notes == []
     console = out_of(capsys)
     assert "1 proposed without a hook" in console and long_hook not in console
+
+
+def test_a_long_hook_in_the_repair_of_an_invalid_answer_never_fails_the_run(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # found in Batch A: the first answer failed the schema, so the hook rule had not asked for
+    # its repair yet, and the repair's long hook then failed the whole run (Dating, Romantic Love)
+    long_hook = "one two three four five six seven eight"
+    rig.script(
+        answer(THREE),
+        answer("not json"),
+        answer(judged(clip("c01", hook=long_hook), clip("c02"), clip("c03"))),  # the repair
+    )
+    assert rig.scout() == 0
+    assert len(rig.messages.create_calls) == 3  # no third scoring call
+    assert rig.ids() == ["S01", "S02", "S03"]
+    assert "hook: ''" in rig.moments_text() and long_hook not in rig.moments_text()
+    assert rig.records().records[0].notes == ["hook_too_long"]
+    assert "1 proposed without a hook" in out_of(capsys)
 
 
 def test_reuse_scored_rebuilds_the_proposals_without_an_api_call(
