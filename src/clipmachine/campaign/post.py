@@ -6,7 +6,7 @@ TikTok and Instagram:
     <closer>
 
 YouTube:
-    TITLE: <the hook in sentence case, at most TITLE_MAX characters>   (masked)
+    TITLE: <the hook in sentence case without its masked words, at most TITLE_MAX characters>
     <blank line>
     <youtube prefix> <caption>              (masked)
     <hashtags>                              (only when the campaign has some)
@@ -21,13 +21,16 @@ all-capitals hook does not lose them. Pure functions; nothing here prints.
 from collections.abc import Iterable, Sequence
 
 from clipmachine.campaign.models import CampaignConfig, Moment
-from clipmachine.utils.wordlists import Hit, WordLists, mask_text
+from clipmachine.utils.wordlists import Hit, WordLists, mask_text, mask_texts
 
 TITLE_MAX = 100  # YouTube's title limit
 TITLE_PREFIX = "TITLE: "
 _ELLIPSIS = "..."
 _SENTENCE_END = ".?!"
 _CLOSING = "\"')]”’"
+_DETERMINERS = frozenset(
+    ("a", "an", "the", "my", "your", "his", "her", "its", "our", "their", "this", "that")
+)
 
 
 def _core(word: str) -> tuple[str, str, str]:
@@ -128,6 +131,37 @@ def youtube_title(hook: str, keep: Sequence[str]) -> str:
     return shorten(sentence_case(hook, keep))
 
 
+def without_masked(text: str, lists: WordLists) -> str:
+    """`text` without the words the lists would mask (Igor, 2026-10-15: a title reads better
+    without the swear than with "a***"). The sentences that hold one are left out ("Too much
+    honesty? You're just an asshole" -> "Too much honesty?"); when every sentence holds one, the
+    words are, with a determiner just before one ("called out my bullshit" -> "called out") and a
+    sentence end after one staying on the word before. Spaces between words become one."""
+    words = text.split()
+    masked, _ = mask_texts(words, lists)
+    if masked == words:
+        return " ".join(words)
+    sentences: list[list[int]] = [[]]
+    for i, word in enumerate(words):
+        sentences[-1].append(i)
+        if _ends_sentence(_core(word)) and i < len(words) - 1:
+            sentences.append([])
+    clean = [i for s in sentences if all(words[i] == masked[i] for i in s) for i in s]
+    if clean:
+        return " ".join(words[i] for i in clean)
+    kept: list[str] = []
+    for word, after in zip(words, masked, strict=True):
+        if word == after:
+            kept.append(word)
+            continue
+        while kept and not _core(kept[-1])[2] and _core(kept[-1])[1].lower() in _DETERMINERS:
+            kept.pop()
+        end = "".join(c for c in _core(word)[2] if c in _SENTENCE_END)
+        if end and kept and not _core(kept[-1])[2]:
+            kept[-1] += end
+    return " ".join(kept)
+
+
 def post_text(
     cfg: CampaignConfig,
     moment: Moment,
@@ -144,7 +178,9 @@ def post_text(
     hits: list[Hit] = []
     lines: list[str] = []
     if moment.platform == "youtube":
-        title = youtube_title(moment.hook, keep)
+        clean = without_masked(moment.hook, lists) if lists is not None else ""
+        # a hook that is nothing but masked words keeps them, masked
+        title = youtube_title(clean or moment.hook, keep)
         if lists is not None:
             title, title_hits = mask_text(title, lists)
             hits.extend(title_hits)

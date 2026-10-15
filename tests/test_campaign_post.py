@@ -13,6 +13,7 @@ from clipmachine.campaign.post import (
     post_text,
     sentence_case,
     shorten,
+    without_masked,
     youtube_title,
 )
 from clipmachine.utils.wordlists import load_wordlists
@@ -140,13 +141,16 @@ def test_the_title_prefix_and_caption_are_masked_but_not_the_closer(project: Pat
         lists,
     )
     assert lines(text) == [
-        "TITLE: Why b*** matters",
+        "TITLE: Why matters",  # a title leaves the masked word out (see below)
         "",
         "@demo-show says b***.",
         "#blorp",
         "blorp closer",
     ]
-    assert [h.word for h in hits] == ["blorp", "blorp"]
+    assert [h.word for h in hits] == ["blorp"]
+    text, hits = post_text(campaign, mom(platform="youtube", hook="BLORP"), "closer", lists)
+    assert lines(text)[0] == "TITLE: B***"  # nothing but the masked word: kept, masked
+    assert [h.word for h in hits] == ["Blorp"]
 
 
 def test_the_title_is_sentence_cased_after_every_sentence_end() -> None:
@@ -158,6 +162,24 @@ def test_the_title_is_sentence_cased_after_every_sentence_end() -> None:
     assert sentence_case("WAIT... WHAT") == "Wait... what"  # an ellipsis is not an end
     assert sentence_case("THE U.S. TEAM") == "The u.s. team"  # nor an abbreviation
     assert sentence_case("NO. ZORB1E WON", ["Zorb1e"]) == "No. Zorb1e won"
+
+
+def test_a_title_is_written_without_its_masked_words(project: Path) -> None:
+    # found in Batch A: "Too much honesty? you're just an a***" (S54), "my b***" (S76)
+    invented_lists(project)
+    lists = load_wordlists(project)
+    # the sentences that hold one go first
+    assert without_masked("Too much honesty? You're just a blorp", lists) == "Too much honesty?"
+    assert without_masked("Blorp it! Then  go.", lists) == "Then go."
+    # every sentence holds one: the words go, with a determiner before and the end mark kept
+    assert without_masked("A friend called out my blorp", lists) == "A friend called out"
+    assert without_masked("Why the blorp? Go blorp.", lists) == "Why? Go."
+    assert without_masked("nothing wrong here", lists) == "nothing wrong here"
+    assert without_masked("blorp", lists) == ""
+    text, hits = post_text(
+        cfg(), mom(platform="youtube", hook="TOO MUCH? YOU'RE A BLORP"), "closer", lists
+    )
+    assert lines(text)[0] == "TITLE: Too much?" and hits == []
 
 
 @pytest.mark.parametrize("platform", ["tiktok", "instagram", "youtube"])
