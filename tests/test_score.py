@@ -1268,7 +1268,7 @@ def test_scored_json_carries_settings_times_and_cost(rig: Rig) -> None:
         "medium",
         "between_tools",
     )
-    assert (summary.min_score, summary.keep_top) == (6, 8)
+    assert (summary.min_score, summary.keep_top) == (6, 16)
     assert (summary.calls, summary.chunks) == (1, 1)
     assert (summary.input_tokens, summary.output_tokens, summary.thinking_tokens) == (
         3000,

@@ -1,8 +1,8 @@
 clip:
   min_seconds: 20
   max_seconds: 90            # D-018: some complete thoughts need about 70 s
-  keep_top: 8
-  candidates_target: 20
+  keep_top: 16
+  candidates_target: 40
 models:
   find: claude-haiku-5-5     # cheap pass
   score: claude-sonnet-5-5   # quality pass

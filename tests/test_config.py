@@ -34,7 +34,7 @@ def _default(project: Path, mutate: Callable[[dict[str, Any]], None]) -> None:
 def test_real_config_loads(project: Path) -> None:
     resolved = load_resolved(project, "example-client")
     assert resolved.client_name == "example-client"
-    assert resolved.app.clip.keep_top == 8
+    assert resolved.app.clip.keep_top == 16
     assert resolved.app.captions.highlight_color == "#FFD400"
     assert resolved.rules.niche == "fitness / nutrition"
 
@@ -44,7 +44,7 @@ def test_client_clip_length_overrides_defaults(project: Path) -> None:
     assert resolved.app.clip.min_seconds == 25
     assert resolved.app.clip.max_seconds == 50
     # the other clip settings come from default.yaml untouched
-    assert resolved.app.clip.candidates_target == 20
+    assert resolved.app.clip.candidates_target == 40
 
 
 def test_client_without_clip_length_keeps_defaults(project: Path) -> None:
@@ -62,7 +62,7 @@ def test_client_without_clip_length_keeps_defaults(project: Path) -> None:
     [
         (lambda d: d["clip"].update(min_seconds=60, max_seconds=20), "min_seconds"),
         (lambda d: d["clip"].update(min_seconds=30, max_seconds=30), "min_seconds"),
-        (lambda d: d["clip"].update(keep_top=21), "keep_top"),
+        (lambda d: d["clip"].update(keep_top=41), "keep_top"),
         (lambda d: d["clip"].update(min_seconds=0), "clip.min_seconds"),
         (lambda d: d["clip"].update(keep_top=0), "clip.keep_top"),
         (lambda d: d["clip"].update(candidates_target=-1), "candidates_target"),
