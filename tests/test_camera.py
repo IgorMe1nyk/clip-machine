@@ -12,6 +12,7 @@ from clipmachine.utils.camera import (
     FALLBACK_SOURCE_NOT_WIDER,
     SIGNAL_MOTION,
     SIGNAL_SYNC,
+    CutTest,
     FaceSample,
     Followed,
     Shot,
@@ -21,9 +22,11 @@ from clipmachine.utils.camera import (
     camera_path,
     centred_mean,
     choose_speakers,
+    cut_test,
     fallback_reason,
     find_cuts,
     follow_segments,
+    layout_distance,
     link_tracks,
     motion_score,
     shot_targets,
@@ -604,6 +607,89 @@ def test_a_cut_on_the_last_sample() -> None:
 def test_no_cuts_in_empty_or_single_sample_input() -> None:
     assert find_cuts([], 0.5) == []
     assert find_cuts([A], 0.5) == []
+
+
+# --- low-contrast cuts (fix/low-contrast-cuts): values measured on real clips ----------------
+
+STUDIO = CutTest(0.12, 0.06, 0.08)  # the shipped settings
+# (colour change, layout change) at real camera cuts in a dark studio: close-up <-> wide shot
+DARK_STUDIO_CUTS = [(0.0876, 0.1306), (0.0992, 0.1238), (0.0767, 0.1227), (0.1121, 0.1315)]
+# ... and inside one shot: a photo overlay appearing, a hand gesture, a same-camera punch-in
+IN_SHOT_CHANGES = [(0.0886, 0.0277), (0.0618, 0.0157), (0.0876, 0.0531), (0.0757, 0.0554)]
+
+
+def colour(x: float) -> list[float]:
+    """A two-bin signature: colour(a) and colour(b) are |a - b| apart."""
+    return [1.0 - x, x]
+
+
+def shot_change(
+    colour_jump: float, layout_jump: float
+) -> tuple[list[list[float]], list[list[float]]]:
+    """Three samples of one picture, then three of another this far away."""
+    signatures = [colour(0.0)] * 3 + [colour(colour_jump)] * 3
+    layouts = [[0.0]] * 3 + [[layout_jump]] * 3
+    return signatures, layouts
+
+
+@pytest.mark.parametrize(("colour_jump", "layout_jump"), DARK_STUDIO_CUTS)
+def test_a_dark_studio_cut_is_found_by_colour_and_layout_together(
+    colour_jump: float, layout_jump: float
+) -> None:
+    signatures, layouts = shot_change(colour_jump, layout_jump)
+    assert find_cuts(signatures, STUDIO, layouts) == [3]
+    assert find_cuts(signatures, 0.12) == []  # the colour alone missed it (the bug)
+
+
+@pytest.mark.parametrize(("colour_jump", "layout_jump"), IN_SHOT_CHANGES)
+def test_an_overlay_a_gesture_or_a_punch_in_inside_one_shot_is_not_a_cut(
+    colour_jump: float, layout_jump: float
+) -> None:
+    signatures, layouts = shot_change(colour_jump, layout_jump)
+    assert find_cuts(signatures, STUDIO, layouts) == []
+
+
+def test_in_shot_noise_is_ignored_however_far_the_layout_moves() -> None:
+    signatures, layouts = shot_change(0.023, 0.5)  # 0.023: the largest in-shot noise measured
+    assert find_cuts(signatures, STUDIO, layouts) == []
+
+
+def test_a_big_colour_change_is_still_a_cut_whatever_the_layout() -> None:
+    signatures, layouts = shot_change(0.2, 0.0)
+    assert find_cuts(signatures, STUDIO, layouts) == [3]
+
+
+def test_without_layouts_only_the_colour_counts() -> None:
+    signatures, _ = shot_change(0.0876, 0.1306)
+    assert find_cuts(signatures, STUDIO) == []
+
+
+def test_a_dark_cut_stays_a_cut_when_the_next_samples_colours_drift_back_below_low() -> None:
+    # 0.077 / 0.123 at the cut; one sample later in-shot noise (<= 0.023) has the colours only
+    # 0.055 from the old shot, but the layout is still the new one: not a flash
+    signatures = [colour(0.0)] * 3 + [colour(0.077), colour(0.055), colour(0.077)]
+    layouts = [[0.0]] * 3 + [[0.123]] * 3
+    assert find_cuts(signatures, STUDIO, layouts) == [3]
+
+
+def test_a_low_contrast_flash_is_not_a_cut() -> None:
+    signatures = [colour(0.0)] * 2 + [colour(0.09)] + [colour(0.0)] * 2
+    layouts = [[0.0]] * 2 + [[0.13]] + [[0.0]] * 2
+    assert find_cuts(signatures, STUDIO, layouts) == []
+
+
+def test_layout_distance_is_the_mean_absolute_difference() -> None:
+    assert layout_distance([0.0, 1.0], [0.0, 1.0]) == 0.0
+    assert layout_distance([0.0, 0.0], [0.5, 1.0]) == pytest.approx(0.75)
+    assert layout_distance([], []) == 0.0
+    with pytest.raises(ValueError, match="same length"):
+        layout_distance([0.0], [0.0, 1.0])
+    with pytest.raises(ValueError, match="one layout per signature"):
+        find_cuts([A, B], STUDIO, [[0.0]])
+
+
+def test_the_cut_test_comes_from_the_speaker_settings() -> None:
+    assert cut_test(SpeakerConfig()) == STUDIO
 
 
 def test_no_cuts_is_one_segment() -> None:

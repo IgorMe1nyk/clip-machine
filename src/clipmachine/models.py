@@ -295,6 +295,13 @@ class SpeakerConfig(StrictModel):
     face_crop_scale: float = Field(default=2.0, ge=1, le=6)  # crop around a face, x its box
     # Picture change between two samples (0-1) that counts as a cut in the source's edit.
     cut_threshold: float = Field(default=0.12, gt=0, le=1)
+    # A smaller colour change is a cut too when the picture's layout (a 16x9 grey grid, mean
+    # change 0-1) moves at least cut_layout_threshold: a dark studio's close-up and wide shot
+    # (colour 0.08-0.10, layout 0.11-0.18) against an overlay or a gesture in one shot (layout
+    # 0.02-0.06), measured on real clips (fix/low-contrast-cuts). At or above cut_threshold the
+    # second cue changes nothing.
+    cut_low_threshold: float = Field(default=0.06, gt=0, le=1)
+    cut_layout_threshold: float = Field(default=0.08, gt=0, le=1)
     max_faces: int = Field(default=4, ge=1, le=8)
     # Face boxes are detected on every Nth sample and reused in between (mouth and motion are still
     # read on every sample).
@@ -439,6 +446,9 @@ class CampaignModeConfig(StrictModel):
     # says "likely" when a face sits on the host's side in at least this share of the frames
     scout_host_seconds: float = Field(default=5.0, gt=0, le=30)
     scout_host_share: float = Field(default=0.5, gt=0, le=1)
+    # a camera cut this early in a clip, with no word starting before it, becomes the clip's
+    # start: a flash of another shot (often the guest) is not what the viewer sees first; 0: off
+    skip_opening_shot_s: float = Field(default=0.6, ge=0, le=2)
 
 
 class RenderConfig(StrictModel):
@@ -1105,9 +1115,9 @@ class TrackSummary(StrictModel):
     unscored_windows: int = 0
 
 
-# 2: cuts_exact. 3: the mix signal. 4: faces. 5: face_cy. load_valid_track recomputes files of
-# any other version
-TRACK_SCHEMA_VERSION = 5
+# 2: cuts_exact. 3: the mix signal. 4: faces. 5: face_cy. 6: low-contrast cuts (colour + layout).
+# load_valid_track recomputes files of any other version
+TRACK_SCHEMA_VERSION = 6
 
 
 class TrackFile(StrictModel):
@@ -1142,7 +1152,9 @@ class TrackFile(StrictModel):
 
 # --- graphics (Brief 12.1) ----------------------------------------------------------------------
 
-GRAPHICS_SCHEMA_VERSION = 1
+# 2: the shots it was built on come from the low-contrast cut test (fix/low-contrast-cuts); a
+# file built on the old shots is analysed again. load_valid_graphics checks the version only.
+GRAPHICS_SCHEMA_VERSION = 2
 
 
 class GraphicsBox(StrictModel):

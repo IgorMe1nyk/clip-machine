@@ -11,7 +11,9 @@ first and written last. Reasons, notes and console lines carry numbers and codes
 hook, a caption or a name.
 """
 
+import contextlib
 import os
+import shutil
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -59,6 +61,7 @@ LENGTH_SLACK = 0.001
 REVIEW_SUFFIX = ".review.txt"  # masked and sensitive words, for the report and Igor; local only
 META_DIR = "_meta"  # Brief 11.2: everything but the mp4 and the post text lives here
 POST_SUFFIX = ".txt"  # the paste-ready post text, next to the mp4 in the platform folder
+OPENING_SUFFIX = ".opening"  # <clip>.opening.track.json: the track before a short opening shot
 
 
 class MomentFailed(Exception):
@@ -312,6 +315,56 @@ def _check_times(ctx: MomentContext, start: float, end: float) -> float:
     return length
 
 
+def _skip_opening_shot(ctx: MomentContext, work: _Work, start: float, end: float) -> float:
+    """The clip's start, moved to a camera cut that comes within campaign.skip_opening_shot_s
+    with no word starting before it (the last such cut, so two flashes both go): a flash of
+    another shot (often the guest) is not what the viewer should see first. Unchanged when the
+    move would take the clip outside its length range or there is no tracker (centre-crop mode).
+
+    The track at the original start is kept as <clip>.opening.track.json when the start moves,
+    so the next render reuses it and the moved clip's own track alike."""
+    from clipmachine import tracking  # tracking imports the render stage
+    from clipmachine.utils import faces
+
+    plan = ctx.plan
+    limit = ctx.app.campaign.skip_opening_shot_s
+    if plan.speaker is None or limit <= 0:
+        return start
+    name = work.moment.clip_name
+    kept = f"{name}{OPENING_SUFFIX}"
+    try:
+        track = tracking.load_plan_track(plan.speaker, kept, start, end, crop_w=plan.crop.w)
+        cached = track is not None
+        if track is None:
+            track, _ = tracking.track_for_clip(
+                plan.speaker, name, start, end, preview=plan.preview, crop_w=plan.crop.w
+            )
+    except (faces.FacesError, ffmpeg.MediaError):
+        return start  # the crop below reports a tracking failure properly
+    words = clip_words(plan.segments, start, end)
+    first_word = min((w.start for w in words), default=end - start)
+    cuts = [c for c in track.cuts_exact if 0 < c <= min(limit, first_word)]
+    if not cuts:
+        return start  # no early cut, or speech begins before it (cutting would clip a word)
+    cut = max(cuts)
+    moved = round(start + cut, 3)
+    cl = ctx.campaign.config.clip_length
+    if not cl.min - LENGTH_SLACK <= end - moved <= cl.max + LENGTH_SLACK:
+        return start
+    if not cached:
+        clips_dir = plan.speaker.clips_dir
+        # a cache only: without it the next render analyses the original start again
+        with contextlib.suppress(OSError):
+            shutil.copyfile(
+                tracking.track_path(clips_dir, name), tracking.track_path(clips_dir, kept)
+            )
+    work.snap_notes.append(
+        f"start moved +{cut:.2f} s to a camera cut (a short opening shot skipped)"
+    )
+    work.start = moved
+    return moved
+
+
 def _check_sensitive(ctx: MomentContext, moment: Moment, work: _Work) -> None:
     """Flag words and slurs in the hook and the post caption: a note and review lines; with
     hook.sensitive: fail, a hook hit fails the moment. The hook is never rewritten."""
@@ -345,6 +398,11 @@ def _render_moment(
     started = time.perf_counter()
 
     start, end, start_moved, end_moved = _choose_times(ctx, work)
+    _check_times(ctx, start, end)
+    opening = _skip_opening_shot(ctx, work, start, end)
+    if opening != start:
+        start_moved = round((start_moved or 0.0) + opening - start, 3)
+        start = opening
     length = _check_times(ctx, start, end)
     work.checks["length_in_range"] = "pass"
 
