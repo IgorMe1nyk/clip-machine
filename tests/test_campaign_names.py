@@ -8,6 +8,7 @@ from clipmachine.campaign.names import (
     auto_rules,
     classify,
     find_variants,
+    is_inflection,
     normalise,
     record,
     soundex,
@@ -95,6 +96,22 @@ def test_the_verb_in_a_show_name_is_never_spelled_as_the_name() -> None:
     index = index_of("we solve it.", "she solves them.", "solving is hard.", "the Solved show.")
     assert variants(index, "Solved") == []
     assert classify("zorbi", "Zorbie", apply_threshold=0.8, suggest_threshold=0.7)[2] == "apply"
+
+
+@pytest.mark.parametrize(
+    ("span", "name"),
+    [
+        ("davod", "Davos"),
+        ("holms", "Holmes"),
+        ("hughs", "Hughes"),
+        ("anthony david", "Anthony Davis"),
+    ],
+)
+def test_a_name_not_shaped_like_a_verb_keeps_its_variants(span: str, name: str) -> None:
+    # review of the fix above: ending-only differences must not hide real misspellings of names
+    assert classify(span, name, apply_threshold=0.8, suggest_threshold=0.7)[2] == "apply"
+    assert not is_inflection(span, name)
+    assert is_inflection("solving", "Solved") and not is_inflection("so lived", "Solved")
 
 
 def test_a_span_under_four_letters_is_never_applied() -> None:

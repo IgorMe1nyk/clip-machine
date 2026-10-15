@@ -32,9 +32,9 @@ MAX_SEEN = 3  # timestamps kept per variant
 MAX_SPAN = 3  # adjacent words joined and compared with a name
 SHORT_NAME = 5  # a normalised name shorter than this must also match in Soundex to be applied
 MIN_APPLY_LETTERS = 4  # a normalised span shorter than this is a suggestion at most (Igor)
-MIN_STEM = 3  # letters two words must share before their endings make them forms of one word
+MIN_STEM = 3  # letters a name's stem needs before another ending makes a form of its verb
 _ENDINGS = ("", "e", "s", "es", "d", "ed", "ing")
-_INFLECTED = frozenset(("s", "es", "d", "ed", "ing"))
+_VERB_ENDINGS = ("ed", "ing")  # a one-word name ending so may be a verb ("Solved")
 _LOOKALIKES = str.maketrans({"3": "e", "1": "i", "0": "o"})
 _SOUNDEX = {
     **dict.fromkeys("bfpv", "1"),
@@ -94,19 +94,19 @@ def _core(text: str) -> str:
     return text[first : last + 1].lower()
 
 
-def is_inflection(a: str, b: str) -> bool:
-    """Whether two normalised words are forms of one word: the same stem of MIN_STEM letters or
-    more with different endings, at least one of them an inflection ("solve", "solves",
-    "solving" against "solved"). Another spelling ("zorbi" against "zorbie") is not one."""
-    if a == b:
+def is_inflection(span: str, name: str) -> bool:
+    """Whether a one-word span is another form of a one-word name that is itself an inflected
+    verb (ending in -ed or -ing, like the show "Solved"): the name's stem of MIN_STEM letters or
+    more with another ending ("solve", "solves", "solving"). A name that is not shaped like a
+    verb never matches, so "david" for Davis or "holms" for Holmes is still a variant."""
+    if len(span.split()) != 1 or len(name.split()) != 1:
         return False
-    for x in _ENDINGS:
-        stem = a[: len(a) - len(x)]
-        if not a.endswith(x) or len(stem) < MIN_STEM:
-            continue
-        for y in _ENDINGS:
-            if b == stem + y and x != y and (x in _INFLECTED or y in _INFLECTED):
-                return True
+    a, b = normalise(span), normalise(name)
+    for ending in _VERB_ENDINGS:
+        stem = b[: len(b) - len(ending)]
+        shaped = b.endswith(ending) and len(stem) >= MIN_STEM and a != b
+        if shaped and any(a == stem + other for other in _ENDINGS):
+            return True
     return False
 
 
@@ -120,7 +120,7 @@ def classify(
     a, b = normalise(span), normalise(name)
     if not a or not b:
         return 0.0, False, None
-    if is_inflection(a, b):
+    if is_inflection(span, name):
         return SequenceMatcher(None, a, b).ratio(), soundex(a) == soundex(b), None
     ratio = SequenceMatcher(None, a, b).ratio()
     same_sound = soundex(a) == soundex(b)
@@ -157,7 +157,7 @@ def find_variants(
     def applies(span: str) -> bool:
         """Whether this span is a name, another form of one ("solve" for "Solved") or an applied
         variant of one by itself."""
-        if span in lower_names or any(is_inflection(normalise(span), normalise(n)) for n in names):
+        if span in lower_names or any(is_inflection(span, n) for n in names):
             return True
         return any(
             classify(span, n, apply_threshold=apply_threshold, suggest_threshold=suggest_threshold)[
