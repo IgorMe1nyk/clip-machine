@@ -25,12 +25,23 @@ from clipmachine.utils.wordlists import Hit, WordLists, mask_text, mask_texts
 
 TITLE_MAX = 100  # YouTube's title limit
 TITLE_PREFIX = "TITLE: "
+TITLE_NOTE = "title_without_masked_words"  # the report note when a title leaves words out
 _ELLIPSIS = "..."
 _SENTENCE_END = ".?!"
 _CLOSING = "\"')]”’"
 _DETERMINERS = frozenset(
     ("a", "an", "the", "my", "your", "his", "her", "its", "our", "their", "this", "that")
 )
+MIN_TITLE_WORDS = 3  # a title left without its masked words needs at least this many
+# a title left without its masked words must not end on one of these ("Kevin is.", "Shaq on")
+_DANGLING = _DETERMINERS | frozenset(
+    (
+        *("is", "are", "was", "were", "be", "been", "am", "and", "or", "but", "so", "just"),
+        *("such", "very", "really", "than", "as", "on", "of", "to", "for", "with", "at", "in"),
+        *("about", "like", "from", "by", "into"),
+    )
+)
+_KEPT_MARKS = _SENTENCE_END + ",;:" + _CLOSING
 
 
 def _core(word: str) -> tuple[str, str, str]:
@@ -133,10 +144,16 @@ def youtube_title(hook: str, keep: Sequence[str]) -> str:
 
 def without_masked(text: str, lists: WordLists) -> str:
     """`text` without the words the lists would mask (Igor, 2026-10-15: a title reads better
-    without the swear than with "a***"). The sentences that hold one are left out ("Too much
-    honesty? You're just an asshole" -> "Too much honesty?"); when every sentence holds one, the
-    words are, with a determiner just before one ("called out my bullshit" -> "called out") and a
-    sentence end after one staying on the word before. Spaces between words become one."""
+    without the swear than with "a***"), or "" when no such text reads as a title. Unchanged
+    when nothing is masked (spaces between words become one).
+
+    First the sentences that hold one are left out ("Too much honesty? You're just an asshole"
+    -> "Too much honesty?"). When that leaves fewer than MIN_TITLE_WORDS words, the masked words
+    are left out instead, their punctuation kept on the word before, and a determiner just
+    before one that ends its phrase (the hook, or . ? ! , ; :) goes too ("Wow. He is a fucking
+    genius" -> "Wow. He is a genius"; "A friend called out my bullshit" -> "A friend called
+    out"). That must leave MIN_TITLE_WORDS words and not end on a dangling word ("Kevin Hart is
+    a bitch." would end on "is"; nor on a contraction or a possessive), else ""."""
     words = text.split()
     masked, _ = mask_texts(words, lists)
     if masked == words:
@@ -147,19 +164,34 @@ def without_masked(text: str, lists: WordLists) -> str:
         if _ends_sentence(_core(word)) and i < len(words) - 1:
             sentences.append([])
     clean = [i for s in sentences if all(words[i] == masked[i] for i in s) for i in s]
-    if clean:
+    if len(clean) >= MIN_TITLE_WORDS:
         return " ".join(words[i] for i in clean)
     kept: list[str] = []
-    for word, after in zip(words, masked, strict=True):
+    for i, (word, after) in enumerate(zip(words, masked, strict=True)):
         if word == after:
             kept.append(word)
             continue
-        while kept and not _core(kept[-1])[2] and _core(kept[-1])[1].lower() in _DETERMINERS:
+        ends = i == len(words) - 1 or any(c in ".?!,;:" for c in _core(word)[2])
+        while (
+            ends and kept and not _core(kept[-1])[2] and _core(kept[-1])[1].lower() in _DETERMINERS
+        ):
             kept.pop()
-        end = "".join(c for c in _core(word)[2] if c in _SENTENCE_END)
-        if end and kept and not _core(kept[-1])[2]:
-            kept[-1] += end
+        marks = "".join(c for c in _core(word)[2] if c in _KEPT_MARKS)
+        if marks and kept and not _core(kept[-1])[2]:
+            kept[-1] += marks
+    last = _core(kept[-1])[1].lower() if kept else ""
+    # a contraction or a possessive at the end dangles too ("Too much? You're", "called out Mark's")
+    if len(kept) < MIN_TITLE_WORDS or last in _DANGLING or "'" in last or "’" in last:
+        return ""
     return " ".join(kept)
+
+
+def title_left_out_words(hook: str, lists: WordLists | None) -> bool:
+    """Whether the YouTube title of this hook leaves masked words out (a report note)."""
+    if lists is None:
+        return False
+    clean = without_masked(hook, lists)
+    return bool(clean) and clean != " ".join(hook.split())
 
 
 def post_text(
@@ -179,7 +211,7 @@ def post_text(
     lines: list[str] = []
     if moment.platform == "youtube":
         clean = without_masked(moment.hook, lists) if lists is not None else ""
-        # a hook that is nothing but masked words keeps them, masked
+        # no clean text that reads as a title: the hook's own words, masked
         title = youtube_title(clean or moment.hook, keep)
         if lists is not None:
             title, title_hits = mask_text(title, lists)

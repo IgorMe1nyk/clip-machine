@@ -34,7 +34,7 @@ from clipmachine.campaign.models import (
     UsedLog,
     moment_fingerprint,
 )
-from clipmachine.campaign.post import post_text
+from clipmachine.campaign.post import TITLE_NOTE, post_text, title_left_out_words
 from clipmachine.campaign.spelling import apply_spelling, find_names
 from clipmachine.campaign.used import (
     is_rejected,
@@ -544,6 +544,8 @@ def _render_moment(
     )
     write_text_atomic(post_path, text)
     _review(work, "masked", "post", post_hits)
+    if moment.platform == "youtube" and title_left_out_words(moment.hook, plan.wordlists):
+        work.notes.append(TITLE_NOTE)  # the title differs from the hook: Igor checks it reads
     work.masked += len(post_hits)
     if work.review:
         write_text_atomic(ctx.meta_dir / f"{name}{REVIEW_SUFFIX}", "\n".join(work.review) + "\n")

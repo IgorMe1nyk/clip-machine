@@ -13,6 +13,7 @@ from clipmachine.campaign.post import (
     post_text,
     sentence_case,
     shorten,
+    title_left_out_words,
     without_masked,
     youtube_title,
 )
@@ -141,13 +142,13 @@ def test_the_title_prefix_and_caption_are_masked_but_not_the_closer(project: Pat
         lists,
     )
     assert lines(text) == [
-        "TITLE: Why matters",  # a title leaves the masked word out (see below)
+        "TITLE: Why b*** matters",  # "Why matters" is too short a title (see below)
         "",
         "@demo-show says b***.",
         "#blorp",
         "blorp closer",
     ]
-    assert [h.word for h in hits] == ["blorp"]
+    assert [h.word for h in hits] == ["blorp", "blorp"]
     text, hits = post_text(campaign, mom(platform="youtube", hook="BLORP"), "closer", lists)
     assert lines(text)[0] == "TITLE: B***"  # nothing but the masked word: kept, masked
     assert [h.word for h in hits] == ["Blorp"]
@@ -168,18 +169,31 @@ def test_a_title_is_written_without_its_masked_words(project: Path) -> None:
     # found in Batch A: "Too much honesty? you're just an a***" (S54), "my b***" (S76)
     invented_lists(project)
     lists = load_wordlists(project)
-    # the sentences that hold one go first
+    # the sentences that hold one go first, when at least three words are left
     assert without_masked("Too much honesty? You're just a blorp", lists) == "Too much honesty?"
-    assert without_masked("Blorp it! Then  go.", lists) == "Then go."
-    # every sentence holds one: the words go, with a determiner before and the end mark kept
+    assert without_masked("Blorp it! Then go  home now.", lists) == "Then go home now."
+    # else the words go, with a determiner before one that ends its phrase, the marks kept
     assert without_masked("A friend called out my blorp", lists) == "A friend called out"
-    assert without_masked("Why the blorp? Go blorp.", lists) == "Why? Go."
-    assert without_masked("nothing wrong here", lists) == "nothing wrong here"
+    assert without_masked("Wow. He is a blorp genius", lists) == "Wow. He is a genius"
+    assert without_masked("You are a blorp, man", lists) == "You are, man"
+    assert without_masked("This blorp is crazy!", lists) == "This is crazy!"
+    # nothing that reads as a title: "" (the masked hook is used)
+    assert without_masked("Kevin Hart is a blorp.", lists) == ""  # ends on "is"
+    assert without_masked("Shaq on his blorp", lists) == ""  # ends on "on"
+    assert without_masked("Too much? You're a blorp", lists) == ""  # ends on "You're"
+    assert without_masked("Why the blorp? Go blorp.", lists) == ""  # two words left
     assert without_masked("blorp", lists) == ""
+    assert without_masked("nothing  wrong here", lists) == "nothing wrong here"
+    assert title_left_out_words("A friend called out my blorp", lists)
+    assert not title_left_out_words("Kevin Hart is a blorp.", lists)
+    assert not title_left_out_words("nothing  wrong here", lists)
+    assert not title_left_out_words("A friend called out my blorp", None)
     text, hits = post_text(
-        cfg(), mom(platform="youtube", hook="TOO MUCH? YOU'RE A BLORP"), "closer", lists
+        cfg(), mom(platform="youtube", hook="TOO MUCH HONESTY? YOU'RE A BLORP"), "closer", lists
     )
-    assert lines(text)[0] == "TITLE: Too much?" and hits == []
+    assert lines(text)[0] == "TITLE: Too much honesty?" and hits == []
+    text, hits = post_text(cfg(), mom(platform="youtube", hook="SHAQ ON HIS BLORP"), "c", lists)
+    assert lines(text)[0] == "TITLE: Shaq on his b***" and [h.word for h in hits] == ["blorp"]
 
 
 @pytest.mark.parametrize("platform", ["tiktok", "instagram", "youtube"])
