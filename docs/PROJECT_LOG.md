@@ -2,6 +2,46 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-14 — Brief 12.2, parts 10 and 11: the allocator fix, the data-loss fix, first real runs
+
+**Part 10** (`d979f3d`): posts already made on a day use up that platform's slots and the
+campaign's `max_per_day` for that day; the free slots left take the day's latest times.
+
+**Part 11** (`81c0c33`): a campaign that does not load during a combined-plan rebuild no longer
+loses its rows. Before, the rebuild rewrote `posting_plan.csv` from the campaigns that loaded
+only, so one broken file dropped another campaign's rows, typed result columns included, for
+good. Now its rows are kept exactly as they are, its unposted rows hold their slots (no other
+campaign is given them), its view is left alone and the warning says so. A broken campaign in
+the `priority` list no longer fails the whole rebuild; a moments.yaml that is not UTF-8 is a
+warning too; plan times saved as "17:30" or "5:30PM" are read. Three tests (the new ones fail
+on the old code); a fresh-context review of the diff found no row loss, and two of its points
+were fixed before the commit.
+
+**Checks at 81c0c33:** ruff, format, mypy, pip-audit (no known vulnerabilities), pytest (2257
+passed, 3 skipped), each run separately, all exit 0.
+
+**Real runs** (one campaign with `selection: ai`):
+
+| Run | Source | API cost | Result |
+|---|---|---|---|
+| `produce`, episode 1 | 102 min | $0.0917, 14 calls | 6 clips (instagram 6) of 21 candidates; transcribe 393 s on the GPU; render 372 s |
+| `produce`, episode 2 | 229 min | $0.0981, 25 calls | 0 clips: 22 of 23 rejected by the scorer, 1 dropped (adjustment ignored) |
+| `produce`, episode 3 | 250 min | $0 | refused at fetch: over `fetch.max_duration_minutes` (240) |
+| `campaign-init` on a real brief | 5 KB text | $0.0198, 1 call | about 14 s; `selection: human`; 6 `# confirm:` notes |
+
+- After each `produce` the combined plan was compared against a copy: posted rows and result
+  columns unchanged, only the new rows added. Deleting a test campaign and rebuilding left the
+  combined plan and both views byte-identical.
+- The first `produce` on a new episode re-renders nothing from other episodes: only that
+  episode's moments are rendered, so the fingerprint re-render of older clips happens on their
+  own episode's next run.
+- An episode whose scout proposes nothing leaves no scout.json record, so `produce` on it again
+  scouts and pays again.
+- The `campaign-init` draft against the hand-written campaign.yaml: platforms, prefixes, clip
+  length, caption style and hook limit identical; differs in `selection` (human against ai),
+  `hook.mode` (full against intro), `scout.per_episode` (8 against 15), topic keys, and names
+  that include handles.
+
 ## 2026-10-14 — Brief 12.2: one-command campaigns and one posting plan across campaigns (built; real run pending Igor's OK)
 
 **Built** on branch `brief-12-2-one-command` (D-034, D-035), eight commits, no real campaign
