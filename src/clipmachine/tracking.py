@@ -19,7 +19,7 @@ counts only.
 import logging
 import time
 from collections.abc import Collection, Iterator, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -70,6 +70,7 @@ CUT_COLOR = (255, 255, 0)  # a border round the first samples after a cut
 CUT_BORDER_SAMPLES = 3
 SIGNATURE_BINS = 16
 SIGNATURE_GRID = 160  # the signature looks at about this many columns of the frame
+LAYOUT_COLS, LAYOUT_ROWS = 16, 9  # the layout cue: the grey picture averaged down to this grid
 CUT_REFINE_WIDTH = 320  # frames decoded at this width to find the exact frame of a cut
 CUT_REFINE_MARGIN_SECONDS = 0.1  # decoded past the sample; also how far the answer may stray
 FACE_THICKNESS = 1
@@ -125,6 +126,7 @@ class Detected:
     largest_heights: list[float]  # tallest face seen before small ones were dropped; 0.0: none
     signatures: list[list[float]]
     frame_size: tuple[int, int]
+    layouts: list[list[float]] = field(default_factory=list)  # one per sample (cuts)
 
 
 def track_path(clips_dir: Path, clip_id: str) -> Path:
@@ -263,6 +265,16 @@ def frame_signature(frame: "NDArray[np.uint8]") -> list[float]:
     return [n / total for n in counts]
 
 
+def frame_layout(frame: "NDArray[np.uint8]") -> list[float]:
+    """Where the light is in a picture: the grey frame averaged down to LAYOUT_COLS x LAYOUT_ROWS
+    cells, 0..1. A cut from a close-up to a wide shot moves it even when the colours stay."""
+    import cv2
+
+    grey = cv2.cvtColor(frame[..., :3], cv2.COLOR_RGB2GRAY)
+    cells = cv2.resize(grey, (LAYOUT_COLS, LAYOUT_ROWS), interpolation=cv2.INTER_AREA)
+    return [float(v) / 255.0 for v in cells.ravel()]
+
+
 def _decode_size(plan: TrackPlan) -> tuple[int, int]:
     """The size frames are decoded at: landmark_width, but never above the upright source's."""
     video = plan.video
@@ -293,6 +305,8 @@ def detect_faces(plan: TrackPlan, start: float, duration: float) -> Detected:
     frames: list[list[camera.FaceSample]] = []
     largest: list[float] = []
     signatures: list[list[float]] = []
+    layouts: list[list[float]] = []
+    test = camera.cut_test(cfg)
     previous: NDArray[np.uint8] | None = None
     boxes: list[faces.FaceBox] | None = None  # the last detection's kept boxes, reused in between
     try:
@@ -303,9 +317,10 @@ def detect_faces(plan: TrackPlan, start: float, duration: float) -> Detected:
         ):
             t = round(k / cfg.sample_fps, 3)
             signature = frame_signature(frame)
+            layout = frame_layout(frame)
             # boxes from before a cut would sit on the old shot's faces: detect afresh there
-            changed = bool(signatures) and (
-                camera.signature_distance(signatures[-1], signature) >= cfg.cut_threshold
+            changed = bool(signatures) and test.changed(
+                signatures[-1], signature, layouts[-1], layout
             )
             reuse = boxes if k % cfg.detect_every != 0 and not changed else None
             found = faces.find_faces(finder, frame, previous, reuse)
@@ -314,20 +329,21 @@ def detect_faces(plan: TrackPlan, start: float, duration: float) -> Detected:
             frames.append(faces.to_samples(found.faces, t))
             largest.append(found.largest_height)
             signatures.append(signature)
+            layouts.append(layout)
     finally:
         faces.close_finder(finder)
-    return Detected(frames, largest, signatures, (frame_w, frame_h))
+    return Detected(frames, largest, signatures, (frame_w, frame_h), layouts)
 
 
 def _exact_cut_time(plan: TrackPlan, start: float, before_t: float, sample_t: float) -> float:
     """The time, seconds from the clip start, at which the picture cuts between the samples at
     before_t and sample_t.
 
-    The source's own frames from before_t on are decoded and the frame that differs most from the
-    one before it is the first of the new shot; the answer is the midpoint between it and the last
-    frame of the old shot. Falls back to sample_t when there are fewer than two frames, when no
-    jump reaches cut_threshold, when the answer is more than the margin outside [before_t,
-    sample_t] or when ffmpeg fails.
+    The source's own frames from before_t on are decoded; of the steps that pass the cut test
+    (colour, or colour and layout), the one whose colours change most has the first frame of the
+    new shot; the answer is the midpoint between it and the last frame of the old shot. Falls back
+    to sample_t when there are fewer than two frames, when no step passes the test, when the
+    answer is more than the margin outside [before_t, sample_t] or when ffmpeg fails.
     """
     cfg = plan.settings
     video = plan.video
@@ -346,12 +362,17 @@ def _exact_cut_time(plan: TrackPlan, start: float, before_t: float, sample_t: fl
     if len(timed) < 2:
         return sample_t
     signatures = [frame_signature(frame) for _, frame in timed]
-    jumps = [
-        camera.signature_distance(a, b) for a, b in zip(signatures, signatures[1:], strict=False)
+    layouts = [frame_layout(frame) for _, frame in timed]
+    test = camera.cut_test(cfg)
+    passing = [
+        i
+        for i in range(len(timed) - 1)
+        if test.changed(signatures[i], signatures[i + 1], layouts[i], layouts[i + 1])
     ]
-    biggest = max(range(len(jumps)), key=lambda i: jumps[i])  # the first of equal jumps
-    if jumps[biggest] < cfg.cut_threshold:
+    if not passing:
         return sample_t
+    jumps = {i: camera.signature_distance(signatures[i], signatures[i + 1]) for i in passing}
+    biggest = max(passing, key=lambda i: jumps[i])  # the first of equal jumps
     first_new = biggest + 1
     exact = round(before_t + (timed[first_new - 1][0] + timed[first_new][0]) / 2, 6)
     if not before_t - CUT_REFINE_MARGIN_SECONDS <= exact <= sample_t + CUT_REFINE_MARGIN_SECONDS:
@@ -414,7 +435,9 @@ def analyse_clip(
     detected = detect_faces(plan, start, duration)
     frames = detected.frames
     times = [round(k / cfg.sample_fps, 3) for k in range(len(frames))]
-    cut_samples = camera.find_cuts(detected.signatures, cfg.cut_threshold)
+    cut_samples = camera.find_cuts(
+        detected.signatures, camera.cut_test(cfg), detected.layouts or None
+    )
     for k in cut_samples:  # movement measured across a cut is not movement
         frames[k] = [replace(f, motion=None) for f in frames[k]]
     cut_times = [times[k] for k in cut_samples]

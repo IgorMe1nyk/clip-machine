@@ -16,7 +16,7 @@ person really moves it makes one eased, speed-capped glide that starts before th
 boundary is a hard cut: no smoothing or glide crosses it.
 
 Cuts: a camera shot (a "segment" here) is the stretch between two cuts in the source edit.
-  picture signatures   -> find_cuts -> sample indices where a new camera shot starts
+  picture signatures (+ layouts) -> find_cuts -> sample indices where a new camera shot starts
   cuts                 -> split_at_cuts -> sample ranges, one per segment
   everything above, run on each segment alone and joined again -> follow_segments
 Nothing is carried across a cut: tracks, speaker choice, hysteresis and the crop position all
@@ -654,23 +654,95 @@ def signature_distance(a: Sequence[float], b: Sequence[float]) -> float:
     return sum(abs(x - y) for x, y in zip(a, b, strict=True)) / 2
 
 
-def find_cuts(signatures: Sequence[Sequence[float]], threshold: float) -> list[int]:
+def layout_distance(a: Sequence[float], b: Sequence[float]) -> float:
+    """Mean absolute difference of two grey layouts (cells 0..1): how far the light in the picture
+    moved. A cut between a close-up and a wide shot moves it a lot even when the colours stay."""
+    if len(a) != len(b):
+        raise ValueError("layouts must have the same length")
+    if not a:
+        return 0.0
+    return sum(abs(x - y) for x, y in zip(a, b, strict=True)) / len(a)
+
+
+@dataclass(frozen=True)
+class CutTest:
+    """When the picture has changed enough to be a new camera shot: the colours change by
+    `threshold`, or (with layouts) by `low` while the layout changes by `layout` (Igor,
+    2026-10-14: a dark studio's close-up and wide shot share their colours, 0.08-0.10, while an
+    overlay or a gesture inside one shot moves the layout far less than a cut does)."""
+
+    threshold: float
+    low: float | None = None
+    layout: float | None = None
+
+    def changed(
+        self,
+        sig_a: Sequence[float],
+        sig_b: Sequence[float],
+        lay_a: Sequence[float] | None = None,
+        lay_b: Sequence[float] | None = None,
+    ) -> bool:
+        colour = signature_distance(sig_a, sig_b)
+        if colour >= self.threshold:
+            return True
+        if self.low is None or self.layout is None or lay_a is None or lay_b is None:
+            return False
+        return colour >= self.low and layout_distance(lay_a, lay_b) >= self.layout
+
+    def same_picture(
+        self,
+        sig_a: Sequence[float],
+        sig_b: Sequence[float],
+        lay_a: Sequence[float] | None = None,
+        lay_b: Sequence[float] | None = None,
+    ) -> bool:
+        """The picture is back where it was (a flash ended): the colours are within `threshold`
+        and, with layouts, the layout within `layout`. Stricter than "not changed": a dark-studio
+        cut whose next sample's colours drift back below `low` is still a new picture."""
+        if signature_distance(sig_a, sig_b) >= self.threshold:
+            return False
+        if self.layout is None or lay_a is None or lay_b is None:
+            return True
+        return layout_distance(lay_a, lay_b) < self.layout
+
+
+def cut_test(cfg: SpeakerConfig) -> CutTest:
+    return CutTest(cfg.cut_threshold, cfg.cut_low_threshold, cfg.cut_layout_threshold)
+
+
+def find_cuts(
+    signatures: Sequence[Sequence[float]],
+    threshold: float | CutTest,
+    layouts: Sequence[Sequence[float]] | None = None,
+) -> list[int]:
     """Sample indices k (1 <= k < n) where a new camera shot starts.
 
-    A cut needs the picture to change by at least `threshold` from sample k-1 to k. A one-sample
-    flash is not a cut: when sample k+1 looks like k-1 again, k is an outlier and neither k nor
-    k+1 is reported. Only neighbours are compared, so a slow change (every step below the
-    threshold) is never a cut, however far the picture drifts.
+    A cut needs the picture to change (`threshold`, or the CutTest with `layouts`) from sample
+    k-1 to k. A one-sample flash is not a cut: when sample k+1 looks like k-1 again, k is an
+    outlier and neither k nor k+1 is reported. Only neighbours are compared, so a slow change
+    (every step below the test) is never a cut, however far the picture drifts.
     """
+    test = threshold if isinstance(threshold, CutTest) else CutTest(threshold)
+    if layouts is not None and len(layouts) != len(signatures):
+        raise ValueError("one layout per signature")
+
+    def changed(i: int, j: int) -> bool:
+        if layouts is None:
+            return test.changed(signatures[i], signatures[j])
+        return test.changed(signatures[i], signatures[j], layouts[i], layouts[j])
+
+    def same(i: int, j: int) -> bool:
+        if layouts is None:
+            return test.same_picture(signatures[i], signatures[j])
+        return test.same_picture(signatures[i], signatures[j], layouts[i], layouts[j])
+
     cuts: list[int] = []
     k = 1
     while k < len(signatures):
-        if signature_distance(signatures[k - 1], signatures[k]) < threshold:
+        if not changed(k - 1, k):
             k += 1
             continue
-        if k + 1 < len(signatures) and (
-            signature_distance(signatures[k - 1], signatures[k + 1]) < threshold
-        ):
+        if k + 1 < len(signatures) and same(k - 1, k + 1):
             k += 2  # a flash: the picture is back where it was
             continue
         cuts.append(k)

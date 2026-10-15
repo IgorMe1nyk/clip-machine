@@ -26,6 +26,8 @@ MOTION = 0.25  # what the fake finder reports as motion whenever there is a prev
 Scenario = Callable[[float], list[RawFace]]
 # t -> the grey level (0-255) the frame is painted with; a jump is a cut in the "source's edit"
 Look = Callable[[float], int]
+# (t, height, width) -> a whole frame, for pictures a flat grey cannot be (a layout that moves)
+Painter = Callable[[float, int, int], "np.ndarray[Any, Any]"]
 
 
 def talking(t: float) -> float:
@@ -67,6 +69,7 @@ def cut_at(*times: float, levels: tuple[int, int] = (0, 255)) -> Look:
 class TrackFakes:
     scenario: Scenario = nobody
     look: Look = steady
+    painter: Painter | None = None  # when set, it paints every frame instead of `look`
     frame_requests: list[list[str]] = field(default_factory=list)
     frame_sizes: list[tuple[int, int]] = field(default_factory=list)
     previews: list[dict[str, Any]] = field(default_factory=list)
@@ -101,8 +104,12 @@ class TrackFakes:
         self.fps = float(args[args.index("-vf") + 1].split(",")[0].removeprefix("fps="))
         self.index = 0
         for k in range(int(round(duration * self.fps))):
-            grey = self.look(k / self.fps)
-            yield np.full((frame_h, frame_w, 3), grey, dtype=np.uint8)
+            yield self._frame(k / self.fps, frame_h, frame_w)
+
+    def _frame(self, t: float, frame_h: int, frame_w: int) -> "np.ndarray[Any, Any]":
+        if self.painter is not None:
+            return self.painter(t, frame_h, frame_w)
+        return np.full((frame_h, frame_w, 3), self.look(t), dtype=np.uint8)
 
     def read_timed_frames(
         self, args: list[str], frame_w: int, frame_h: int, timeout: float
@@ -118,10 +125,7 @@ class TrackFakes:
         offset = float(args[args.index("-ss") + 1]) - origin
         duration = float(args[args.index("-t") + 1])
         stamps = [k / self.timed_fps for k in range(int(round(duration * self.timed_fps)))]
-        return [
-            (t, np.full((frame_h, frame_w, 3), self.look(offset + t), dtype=np.uint8))
-            for t in stamps
-        ]
+        return [(t, self._frame(offset + t, frame_h, frame_w)) for t in stamps]
 
     def open_finder(
         self, detector_path: Path, landmarker_path: Path, **settings: Any

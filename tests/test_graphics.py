@@ -269,6 +269,10 @@ def test_the_result_is_cached_and_reused_only_while_everything_matches(
     data["schema_version"] = 99
     path.write_text(json.dumps(data), encoding="utf-8")
     assert not valid()
+    # 1: built on the shots of the colour-only cut test, before fix/low-contrast-cuts
+    data["schema_version"] = 1
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert not valid()
     path.write_text("{not json", encoding="utf-8")
     assert not valid()
 

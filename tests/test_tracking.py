@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -563,6 +564,78 @@ def test_a_big_frame_is_subsampled_and_still_sums_to_one() -> None:
     assert sum(signature) == pytest.approx(1.0)
 
 
+# --- frame_layout and low-contrast cuts (fix/low-contrast-cuts) ------------------------------
+
+
+def test_a_layout_is_the_grey_picture_on_a_16_by_9_grid() -> None:
+    layout = tracking.frame_layout(np.full((360, 640, 3), 51, dtype=np.uint8))
+    assert len(layout) == 16 * 9
+    assert all(v == pytest.approx(0.2) for v in layout)
+
+
+def test_the_layout_moves_when_the_light_moves_and_the_colours_do_not() -> None:
+    left = np.zeros((360, 640, 3), dtype=np.uint8)
+    left[:, :320] = 200
+    right = left[:, ::-1].copy()
+    assert camera.signature_distance(
+        tracking.frame_signature(left), tracking.frame_signature(right)
+    ) == pytest.approx(0.0)
+    assert camera.layout_distance(
+        tracking.frame_layout(left), tracking.frame_layout(right)
+    ) == pytest.approx(200 / 255)
+
+
+def dark_studio(t: float, h: int, w: int) -> "np.ndarray[Any, Any]":
+    """A dark set: a close-up (the light on the left) before 10 s, a wide shot (the light on the
+    right, partly a shade brighter) after; from 15 to 17 s a photo overlay sits in the corner."""
+    frame = np.full((h, w, 3), 8, dtype=np.uint8)
+    top, bottom = int(h * 0.2), int(h * 0.9)
+    if t < 10:
+        frame[top:bottom, int(w * 0.10) : int(w * 0.45)] = 120
+    else:
+        frame[top:bottom, int(w * 0.55) : int(w * 0.90)] = 120
+        frame[top:bottom, int(w * 0.55) : int(w * 0.68)] = 136
+    if 15 <= t < 17:
+        frame[int(h * 0.05) : int(h * 0.35), : int(w * 0.30)] = 200
+    return frame
+
+
+def test_a_dark_studio_cut_is_found_and_an_overlay_is_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fakes = track_fakes.install(monkeypatch, hop)
+    fakes.painter = dark_studio
+    h, w = 108, 192
+    before, after = dark_studio(9.9, h, w), dark_studio(10.0, h, w)
+    plain, overlaid = dark_studio(14.9, h, w), dark_studio(15.0, h, w)
+    sig, lay = tracking.frame_signature, tracking.frame_layout
+    # the premise, as measured on real clips: a cut moves the colours a little and the layout a
+    # lot; the overlay moves the colours as much but the layout far less
+    assert 0.06 <= camera.signature_distance(sig(before), sig(after)) < 0.12
+    assert camera.layout_distance(lay(before), lay(after)) >= 0.08
+    assert 0.06 <= camera.signature_distance(sig(plain), sig(overlaid)) < 0.12
+    assert camera.layout_distance(lay(plain), lay(overlaid)) < 0.08
+
+    track = analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0)
+
+    assert track.cuts == [10.0]
+    assert track.cuts_exact[0] == pytest.approx(10.0, abs=0.05)
+    xs = [s.crop_x for s in track.samples]
+    assert xs[99] == 60 and xs[100] == 380  # the crop jumps at the cut, not half a second late
+
+
+def test_with_the_colour_test_alone_the_dark_studio_cut_is_missed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fakes = track_fakes.install(monkeypatch, hop)
+    fakes.painter = dark_studio
+    colour_only = SpeakerConfig(signal="mouth", cut_low_threshold=0.12)  # the old behaviour
+
+    track = analyse_clip(make_plan(tmp_path, settings=colour_only), "c01", 10.0, 30.0)
+
+    assert track.cuts == []
+
+
 # --- old track files ----------------------------------------------------------------------
 
 
@@ -1058,7 +1131,7 @@ def test_the_track_lists_every_face_of_every_sample(
 
     track = analyse_clip(make_plan(tmp_path), "c01", 10.0, 30.0)
 
-    assert TRACK_SCHEMA_VERSION == 5
+    assert TRACK_SCHEMA_VERSION == 6
     assert len(track.faces) == 2 * track.summary.samples == 400
     first_sample = [f for f in track.faces if f.t == 0.0]
     assert [(f.cx, f.cy, f.w, f.h) for f in first_sample] == [

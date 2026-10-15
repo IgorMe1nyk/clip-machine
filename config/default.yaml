@@ -86,6 +86,8 @@ speaker:                     # speaker-following crop analysis: clipmachine trac
   detect_score: 0.7          # 0-1, the YuNet score a face needs
   face_crop_scale: 2.0       # the crop around a face for the mouth reading is this many times its box (1-6)
   cut_threshold: 0.12        # 0-1, picture change between two samples that counts as a shot cut
+  cut_low_threshold: 0.06    # a smaller colour change is a cut too when the layout moves at least ...
+  cut_layout_threshold: 0.08 # ... this much (16x9 grey grid, 0-1): dark-studio cuts with similar colours
   max_faces: 4               # faces looked for in each frame (1-8)
   detect_every: 1            # face boxes are detected on every Nth sample and reused in between (1-10)
   window_seconds: 0.5        # the speaker is chosen per window of this length
@@ -160,3 +162,4 @@ campaign:                    # campaign mode (Brief 11): the rules live in campa
   title_keep_case: [NBA, NFL, NHL, MLB, UFC, MMA, MPJ, US, UK]   # kept as written in a YouTube title (otherwise the hook in sentence case; Brief 11.2)
   scout_host_seconds: 5.0    # scout (Brief 12): seconds of a proposed moment the host-side check looks at
   scout_host_share: 0.5      # "likely" when a face is on the host's side in at least this share of those frames
+  skip_opening_shot_s: 0.6   # a camera cut this early, with no word before it, becomes the clip's start (0: off)
