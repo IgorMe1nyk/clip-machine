@@ -88,6 +88,15 @@ def test_classify(span: str, name: str, status: str | None) -> None:
     assert classify(span, name, apply_threshold=0.8, suggest_threshold=0.7)[2] == status
 
 
+def test_the_verb_in_a_show_name_is_never_spelled_as_the_name() -> None:
+    # found in Batch A: names [..., Solved] turned "solve" and "solves" into "Solved" (S42)
+    for span in ("solve", "solves", "solving", "Solve"):
+        assert classify(span, "Solved", apply_threshold=0.8, suggest_threshold=0.7)[2] is None
+    index = index_of("we solve it.", "she solves them.", "solving is hard.", "the Solved show.")
+    assert variants(index, "Solved") == []
+    assert classify("zorbi", "Zorbie", apply_threshold=0.8, suggest_threshold=0.7)[2] == "apply"
+
+
 def test_a_span_under_four_letters_is_never_applied() -> None:
     index = index_of("nin s1 nin s3.", "the nion show.")
     found = variants(index, "Nion")

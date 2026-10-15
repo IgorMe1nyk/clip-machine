@@ -32,6 +32,9 @@ MAX_SEEN = 3  # timestamps kept per variant
 MAX_SPAN = 3  # adjacent words joined and compared with a name
 SHORT_NAME = 5  # a normalised name shorter than this must also match in Soundex to be applied
 MIN_APPLY_LETTERS = 4  # a normalised span shorter than this is a suggestion at most (Igor)
+MIN_STEM = 3  # letters two words must share before their endings make them forms of one word
+_ENDINGS = ("", "e", "s", "es", "d", "ed", "ing")
+_INFLECTED = frozenset(("s", "es", "d", "ed", "ing"))
 _LOOKALIKES = str.maketrans({"3": "e", "1": "i", "0": "o"})
 _SOUNDEX = {
     **dict.fromkeys("bfpv", "1"),
@@ -91,14 +94,34 @@ def _core(text: str) -> str:
     return text[first : last + 1].lower()
 
 
+def is_inflection(a: str, b: str) -> bool:
+    """Whether two normalised words are forms of one word: the same stem of MIN_STEM letters or
+    more with different endings, at least one of them an inflection ("solve", "solves",
+    "solving" against "solved"). Another spelling ("zorbi" against "zorbie") is not one."""
+    if a == b:
+        return False
+    for x in _ENDINGS:
+        stem = a[: len(a) - len(x)]
+        if not a.endswith(x) or len(stem) < MIN_STEM:
+            continue
+        for y in _ENDINGS:
+            if b == stem + y and x != y and (x in _INFLECTED or y in _INFLECTED):
+                return True
+    return False
+
+
 def classify(
     span: str, name: str, *, apply_threshold: float, suggest_threshold: float
 ) -> tuple[float, bool, Status | None]:
     """(ratio, same Soundex, status) of a span (words joined with spaces) against a name; the
-    status is None when the span is neither applied nor suggested."""
+    status is None when the span is neither applied nor suggested. Another form of a name that is
+    also an ordinary word (the verb "solve" for the show "Solved") is never a variant: it is that
+    word, said as itself."""
     a, b = normalise(span), normalise(name)
     if not a or not b:
         return 0.0, False, None
+    if is_inflection(a, b):
+        return SequenceMatcher(None, a, b).ratio(), soundex(a) == soundex(b), None
     ratio = SequenceMatcher(None, a, b).ratio()
     same_sound = soundex(a) == soundex(b)
     if ratio >= apply_threshold and (len(b) >= SHORT_NAME or same_sound):
@@ -119,8 +142,9 @@ def find_variants(
 ) -> list[Variant]:
     """Every span of 1..MAX_SPAN adjacent words inside one sentence that is a variant of a name.
     A span written exactly like the name (apart from case) is not a variant, and a longer span is
-    not one when a shorter span inside it (sharing its first or last word) is the name or an
-    applied variant of it ("neon sign" when "neon" already counts; "i'm curious like" when
+    not one when a shorter span inside it (sharing its first or last word) is the name, another
+    form of it or an applied variant of it ("neon sign" when "neon" already counts; "solve it"
+    for "Solved"; "i'm curious like" when
     "curious like" does). Each distinct span text is one Variant with its count; a span is
     counted for the name it fits best. Applied variants come first, then suggestions, each by
     count (most first) then text."""
@@ -131,8 +155,9 @@ def find_variants(
     lower_names = {name.lower() for name in names}
 
     def applies(span: str) -> bool:
-        """Whether this span is a name or an applied variant of one by itself."""
-        if span in lower_names:
+        """Whether this span is a name, another form of one ("solve" for "Solved") or an applied
+        variant of one by itself."""
+        if span in lower_names or any(is_inflection(normalise(span), normalise(n)) for n in names):
             return True
         return any(
             classify(span, n, apply_threshold=apply_threshold, suggest_threshold=suggest_threshold)[
