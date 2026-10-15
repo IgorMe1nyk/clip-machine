@@ -2,6 +2,53 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-15 — Day run: the Oct 15 swap, Batch A fixes, re-renders
+
+**Oct 15 swap (fixed first):** it had not been applied. `used.json` still had C02, C04, C05,
+C08, C13 posted and S09, S12, S15, S17, S18 unposted. Their `posted_at` was cleared by a one-off
+script (backups in `runs/_scratch/swap-2026-10-15/`), then `campaign-posted` marked the five S
+clips. The plan's Oct 15 now reads tiktok C06; instagram C01, S09, S12, S06; youtube S15, S17,
+S18, S04. The five C clips are unposted, not rejected, and moved to Oct 16.
+`schedule_2026-10-15.md` was left as it was.
+
+**Rejected:** S51, S53, S75 (Igor), S77 (see below).
+
+**Fixes**, one test each (the test fails on the old code):
+- `6f859f3` + `3619d32`: the auto name-spelling no longer turns "solve/solves/solving" (or
+  "solve it") into "Solved". After the review, only a one-word name shaped like a verb (-ed,
+  -ing) has "forms", so misspellings of real names (david/Davis, holms/Holmes) still apply.
+- `f91a9a8`: "sex", "sexual", "sexy" are flagged, not masked. With `hook.sensitive: fail` a hook
+  with them would now fail the moment; no campaign sets `fail` (default `warn`).
+- `72edb23`: YouTube titles are sentence-cased after . ? ! (not after "..." or "u.s.").
+- `73ffb4a` + `79cfd1e`: a title leaves out the words the lists mask. The sentences holding
+  one go first, then the words (with a determiner before a phrase-final swear). The result needs 3
+  words and must not end on a dangling word or a contraction, else the masked title is used. The
+  report notes `title_without_masked_words`.
+- `bc5c77c` + `6d29323`: the scout's hook length is a `soft_check` of `call_structured`. It asks
+  for the repair while one is left and never fails the call; an answer that broke only it is kept
+  if the repair is invalid. Topic and caption stay strict.
+
+**Checks**, each run separately on each commit's own tree (`runs/_scratch/checks.sh`): ruff,
+format, mypy, pytest all exit 0 at every commit (2290 → 2299 passed, 3 skipped). Once, ruff
+check gave exit 1 on an import order before the `bc5c77c` commit; it was fixed and all four
+were re-run before the commit. pip-audit was not run (no dependency changed). A fresh-context
+review of the first five commits found three real problems (unreadable titles, real names
+blocked, a soft-only answer lost on an invalid repair); the follow-up commits fix them.
+
+**S28 / S77 against the audio** (the window re-transcribed with large-v3-turbo and small, no
+prompt): S28 really says "joking about a pizza man" (pizza 0.96/0.87, man 0.72/0.93), so the
+caption is kept. S77 is "pure steel" in turbo (pure 0.45) and still makes no sense, so it is
+rejected.
+
+**Re-rendered** (`campaign --campaign solved --only S22,S42,S45,S54,S66,S76`, all unposted): 6
+rendered, 0 failed, 0 API calls, 346 s. Titles: S22 "You can't find yourself. You build it.",
+S54 "Too much honesty?", S76 "A friend called out" (Igor may prefer his own). Captions:
+S42 says "solve"; S45 and S66 are unmasked. Old files are in `runs/_scratch/rerender-backup-2026-10-15/`.
+
+**Plan** rebuilt; posted rows and result columns unchanged apart from the swap. Oct 16-22: 8 a
+day (instagram 4, youtube 4). Schedules regenerated with each clip's pinned comment unchanged.
+12 hooks for the no-hook clips are proposed to Igor and not yet written.
+
 ## 2026-10-15 — Overnight Batch A (Solved): wider scout search, six episodes
 
 **Wider search** (`c003e75`): the scout's first pass (Haiku, one call per `candidates.block_minutes`
