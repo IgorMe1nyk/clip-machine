@@ -632,6 +632,11 @@ def test_a_soft_check_asks_for_the_repair_but_never_fails_the_call(rig: Rig) -> 
     with pytest.raises(InvalidModelOutput, match="still invalid after one retry: bad ids$"):
         rig.call(check=lambda parsed: "bad ids", soft_check=lambda parsed: "hook too long")
     assert "bad ids; hook too long" in fake.create_calls[1]["messages"][0]["content"]
+    # the first answer broke only the soft rule and the repair is invalid: the first is taken
+    fake = rig.script([answer(), answer("not json")])
+    parsed, record = rig.call(soft_check=lambda parsed: "hook too long")
+    assert parsed.moments and not record.purpose.endswith(":repair")
+    assert len(fake.create_calls) == 2 and rig.costs().totals.calls >= 2
 
 
 def test_check_that_passes_costs_no_extra_call(rig: Rig) -> None:

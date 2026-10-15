@@ -520,12 +520,14 @@ class ClaudeClient:
         The problem is sent to the model and logged, so it must never contain the model's own
         text or any transcript text. `soft_check` works the same way for a rule worth a repair
         but never a failure: its problem asks for the repair while one is left, and the last
-        answer is taken whatever it says (the caller deals with what still breaks the rule).
+        answer is taken whatever it says (the caller deals with what still breaks the rule). An
+        answer that broke only a soft rule is kept, and returned when the repair is invalid.
         """
         if repairs not in (0, 1):
             raise ValueError("repairs must be 0 or 1")
         prompt = user
         problem = ""
+        kept: tuple[T, CostRecord] | None = None  # an answer that broke only a soft rule
         for round_number in range(1 + repairs):
             label = purpose if round_number == 0 else f"{purpose}:repair"
             record, text = self._one_call(
@@ -534,14 +536,20 @@ class ClaudeClient:
             parsed, problem = self._parse(schema, text, record.stop_reason)
             if parsed is not None:
                 last = round_number == repairs
-                checks = (check, None if last else soft_check)
-                found = [p for p in (c(parsed) for c in checks if c is not None) if p]
+                strict = check(parsed) if check is not None else None
+                soft = soft_check(parsed) if soft_check is not None and not last else None
+                if soft and not strict:
+                    kept = (parsed, record)
+                found = [p for p in (strict, soft) if p]
                 if found:
                     parsed, problem = None, "; ".join(found)
             if parsed is not None:
                 return parsed, record
             log.info(f"claude: {label} gave an invalid answer ({problem})")
             prompt = user + REPAIR_NOTE.format(problem=problem)
+        if kept is not None:
+            log.info(f"claude: {purpose}: the repair was invalid; the first answer is taken")
+            return kept
         retried = "was still invalid after one retry" if repairs else "was invalid"
         raise InvalidModelOutput(f"the model's answer for {purpose} {retried}: {problem}")
 
