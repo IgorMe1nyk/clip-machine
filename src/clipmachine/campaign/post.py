@@ -26,6 +26,8 @@ from clipmachine.utils.wordlists import Hit, WordLists, mask_text
 TITLE_MAX = 100  # YouTube's title limit
 TITLE_PREFIX = "TITLE: "
 _ELLIPSIS = "..."
+_SENTENCE_END = ".?!"
+_CLOSING = "\"')]”’"
 
 
 def _core(word: str) -> tuple[str, str, str]:
@@ -58,7 +60,8 @@ def keep_words(cfg: CampaignConfig, extra: Iterable[str]) -> list[str]:
 
 
 def sentence_case(text: str, keep: Sequence[str] = ()) -> str:
-    """Lower case with the first letter capitalised, then every phrase in `keep` (matched whole
+    """Lower case with the first letter of each sentence capitalised (after . ? or !, see
+    _ends_sentence), and every phrase in `keep` (matched whole
     word, any case, punctuation around the words kept) written as `keep` has it."""
     words = text.split()
     if not words:
@@ -77,11 +80,25 @@ def sentence_case(text: str, keep: Sequence[str] = ()) -> str:
                     parts[i + j] = (lead, spelling, trail)
                     cores[i + j] = spelling.lower()
     out = ["".join(part) for part in parts]
-    first = out[0]
-    index = next((i for i, c in enumerate(first) if c.isalpha()), None)
-    if index is not None and not _is_kept(0, keep, cores):
-        out[0] = first[:index] + first[index].upper() + first[index + 1 :]
+    for i, word in enumerate(out):
+        if (i == 0 or _ends_sentence(parts[i - 1])) and not _is_kept(i, keep, cores):
+            out[i] = _capitalised(word)
     return " ".join(out)
+
+
+def _ends_sentence(part: tuple[str, str, str]) -> bool:
+    """Whether a word ends a sentence: its trailing punctuation (closing quotes and brackets
+    aside) ends in . ? or !, but not an ellipsis, and the word is not an abbreviation (u.s.)."""
+    _, core, trailing = part
+    end = trailing.rstrip(_CLOSING)
+    return bool(end) and end[-1] in _SENTENCE_END and not end.endswith("..") and "." not in core
+
+
+def _capitalised(word: str) -> str:
+    index = next((i for i, c in enumerate(word) if c.isalpha()), None)
+    if index is None:
+        return word
+    return word[:index] + word[index].upper() + word[index + 1 :]
 
 
 def _is_kept(position: int, keep: Sequence[str], cores: Sequence[str]) -> bool:

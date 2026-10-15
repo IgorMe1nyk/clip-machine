@@ -149,6 +149,17 @@ def test_the_title_prefix_and_caption_are_masked_but_not_the_closer(project: Pat
     assert [h.word for h in hits] == ["blorp", "blorp"]
 
 
+def test_the_title_is_sentence_cased_after_every_sentence_end() -> None:
+    # found in Batch A: "You can't find yourself. you build it." (S22), "honesty? you're" (S54)
+    assert sentence_case("YOU CAN'T FIND IT. YOU BUILD IT.") == "You can't find it. You build it."
+    assert sentence_case("too much? you're out! (yes) 'really?' sure") == (
+        "Too much? You're out! (Yes) 'really?' Sure"
+    )
+    assert sentence_case("WAIT... WHAT") == "Wait... what"  # an ellipsis is not an end
+    assert sentence_case("THE U.S. TEAM") == "The u.s. team"  # nor an abbreviation
+    assert sentence_case("NO. ZORB1E WON", ["Zorb1e"]) == "No. Zorb1e won"
+
+
 @pytest.mark.parametrize("platform", ["tiktok", "instagram", "youtube"])
 def test_the_closer_is_always_the_last_line(platform: str) -> None:
     text, _ = post_text(cfg(), mom(platform=platform), "the closer", None)
