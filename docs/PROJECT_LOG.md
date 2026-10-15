@@ -2,6 +2,44 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-15 — Overnight Batch A (Solved): wider scout search, six episodes
+
+**Wider search** (`c003e75`): the scout's first pass (Haiku, one call per `candidates.block_minutes`
+= 10 min block) asks each block for `min(candidates.per_block_max = 8, ceil(clip.candidates_target
+/ blocks))` moments. With `candidates_target: 20` a 4-hour episode got 1 per block. Now 40 (2 per
+block), and `clip.keep_top` 8 -> 16, without which the scorer could never keep more than 8.
+`scout.per_episode` (15) still caps the proposals. Test on the 250-min Life Path episode: 50
+candidates, 11 kept, average kept score 8.00 (earlier episodes 7.17-7.75), $0.287. Kept.
+
+**Real runs** (`produce --campaign solved`, 1440p AV1 sources, overnight cap $0.60 per run through
+a temporary `budget.max_usd_per_run`, not committed):
+
+| Episode | Length | Candidates | Kept | Rendered | No hook | API cost |
+|---|---|---|---|---|---|---|
+| Finding Your Life Path | 250 min | 50 | 11 | 11 (yt 9, ig 2) | 0 | $0.2868 |
+| Dating | 269 min | 52 | 7 | 6 (ig 5, yt 1) | 1 | $0.5099 (2 tries) |
+| Romantic Love | 95 min | 35 | 14 | 9 (ig 8, yt 1) | 5 | $0.3842 (2 tries) |
+| Bad Values | 241 min | 47 | 8 | 4 (yt 2, ig 2) | 4 | $0.2915 |
+| How to Make Friends as an Adult | 277 min | 55 | 14 | 13 (ig 9, yt 4) | 1 | $0.2630 |
+| The Psychology of Procrastination | 279 min | 56 | 5 | 4 (yt 4) | 1 | $0.3265 |
+
+Total $2.0619. Transcription on the GPU ran at about 16x realtime.
+
+**Found tonight, not fixed (out of scope):**
+- Scorer repair: when a chunk's first answer fails schema validation (`reject_reason must be set
+  exactly when the verdict is reject`), the scout's hook check never saw it, so the repair is
+  judged strictly on hook length and a long hook kills the whole run. Dating and Romantic Love
+  each lost one try this way ($0.13-0.16 each).
+- 12 of 59 proposals have no hook (the repair still broke 7 words / 48 characters). `produce`
+  then exits 1, which a script cannot tell apart from a real render failure.
+- Masking "sexy" and "sexual" shows "s***", which reads as a swear word (S45, S66), like
+  "self harm" before.
+- The automatic name spelling (`auto_spelling.json`, from `names: [..., Solved]`) applies
+  "solve", "solves" and "also loved" -> "Solved". Only S42's captions are hit so far.
+- YouTube titles lowercase the word after "." or "?" (S22, S54) and show masked words (S54, S76).
+- S52 and S53 share one passage but overlap less than half, so the overlap rule kept both.
+- Word-list false positives: "better", "blunt", "stakes", "kills".
+
 ## 2026-10-14 — Word lists: "self harm" is flagged, no longer masked (Igor's request)
 
 A deviation from Brief 11.1 (Tier 1 lists self-harm as masked), asked for by Igor on 2026-10-14.
