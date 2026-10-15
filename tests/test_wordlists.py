@@ -226,3 +226,11 @@ def test_self_harm_is_flagged_not_masked() -> None:
     assert [h.word for h in sensitive_hits("no self-harming", lists)] == ["self-harming"]
     # flag-only, so it no longer makes a context word next to it masked
     assert mask_text("self harm and cutting", lists)[0] == "self harm and cutting"
+
+
+def test_only_fans_as_two_words_is_masked_like_onlyfans() -> None:
+    lists = load_wordlists(REPO_ROOT)
+    assert mask_text("the onlyfans girls", lists)[0] == "the o*** girls"
+    assert mask_text("the only fans girls", lists)[0] == "the o*** f*** girls"
+    assert mask_text("the Only Fans girls", lists)[0] == "the O*** F*** girls"
+    assert mask_text("the only fan here", lists)[0] == "the only fan here"

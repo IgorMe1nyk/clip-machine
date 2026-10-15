@@ -9,7 +9,7 @@ Inflections are matched too: -s, -es, -ed, -ing, -er, -ers, -in.
 fuck, motherfucker, shit, bullshit, bitch, asshole, dick, pussy, cunt, bastard, cock, dickhead, prick, whore, slut, hoe, thot
 
 ### Sexual / adult
-porn, porno, pornhub, onlyfans, sex, sexual, sexy, nude, nudes, naked, horny, orgasm, blowjob, hooker, stripper, escort
+porn, porno, pornhub, onlyfans, "only fans", sex, sexual, sexy, nude, nudes, naked, horny, orgasm, blowjob, hooker, stripper, escort
 
 ### Hard drugs
 cocaine, coke (see note), crack (see note), meth, heroin, fentanyl, molly, ecstasy, lsd, ketamine, xanax, percocet, oxy, lean, shrooms
