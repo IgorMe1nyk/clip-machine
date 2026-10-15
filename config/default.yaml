@@ -111,7 +111,7 @@ render:
   audio_fade_seconds: 0.08   # seconds of audio fade-in and fade-out on every clip; 0 = off
 fetch:
   max_size_gb: 8             # GiB (1024^3 bytes)
-  max_duration_minutes: 240
+  max_duration_minutes: 300
   min_duration_seconds: 60
 captions:
   style: box_karaoke         # box_karaoke: karaoke words on a dark rounded box, D-022 | legacy: the older white outlined captions

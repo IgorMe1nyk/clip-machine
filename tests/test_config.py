@@ -178,7 +178,7 @@ def test_resolved_file_from_before_preferred_range_still_loads(
 def test_fetch_section_values(project: Path) -> None:
     fetch = load_app_config(project).fetch
     assert fetch.max_size_gb == 8
-    assert fetch.max_duration_minutes == 240
+    assert fetch.max_duration_minutes == 300  # 5 h episodes (the model default stays 240)
     assert fetch.min_duration_seconds == 60
 
 
