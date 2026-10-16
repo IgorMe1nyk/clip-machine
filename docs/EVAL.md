@@ -23,6 +23,7 @@ GTX 1660 Ti (CUDA, int8_float16) unless a row says otherwise.
 | 2026-10-11 | T2, studio test, third-party, private, at most 20 min | not recorded | not recorded | 0.0176 (3 calls) | not recorded | |
 | 2026-10-11 | T3, 41:10, first run | 18 | 6, then 7 | 0.0981 (7 calls) | transcribe 138 s | 2 usable, 1 needed camera fixes, 4 failed on cut points; led to Briefs 9 and 10 |
 | 2026-10-12 | A streamer interview (campaign source, permission to clip), 97:00, AV1 1080p, 1.03 GB | 20 | 3 (mean score 7.33) | 0.0730 (11 calls: find 0.0094, score 0.0636) | 12 min 40 s (stage sum 759.9 s: fetch 14.0 s, transcribe 596.7 s at 10.2x realtime, candidates 24.1 s, score 15.6 s, render 109.3 s for 3 clips, report 0.2 s) | The campaign allowed only human-picked moments, so its 32 clips were rendered in campaign mode at $0 (the transcript was reused) |
+| 2026-10-15 | NASA in-flight interview (public domain, the README demo; `docs/media/SOURCE.md`), 12:42, 720p | 4 | 3 (scores 9, 8, 8) | 0.0181 (2 calls) | 6 min 56 s wall (stage sum 402.9 s: fetch 5.1 s, transcribe 164.2 s on the **CPU**, 5.6x realtime, candidates 3.0 s, score 6.9 s, render 223.6 s for 3 clips, report 0.1 s) | Fresh clone following the README, `--client general`, run cap set to $0.50. Commit `98c5e0c`. Not rated by Igor |
 
 ### Campaign mode with the AI scout (`produce`)
 
