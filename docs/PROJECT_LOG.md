@@ -2,6 +2,41 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-15 — S05 rejected; campaign-posted records the slot; Oct 16 marked posted
+
+- **Sheets:** S05 was rejected (Igor) and the plan rebuilt. The Oct 16-22 sheets were regenerated
+  from it (the old ones in `runs/_scratch/schedules_before_2026-10-15_night/`). New to Oct 16:
+  S20 (youtube 8:00 PM, from Oct 17). S07, S08 and S19 each moved one slot earlier, and S80 came in
+  on Oct 22 from Oct 23. Every clip already had a pinned comment, so none was written.
+- **Upload pack:** `runs/_campaigns/post_2026-10-16/`: README.txt plus 8 folders, each with the
+  mp4, caption.txt and pinned_comment.txt. Igor's face check is still owed for S20.
+- **S80:** the YouTube title was set by hand in `runs/_campaigns/solved/youtube/S80.txt` to "If I
+  just knew the right system" (it was "If i ..."). A re-render of S80 would reset it.
+- **Fix `76ff1d7`:** `campaign-posted` stamped the current time. Marked tonight, Oct 16's posts
+  would have been dated Oct 15 and every later clip would have moved a day earlier. A post is now
+  recorded at the clip's slot in the plan (`--at "YYYY-MM-DD HH:MM"` overrides; no slot: now).
+  `--date YYYY-MM-DD` marks a whole day after listing it. In the allocator, a post stamped on a
+  slot's minute uses up that slot, not the earliest one.
+- **Tests:** the four Igor asked for, plus four for the edge bugs the review found. **Checks**,
+  each run separately: ruff, format, mypy and pytest all exit 0 (2315 passed, 3 skipped). One test
+  changed meaning: without schedule.yaml, a clip marked ahead now records its slot's date.
+- **Review** (fresh context): it ran tonight's command on a copy and found no problem. It also found
+  four edge bugs, all fixed in the same commit: a kept post's time, a post on another platform
+  taking the planned slot, an old stamp on a slot's minute, and an unknown `--campaign` with
+  `--date`.
+- **Real run:** `campaign-posted --date 2026-10-16` marked S10, S07, S13, S08, S21, S19, S23 and S20
+  at their slots (backups in `runs/_scratch/before-posted-2026-10-16/`). The rebuilt plan was
+  compared with the backup row by row: only those 8 rows changed (posted no -> yes). Oct 16 has
+  the same 8 clips at the same times; Oct 17-24 are unchanged.
+
+**Parked**
+- Capitalize the standalone "i" in titles (S80's "If i just knew ..."; fixed by hand there).
+- Without schedule.yaml, marking a clip ahead still moves that campaign's own plan: `plan_rows`
+  never counts posted rows against slots. This predates tonight; every current campaign uses the
+  combined plan.
+- `campaign-posted --date` over several campaigns checks every mark first, then saves each
+  used.json in turn. A write error on the second save would leave the first one saved.
+
 ## 2026-10-15 — Igor's hooks rendered; N3on's last clips rejected
 
 - **N3on:** the 5 unposted clips (C02, C04, C05, C08, C13) are rejected (budget nearly gone);
