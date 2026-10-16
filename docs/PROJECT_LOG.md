@@ -2,6 +2,44 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-15 — Brief 13: v1.0.0 release prep (branch `release/v1.0.0`, not pushed, not tagged)
+
+- **Upload packs:** `runs/_campaigns/post_2026-10-17/` to `post_2026-10-22/`, 8 posts each, built
+  by `runs/_scratch/build_packs.py` from the plan and each day's sheet (same layout as Oct 16).
+  The face-check flag comes from the sheet's Review line; all 48 clips are flagged, since none of
+  them was on the sheet Igor face-checked.
+- **Hygiene scan** of all history (trufflehog3 3.0.10 and detect-secrets 1.5.0 via uvx, plus a
+  regex pass): no secret, `.env` never committed. Campaign and creator names, two handles and a
+  personal path are in pushed history; the list with commit ids is in
+  `runs/_scratch/hygiene/findings.md`. History was not rewritten (Igor decides).
+- **Clean clone** (`runs/_scratch/clean-clone/`, from `98c5e0c`): every README step worked
+  as written; checks all exit 0 (2315 passed, 3 skipped). The normal pipeline on a 12:42 NASA
+  in-flight interview (CPU transcription, run cap $0.50): 4 candidates, 3 kept, $0.0181, 6 min
+  56 s. A second clean clone of the release branch: all checks exit 0 again.
+- **Docs:** README rewritten as the portfolio page (demo GIF and stills in `docs/media/`, source
+  in `docs/media/SOURCE.md`), `docs/CASE_STUDY.md` (draft), `docs/RELEASE_NOTES_v1.0.0.md`, real
+  runs added to `docs/EVAL.md`. Version 1.0.0 in `pyproject.toml`, `__init__.py` and `uv.lock`.
+  No new dependency; no LICENSE file.
+
+- **Name scrub (Igor approved, current tree only):** campaign, creator and show names, episode
+  titles, handles and personal paths are out of the tracked files (`d9fb55e`, `bf5a580`). A
+  campaign's own title keep-case words now live in its git-ignored `campaign.yaml`
+  (`title_keep_case`), and `campaign-init` writes the drafted words there; 3 tests fail on the old
+  code. A scan of all 188 tracked files with the history scan's name and path patterns, plus the
+  episode titles and handles, finds 0 hits (52 in the pre-scrub versions). detect-secrets 1.5.0
+  on the tree: test fixtures and model checksums only.
+- **Fresh-context review** of README, CASE_STUDY and the release notes: 2 must-fix (stale test
+  count; repair spend was spread over 9 episodes, not mostly one) and 11 should-fix (scoring in
+  chunks of 20, 10-16x realtime, safe-area wording, mypy flags, secrets-file wording, pip-audit
+  cadence, GPU wheel size, the text model, "posted or scheduled", the commit count), all fixed,
+  plus the nits. EVAL's scout totals corrected: 413 calls, 2204.5 min. Case-study bugs 1 and 4
+  now use Igor's own account.
+
+**Parked**
+- The upload-pack builder is a scratch script; a `campaign-pack --date` command would make it
+  repeatable.
+- The scout's per-run cost line could go into `run.json`, so EVAL rows need no ledger digging.
+
 ## 2026-10-15 — S05 rejected; campaign-posted records the slot; Oct 16 marked posted
 
 - **Sheets:** S05 was rejected (Igor) and the plan rebuilt. The Oct 16-22 sheets were regenerated
@@ -10,7 +48,7 @@ Dated entries, newest first. Numbers come from real runs only.
   on Oct 22 from Oct 23. Every clip already had a pinned comment, so none was written.
 - **Upload pack:** `runs/_campaigns/post_2026-10-16/`: README.txt plus 8 folders, each with the
   mp4, caption.txt and pinned_comment.txt. Igor's face check is still owed for S20.
-- **S80:** the YouTube title was set by hand in `runs/_campaigns/solved/youtube/S80.txt` to "If I
+- **S80:** the YouTube title was set by hand in `runs/_campaigns/campaign-b/youtube/S80.txt` to "If I
   just knew the right system" (it was "If i ..."). A re-render of S80 would reset it.
 - **Fix `76ff1d7`:** `campaign-posted` stamped the current time. Marked tonight, Oct 16's posts
   would have been dated Oct 15 and every later clip would have moved a day earlier. A post is now
@@ -37,11 +75,11 @@ Dated entries, newest first. Numbers come from real runs only.
 - `campaign-posted --date` over several campaigns checks every mark first, then saves each
   used.json in turn. A write error on the second save would leave the first one saved.
 
-## 2026-10-15 — Igor's hooks rendered; N3on's last clips rejected
+## 2026-10-15 — Igor's hooks rendered; campaign-a's last clips rejected
 
-- **N3on:** the 5 unposted clips (C02, C04, C05, C08, C13) are rejected (budget nearly gone);
-  their files are kept. No N3on clip is left in the plan or in the Oct 16-22 sheets.
-- **Hooks:** Igor's hooks went into `campaigns/solved/moments.yaml` for S33, S40, S41, S46, S48,
+- **campaign-a:** the 5 unposted clips (C02, C04, C05, C08, C13) are rejected (budget nearly gone);
+  their files are kept. No campaign-a clip is left in the plan or in the Oct 16-22 sheets.
+- **Hooks:** Igor's hooks went into `campaigns/campaign-b/moments.yaml` for S33, S40, S41, S46, S48,
   S49, S57, S59, S60, S69 and S80 (backup `moments.yaml.bak`; the older .bak was copied to
   `runs/_scratch/`). **S61 is rejected:** the clip says the top value is what you'd give up
   everything else for, not what you want most. It never brings up "need", so the proposed hook
@@ -49,7 +87,7 @@ Dated entries, newest first. Numbers come from real runs only.
 - **Renders:** `produce` on the five episodes with `CLIPMACHINE_NO_API=1`: every episode was
   already scouted, $0, 0 API calls. 11 rendered, 0 failed; every other clip was kept unchanged.
 - **S76:** the YouTube title is "The friend who called me out", set by hand in
-  `runs/_campaigns/solved/youtube/S76.txt`. A re-render of S76 would reset it from the hook.
+  `runs/_campaigns/campaign-b/youtube/S76.txt`. A re-render of S76 would reset it from the hook.
 - **Pinned comments:** written for the 11 clips and appended to `pinned_comments_batch-a.md`
   (rules checked by a script; 5 of 11 end with a new follow line). S80 is scheduled for Oct 23.
 - **Plan** rebuilt (instagram 33, youtube 29 scheduled); Oct 16-22 sheets regenerated, 8 a day.
@@ -67,8 +105,8 @@ S18, S04. The five C clips are unposted, not rejected, and moved to Oct 16.
 **Rejected:** S51, S53, S75 (Igor), S77 (see below).
 
 **Fixes**, one test each (the test fails on the old code):
-- `6f859f3` + `3619d32`: the auto name-spelling no longer turns "solve/solves/solving" (or
-  "solve it") into "Solved". After the review, only a one-word name shaped like a verb (-ed,
+- `6f859f3` + `3619d32`: the auto name-spelling no longer turns a verb (and its other forms,
+  or the verb plus "it") into a show name shaped like that verb. After the review, only a one-word name shaped like a verb (-ed,
   -ing) has "forms", so misspellings of real names (david/Davis, holms/Holmes) still apply.
 - `f91a9a8`: "sex", "sexual", "sexy" are flagged, not masked. With `hook.sensitive: fail` a hook
   with them would now fail the moment; no campaign sets `fail` (default `warn`).
@@ -93,7 +131,7 @@ prompt): S28 really says "joking about a pizza man" (pizza 0.96/0.87, man 0.72/0
 caption is kept. S77 is "pure steel" in turbo (pure 0.45) and still makes no sense, so it is
 rejected.
 
-**Re-rendered** (`campaign --campaign solved --only S22,S42,S45,S54,S66,S76`, all unposted): 6
+**Re-rendered** (`campaign --campaign campaign-b --only S22,S42,S45,S54,S66,S76`, all unposted): 6
 rendered, 0 failed, 0 API calls, 346 s. Titles: S22 "You can't find yourself. You build it.",
 S54 "Too much honesty?", S76 "A friend called out" (Igor may prefer his own). Captions:
 S42 says "solve"; S45 and S66 are unmasked. Old files are in `runs/_scratch/rerender-backup-2026-10-15/`.
@@ -102,40 +140,41 @@ S42 says "solve"; S45 and S66 are unmasked. Old files are in `runs/_scratch/rere
 day (instagram 4, youtube 4). Schedules regenerated with each clip's pinned comment unchanged.
 12 hooks for the no-hook clips are proposed to Igor and not yet written.
 
-## 2026-10-15 — Overnight Batch A (Solved): wider scout search, six episodes
+## 2026-10-15 — Overnight Batch A (campaign-b): wider scout search, six episodes
 
 **Wider search** (`c003e75`): the scout's first pass (Haiku, one call per `candidates.block_minutes`
 = 10 min block) asks each block for `min(candidates.per_block_max = 8, ceil(clip.candidates_target
 / blocks))` moments. With `candidates_target: 20` a 4-hour episode got 1 per block. Now 40 (2 per
 block), and `clip.keep_top` 8 -> 16, without which the scorer could never keep more than 8.
-`scout.per_episode` (15) still caps the proposals. Test on the 250-min Life Path episode: 50
+`scout.per_episode` (15) still caps the proposals. Test on the 250-min P5 episode: 50
 candidates, 11 kept, average kept score 8.00 (earlier episodes 7.17-7.75), $0.287. Kept.
 
-**Real runs** (`produce --campaign solved`, 1440p AV1 sources, overnight cap $0.60 per run through
+**Real runs** (`produce --campaign campaign-b`, 1440p AV1 sources, overnight cap $0.60 per run through
 a temporary `budget.max_usd_per_run`, not committed):
 
 | Episode | Length | Candidates | Kept | Rendered | No hook | API cost |
 |---|---|---|---|---|---|---|
-| Finding Your Life Path | 250 min | 50 | 11 | 11 (yt 9, ig 2) | 0 | $0.2868 |
-| Dating | 269 min | 52 | 7 | 6 (ig 5, yt 1) | 1 | $0.5099 (2 tries) |
-| Romantic Love | 95 min | 35 | 14 | 9 (ig 8, yt 1) | 5 | $0.3842 (2 tries) |
-| Bad Values | 241 min | 47 | 8 | 4 (yt 2, ig 2) | 4 | $0.2915 |
-| How to Make Friends as an Adult | 277 min | 55 | 14 | 13 (ig 9, yt 4) | 1 | $0.2630 |
-| The Psychology of Procrastination | 279 min | 56 | 5 | 4 (yt 4) | 1 | $0.3265 |
+| P5 | 250 min | 50 | 11 | 11 (yt 9, ig 2) | 0 | $0.2868 |
+| P6 | 269 min | 52 | 7 | 6 (ig 5, yt 1) | 1 | $0.5099 (2 tries) |
+| P7 | 95 min | 35 | 14 | 9 (ig 8, yt 1) | 5 | $0.3842 (2 tries) |
+| P8 | 241 min | 47 | 8 | 4 (yt 2, ig 2) | 4 | $0.2915 |
+| P9 | 277 min | 55 | 14 | 13 (ig 9, yt 4) | 1 | $0.2630 |
+| P10 | 279 min | 56 | 5 | 4 (yt 4) | 1 | $0.3265 |
 
 Total $2.0619. Transcription on the GPU ran at about 16x realtime.
 
 **Found tonight, not fixed (out of scope):**
 - Scorer repair: when a chunk's first answer fails schema validation (`reject_reason must be set
   exactly when the verdict is reject`), the scout's hook check never saw it, so the repair is
-  judged strictly on hook length and a long hook kills the whole run. Dating and Romantic Love
+  judged strictly on hook length and a long hook kills the whole run. P6 and P7
   each lost one try this way ($0.13-0.16 each).
 - 12 of 59 proposals have no hook (the repair still broke 7 words / 48 characters). `produce`
   then exits 1, which a script cannot tell apart from a real render failure.
 - Masking "sexy" and "sexual" shows "s***", which reads as a swear word (S45, S66), like
   "self harm" before.
-- The automatic name spelling (`auto_spelling.json`, from `names: [..., Solved]`) applies
-  "solve", "solves" and "also loved" -> "Solved". Only S42's captions are hit so far.
+- The automatic name spelling (`auto_spelling.json`, from the campaign's `names`) turns the
+  verb the show is named after, its other forms and one look-alike phrase into the show's name.
+  Only S42's captions are hit so far.
 - YouTube titles lowercase the word after "." or "?" (S22, S54) and show masked words (S54, S76).
 - S52 and S53 share one passage but overlap less than half, so the overlap rule kept both.
 - Word-list false positives: "better", "blunt", "stakes", "kills".

@@ -20,7 +20,7 @@ from clipmachine.campaign.post import (
 from clipmachine.utils.wordlists import load_wordlists
 from test_render import invented_lists
 
-ACRONYMS = ["NBA", "NFL", "MPJ", "US", "UK"]
+ACRONYMS = ["NBA", "NFL", "ZBX", "US", "UK"]
 
 
 def cfg(**changes: Any) -> CampaignConfig:
@@ -52,7 +52,7 @@ def test_sentence_case_lowers_everything_but_the_first_letter() -> None:
 def test_kept_words_keep_their_spelling_whatever_the_case_around_them() -> None:
     keep = ["Zorb1e", "QXV", *ACRONYMS]
     assert sentence_case("WHY ZORB1E LEFT THE NBA", keep) == "Why Zorb1e left the NBA"
-    assert sentence_case("ZORB1E AND MPJ IN THE US?", keep) == "Zorb1e and MPJ in the US?"
+    assert sentence_case("ZORB1E AND ZBX IN THE US?", keep) == "Zorb1e and ZBX in the US?"
     assert sentence_case("qxv, EXPLAINED", keep) == "QXV, explained"  # punctuation stays
 
 
@@ -72,6 +72,22 @@ def test_an_all_caps_hook_with_a_name_and_an_acronym_comes_out_correctly_cased()
 def test_keep_words_gathers_names_targets_allowed_and_the_app_list_once() -> None:
     words = keep_words(cfg(names=["Zorb1e", "QXV"], allowed=["frob", "Zorb1e"]), ["NBA", "nba"])
     assert words == ["Zorb1e", "QXV", "frob", "NBA"]  # spelling targets Zorb1e and QXV repeat
+
+
+def test_the_campaigns_own_title_keep_case_is_kept_before_the_app_list() -> None:
+    campaign = cfg(names=["Zorb1e"], title_keep_case=["ZBX", "nba", "Frob Co"])
+    words = keep_words(campaign, ["NBA", "UK"])
+    assert words[-4:] == ["ZBX", "nba", "Frob Co", "UK"]  # the campaign's "nba" spelling wins
+    assert "NBA" not in words
+    assert youtube_title("WHY ZBX AND FROB CO LEFT", keep_words(campaign, [])) == (
+        "Why ZBX and Frob Co left"
+    )
+
+
+def test_title_keep_case_defaults_to_empty_and_rejects_an_empty_entry() -> None:
+    assert cfg().title_keep_case == []
+    with pytest.raises(ValueError, match="title_keep_case"):
+        cfg(title_keep_case=["ZBX", "  "])
 
 
 # --- the title length ----------------------------------------------------------------------------

@@ -226,6 +226,9 @@ def to_config(draft: CampaignDraft, *, watermark_file: str | None) -> dict[str, 
     names = list(dict.fromkeys(" ".join(n.split()) for n in draft.names))
     data["names_to_check"] = names
     data["names"] = names
+    keep = list(dict.fromkeys(" ".join(k.split()) for k in draft.keep_case if k.strip()))
+    if keep:
+        data["title_keep_case"] = keep
     data["platforms"] = list(draft.platforms)
     data["post"] = {
         "prefix": {p: prefix.get(p, "") for p in draft.platforms if prefix.get(p)},
@@ -247,12 +250,6 @@ def render_yaml(data: dict[str, Any], draft: CampaignDraft, *, cut: bool) -> str
     if cut:
         lines.append(f"# the brief was longer than {MAX_BRIEF_CHARS} characters and was cut")
     lines.extend(f"# confirm: {_one_line(note)}" for note in draft.review_notes)
-    keep = [" ".join(k.split()) for k in draft.keep_case if k.strip()]
-    if keep:
-        lines.append(
-            "# title case to keep (add to campaign.title_keep_case in config/default.yaml): "
-            + ", ".join(keep)
-        )
     lines.append("# host_side is not drafted: check who is on screen in the report (Brief 12.2)")
     body = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=100)
     return "\n".join(lines) + "\n" + body

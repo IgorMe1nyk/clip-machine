@@ -2,13 +2,13 @@
 
 > **Written:** 2026-10-13 ~02:25 ET, end of session 6 (Mon Oct 12 14:38 → Tue Oct 13 ~03:00). Session 5 was a short planning session (Oct 12 01:33–02:30, briefs 8.3 and R1).
 > **Read next:** `ROLE-instructions.md` (how to work with Igor; skip `<first_move>`; don't re-ask PC specs or budget; do ask for today's stop time), then `docs/ROADMAP.md`, `docs/DECISIONS.md`, and the newest `docs/PROJECT_LOG.md` entries.
-> **Source of truth:** the repo (`C:\Users\15513\dev\clip-machine`, public as IgorMe1nyk/clip-machine). Repo docs beat any copy here.
+> **Source of truth:** the repo (local clone `%USERPROFILE%\dev\clip-machine`, public as IgorMe1nyk/clip-machine). Repo docs beat any copy here.
 > **Public repo rule:** no campaign, creator or show names, transcript text, hooks or frames in commits. Campaign specifics live only in the gitignored `campaigns/<slug>/` folder.
 
 ## 1. Where we are (stopped Tue Oct 13, 03:05 ET)
 **The product works end to end for paid clipping campaigns, and the first 9 posts are scheduled for Tue Oct 13** (3 per platform, all different moments, smooth-zoom renders):
 
-| Time (ET) | TikTok @minicast.tv | Instagram @minicast.tv | YouTube @watchminicast |
+| Time (ET) | TikTok | Instagram | YouTube |
 |---|---|---|---|
 | ~Noon | A01 12:30 PM | A03 11:45 AM | B05 1:00 PM |
 | Afternoon | A02 3:30 PM | A07 3:45 PM | B07 4:00 PM |
@@ -40,12 +40,12 @@
 **⚠️ D-028 (Fable may write code within its included weekly limit, usage credits off) was approved by Igor but may not be in DECISIONS.md yet. Add it.**
 
 ## 4. Business track (finally running)
-- **Brand: MiniCast.**
-  - TikTok **@minicast.tv**. Display name is stuck as "minicast.tv" until about Oct 19 (7-day name lock), then rename to MiniCast.
-  - Instagram **@minicast.tv**, Business account.
-  - YouTube **@watchminicast**, verified intermediate; advanced (ID check) pending.
+- **Brand:** one posting brand on three platforms (handles kept out of the repo).
+  - TikTok: the display name is locked for 7 days (until about Oct 19), then it gets the brand name.
+  - Instagram: Business account.
+  - YouTube: verified intermediate; advanced (ID check) pending.
   - Purple/black/white brand. Logo, banner and watermark were made with ChatGPT.
-- **Campaign 1** (podcast clipping on Whop Content Rewards, joined Oct 12):
+- **Campaign 1** (podcast clipping on a creator-rewards marketplace, joined Oct 12):
   - Pay: $1 per 1K views, min payout at 2K views, max $300 per clip.
   - Rules: ≥40% US/CA/UK viewers, ≥1% engagement, supplied watermark on every clip, approved closer on every caption, each clip posted once (different moments per platform).
   - Submit **48 h after posting** with analytics screenshots including **viewer location**.
@@ -54,9 +54,9 @@
 - Accounts are 2+ months old; Igor chose a shortened/no warm-up to catch budget. **The first posts are the experiment:** watch views, % US/CA/UK and engagement.
 
 ## 5. Next steps (in order)
-**Today, Tue Oct 13 (Igor, phone, ~5 min per post):** as each post goes live (11:45 AM → 7 PM), pin an opinion comment ("be honest, is he right?") and reply to every comment in the first hour. Check that YouTube B07 finished processing. Connect TikTok, Instagram and YouTube in Whop (Settings → Connected accounts) if not done.
+**Today, Tue Oct 13 (Igor, phone, ~5 min per post):** as each post goes live (11:45 AM → 7 PM), pin an opinion comment ("be honest, is he right?") and reply to every comment in the first hour. Check that YouTube B07 finished processing. Connect TikTok, Instagram and YouTube in the marketplace (Settings → Connected accounts) if not done.
 
-**Thu Oct 15 – Fri Oct 16 (48–72 h after posting):** for each of the 9: analytics screenshot (views, likes, comments, **viewer location**) + a post screenshot → the campaign's Google Form → link in `#content-rewards`. Submit when the views stop climbing fast, by day 4 at the latest (the pool is draining). Record views, % US/CA/UK and engagement per post (time slot + platform) for the posting-schedule data.
+**Thu Oct 15 – Fri Oct 16 (48–72 h after posting):** for each of the 9: analytics screenshot (views, likes, comments, **viewer location**) + a post screenshot → the campaign's Google Form → link in the campaign's submission channel. Submit when the views stop climbing fast, by day 4 at the latest (the pool is draining). Record views, % US/CA/UK and engagement per post (time slot + platform) for the posting-schedule data.
 
 0. **First thing next session:** build **Brief 11.2** (`docs/brief-11-2-per-platform-outputs.md`): one folder per platform, the right caption per platform, `posting_plan.csv`, and `--fix-platform`. Then fix the records (A03 → instagram, B05 → youtube; tonight they were marked under "tiktok" as a workaround) and re-render.
    - **Volume plan (Igor, Oct 13):** **3 posts per platform per day** (9 total) at about 12:30 / 3:30 / 6:30 PM ET. Go to **4 per platform** (the campaign cap is 4 a day per account) if the first results are healthy.
@@ -66,7 +66,7 @@
 2. Add a **results column** to the posting plan (views at 48 h, % US/CA/UK, engagement), so by the end of October the posting hours and volume are chosen from data.
 3. **Set up Buffer** (free: 3 channels, 10 queued posts each) to schedule the buffer of clips. Test whether TikTok posts publish fully or need a phone tap.
 4. **Disclosure question:** decide on platform paid-promotion labels; ask the campaign. Not legal advice; flagged.
-5. **Check the auto-spelling "curious like" → show name** rule (listen at its timestamp in `auto_spelling.json`); veto with an identity rule if it's normal speech.
+5. **Check the auto-spelling rule that turns a two-word phrase into a guest's nickname** (listen at its timestamp in `auto_spelling.json`); veto with an identity rule if it's normal speech.
 6. Watch one clip for **wide two-person shots**. Only then build Brief 8.3 (stacked layout).
 7. After real results: tune hook, zoom and caption config from data, not taste.
 
@@ -82,14 +82,14 @@
 - UI, batch, README, demo, case study
 - **EVAL row 3:** the T3 videos were deleted before rating, so log it as "not rated"
 - The `docs/brief-11-*.md` files stay untracked (real names); keep them local
-- Clean up risky "always allow" entries in `C:\Users\15513\.claude\settings.json` (from session 4)
+- Clean up risky "always allow" entries in `%USERPROFILE%\.claude\settings.json` (from session 4)
 
 ## 7. Standing rules (abbreviated)
 - **Secrets:** the API key only in `.env` as `CLIPMACHINE_ANTHROPIC_API_KEY`. Never export `ANTHROPIC_API_KEY`.
 - **Money:** $0 cash. Max API credits only; Console spend limit $5. Fable within its included weekly limit, usage credits off. A new paid dependency means asking Igor.
 - **Privacy:** campaign data and run folders are gitignored. Video frames may be viewed for **public, campaign-authorized** footage only, never private client video.
 - **Claude Code:** auto mode OK, push always asks, one session at a time (two sessions collided once), Opus/Fable plans and reviews, Sonnet subagents build, checks run separately, branches per brief, merge after Igor's phone check.
-- **Campaign integrity:** never post AI-picked moments to campaigns that ban auto-clipping; never burn the MiniCast logo into clips; each clip posted once.
+- **Campaign integrity:** never post AI-picked moments to campaigns that ban auto-clipping; never burn the brand logo into clips; each clip posted once.
 - **Reply format:** senior colleague; "Learn:" notes; label fact, judgment or estimate; status line shows Build, Business, time and API; end with the next step and its owner.
 
 ## 8. Numbers
@@ -102,4 +102,4 @@
 |---|---|---|
 | 1–4 | Oct 10–12 | Gate 0 → MVP finish line (see the previous handoff in git history) |
 | 5 | Oct 12 01:33–~02:30 | Briefs 8.3 (stacked layout) and R1 written; music/B-roll research; campaign search started |
-| 6 | Oct 12 14:38 – Oct 13 ~03:00 | R1 built; MiniCast brand on 3 platforms; Briefs 11, 11.1, R2, R2.1 built and merged; cleanup; **first 3 posts scheduled** |
+| 6 | Oct 12 14:38 – Oct 13 ~03:00 | R1 built; posting brand on 3 platforms; Briefs 11, 11.1, R2, R2.1 built and merged; cleanup; **first 3 posts scheduled** |

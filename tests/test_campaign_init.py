@@ -123,9 +123,10 @@ def test_the_draft_is_written_with_the_header_and_loads_as_a_campaign(
     assert text.startswith(HEADER + "\n")
     assert "# selection: human - the brief bans auto-clipping tools" in text
     assert "# confirm: confirm the closer wording" in text
-    assert "# title case to keep" in text and "QXV" in text
+    assert "# title case to keep" not in text  # the words go into the file, not a comment
     assert "host_side" not in yaml.safe_load(text).get("scout", {})
     cfg = rig.config()
+    assert cfg.title_keep_case == ["QXV"]
     assert cfg.selection == "human" and cfg.platforms == ["tiktok", "youtube"]
     assert cfg.post.prefix == {"tiktok": "@zorbleshow", "youtube": "@zorbleshow"}
     assert cfg.post.closers == ["watch the zorble show"] and cfg.post.hashtags == ["#zorble"]

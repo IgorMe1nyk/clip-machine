@@ -50,7 +50,7 @@ On **3 real podcasts** of the target layout:
 |---|---|---|---|
 | A1 | Open `report.html` of the test run; `git push`; CI green | Igor | Green tick |
 | A2 | **D-006 update:** private validation on third-party podcasts (D-012); public proof only from permissioned creators | Igor decides → Claude Code logs it | Recorded in DECISIONS.md |
-| A3 | **Build a private test set** (outside the repo, never committed): T1 = the 35-min screen-share AI podcast (have); T2 = a two-person **studio** podcast (people at a table, real cameras); T3 = a solo talking head | Igor | 3 files in `C:\Users\15513\Videos\cm-test\` |
+| A3 | **Build a private test set** (outside the repo, never committed): T1 = the 35-min screen-share AI podcast (have); T2 = a two-person **studio** podcast (people at a table, real cameras); T3 = a solo talking head | Igor | 3 files in `%USERPROFILE%\Videos\cm-test\` |
 | A4 | **Full run on T1:** `uv run python -m clipmachine run "<T1>" --client general`. Watch for: the duration limit in fetch, 2 score calls (>20 candidates), total time and cost. If anything fails: paste the error, don't edit around it | Igor | Run finishes, or the error is reported |
 | A5 | Set offset 0.15 in T1's run config; `--from-stage render` | Igor | Re-rendered |
 | A6 | **Rate T1** in chat: per kept clip C1–C5, C9 (ignore C6) + usable / needs edit / reject | Igor | Ratings in chat |

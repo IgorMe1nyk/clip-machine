@@ -415,7 +415,7 @@ def test_a_long_hook_in_the_repair_of_an_invalid_answer_never_fails_the_run(
     rig: Rig, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # found in Batch A: the first answer failed the schema, so the hook rule had not asked for
-    # its repair yet, and the repair's long hook then failed the whole run (Dating, Romantic Love)
+    # its repair yet, and the repair's long hook then failed the whole run (two episodes)
     long_hook = "one two three four five six seven eight"
     rig.script(
         answer(THREE),

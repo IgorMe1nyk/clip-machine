@@ -241,6 +241,10 @@ class CampaignConfig(StrictModel):
     # a show called "High Stakes") and words to mask on top of config/wordlists/mask.txt
     allowed: list[str] = Field(default_factory=list)
     extra_masked: list[str] = Field(default_factory=list)
+    # words a YouTube title writes as given here (show acronyms, brand spellings), on top of the
+    # names above and the app config's campaign.title_keep_case; kept in this git-ignored file so
+    # real names stay out of the repo
+    title_keep_case: list[str] = Field(default_factory=list)
     # Brief R2: may override video.zoom of the app config
     video: CampaignVideo = Field(default_factory=CampaignVideo)
     # Brief 11.2: the platforms `platform: auto` spreads the moments over, in this order, and the
@@ -248,7 +252,7 @@ class CampaignConfig(StrictModel):
     platforms: list[Platform] = Field(default_factory=lambda: list(PLATFORMS))
     posting_times: list[str] = Field(default_factory=lambda: ["12:30", "15:30", "18:30"])
 
-    @field_validator("names_to_check", "names", "allowed", "extra_masked")
+    @field_validator("names_to_check", "names", "allowed", "extra_masked", "title_keep_case")
     @classmethod
     def _names(cls, value: list[str]) -> list[str]:
         names = [n.strip() for n in value]

@@ -55,8 +55,8 @@ def _core(word: str) -> tuple[str, str, str]:
 
 def keep_words(cfg: CampaignConfig, extra: Iterable[str]) -> list[str]:
     """The words and phrases whose spelling a title keeps, as given: the campaign's names,
-    names_to_check, spelling targets and allowed words, then `extra` (the app config's list).
-    The first spelling of a phrase wins."""
+    names_to_check, spelling targets, allowed words and title_keep_case, then `extra` (the app
+    config's list). The first spelling of a phrase wins."""
     seen: set[str] = set()
     kept: list[str] = []
     for phrase in (
@@ -64,6 +64,7 @@ def keep_words(cfg: CampaignConfig, extra: Iterable[str]) -> list[str]:
         *cfg.names_to_check,
         *(rule.to for rule in cfg.spelling),
         *cfg.allowed,
+        *cfg.title_keep_case,
         *extra,
     ):
         key = " ".join(phrase.lower().split())
@@ -180,7 +181,7 @@ def without_masked(text: str, lists: WordLists) -> str:
         if marks and kept and not _core(kept[-1])[2]:
             kept[-1] += marks
     last = _core(kept[-1])[1].lower() if kept else ""
-    # a contraction or a possessive at the end dangles too ("Too much? You're", "called out Mark's")
+    # a contraction or a possessive at the end dangles too ("Too much? You're", "called out Sam's")
     if len(kept) < MIN_TITLE_WORDS or last in _DANGLING or "'" in last or "’" in last:
         return ""
     return " ".join(kept)
