@@ -21,6 +21,20 @@ Dated entries, newest first. Numbers come from real runs only.
   runs added to `docs/EVAL.md`. Version 1.0.0 in `pyproject.toml`, `__init__.py` and `uv.lock`.
   No new dependency; no LICENSE file.
 
+- **Name scrub (Igor approved, current tree only):** campaign, creator and show names, episode
+  titles, handles and personal paths are out of the tracked files (`d9fb55e`, `bf5a580`). A
+  campaign's own title keep-case words now live in its git-ignored `campaign.yaml`
+  (`title_keep_case`), and `campaign-init` writes the drafted words there; 3 tests fail on the old
+  code. A scan of all 188 tracked files with the history scan's name and path patterns, plus the
+  episode titles and handles, finds 0 hits (52 in the pre-scrub versions). detect-secrets 1.5.0
+  on the tree: test fixtures and model checksums only.
+- **Fresh-context review** of README, CASE_STUDY and the release notes: 2 must-fix (stale test
+  count; repair spend was spread over 9 episodes, not mostly one) and 11 should-fix (scoring in
+  chunks of 20, 10-16x realtime, safe-area wording, mypy flags, secrets-file wording, pip-audit
+  cadence, GPU wheel size, the text model, "posted or scheduled", the commit count), all fixed,
+  plus the nits. EVAL's scout totals corrected: 413 calls, 2204.5 min. Case-study bugs 1 and 4
+  now use Igor's own account.
+
 **Parked**
 - The upload-pack builder is a scratch script; a `campaign-pack --date` command would make it
   repeatable.

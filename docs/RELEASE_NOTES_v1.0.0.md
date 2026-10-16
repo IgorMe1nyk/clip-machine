@@ -12,12 +12,12 @@ for Shorts, Reels and TikTok, plus a campaign mode for clipping work with postin
   falls back to the CPU.
 - `candidates`: Claude Haiku proposes moments per 10-minute block, snapped to sentence
   boundaries.
-- `score`: Claude Sonnet judges all candidates together and writes a score, keep or reject, a
-  hook and a title. It picks sentences, never timestamps.
+- `score`: Claude Sonnet judges the candidates together (up to 20 per call) and writes a
+  score, keep or reject, a hook and a title. It picks sentences, never timestamps.
 - `render`: one ffmpeg pass per clip with:
   - a speaker-following 9:16 crop (face tracking, active speaker, shot cuts)
   - a graphics-aware fit layout for shots with on-screen text
-  - karaoke captions inside the platforms' safe area
+  - karaoke captions inside configured safe-area margins
   - a hook line for the first seconds
   - eased punch-in zooms
 - `report`: one offline `report.html` to review the clips, with the score, reason, cost and
@@ -45,8 +45,8 @@ and `campaign-reject`.
 
 ## Numbers at release
 
-- 2,318 tests (2,315 passed, 3 skipped). ruff, ruff format, mypy (strict on `src/`) and
-  pip-audit are clean.
+- 2,320 tests (2,317 passed, 3 skipped). ruff, ruff format, mypy (`disallow_untyped_defs`
+  on `src/`) and pip-audit are clean.
 - All API spend to date: $4.01 over 466 calls. AI scouting averages $0.35 per episode (36.7
   hours of source in total) and $0.044 per proposed clip.
 - 111 campaign clips rendered, 41 posted or scheduled.
@@ -54,8 +54,8 @@ and `campaign-reject`.
 ## Requirements
 
 uv, ffmpeg and git. Developed and run on Windows 11, and the test suite also runs on Ubuntu in
-CI. macOS is untested. Python 3.11 is installed by uv. An NVIDIA GPU is optional. An Anthropic API key is
-needed for the `candidates` and `score` stages and for the AI scout.
+CI. macOS is untested. Python 3.11 is installed by uv. An NVIDIA GPU is optional. An
+Anthropic API key is needed for the `candidates` and `score` stages and for the AI scout.
 
 ## Known limits
 
@@ -63,7 +63,7 @@ needed for the `candidates` and `score` stages and for the AI scout.
   The stacked two-person layout (Brief 8.3) is written but not built.
 - A clip can still cross an edit point in a compilation source.
 - There's no UI: everything runs from the terminal, with a static HTML review page.
-- The daily-cap ledger isn't locked, so two runs at the same moment could both pass the
+- The daily-budget ledger isn't locked, so two runs at the same moment could both pass the
   daily check.
 - There are no audience results yet.
 

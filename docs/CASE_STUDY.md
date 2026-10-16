@@ -21,13 +21,14 @@ A Python CLI with six restartable stages: fetch, transcribe, candidates, score, 
 Each stage reads and writes files in a run folder, so a failed or disappointing stage can be
 rerun without redoing the ones before it.
 
-- **Local where possible.** Whisper (faster-whisper) transcribes on the GPU. MediaPipe and YuNet
-  track faces, and ffmpeg cuts, crops and burns in captions. Only transcript text goes to the API.
+- **Local where possible.** Whisper (faster-whisper) transcribes on the GPU when there is
+  one. MediaPipe and YuNet track faces, and ffmpeg cuts, crops and burns in captions. Only text
+  goes to the API: the transcript, the client's rules and campaign briefs.
 - **Two models with different jobs.** Claude Haiku proposes candidates per 10-minute block, for
-  about a tenth of a cent per call. Claude Sonnet then judges all of them together: a score,
-  keep or reject, a hook and a title. The model never supplies timestamps. It picks sentence
-  numbers, and the times come from Whisper's word timestamps, so every clip starts and ends on a
-  sentence boundary.
+  about a tenth of a cent per call. Claude Sonnet then judges them together, up to 20 per
+  call: a score, keep or reject, a hook and a title. The model never supplies timestamps. It
+  picks sentence numbers, and the times come from Whisper's word timestamps, so every clip
+  starts and ends on a sentence boundary.
 - **Guard rails before the first API call.** A budget guard prices the worst case of every call
   before sending it. There's a kill switch, schema-validated output with one repair attempt, and
   the transcript is fenced as untrusted data.
@@ -43,15 +44,17 @@ rerun without redoing the ones before it.
 - **AI chat (Claude):** research with sources, the cost register, the MVP definition and the
   rating rubric, the roadmap, one brief per step, and reviews of plans and reports.
 - **Claude Code:** implementation. It planned each brief, then built in small commits with tests,
-  ran ruff, mypy, pytest and pip-audit separately on every change, and had a fresh-context
-  reviewer read risky diffs before merge. It ran inside a permission allow-list, with no
-  access to the secrets file and no push without me.
+  ran ruff, mypy and pytest separately on every change (pip-audit when dependencies
+  changed), and had a fresh-context reviewer read risky diffs before merge. It ran inside a
+  permission allow-list; its file tools were denied the secrets file, and it never pushed
+  without me.
 
 ## Timeline and numbers
 
-- **Six days**, 2026-10-10 to 2026-10-15: 242 commits from 24 written briefs.
-- **Tests:** 104 after the first evening, 729 when all six stages worked (night of day 1), and
-  2,318 collected at v1.0.0 (2,315 passed, 3 skipped in the last run).
+- **Six days**, 2026-10-10 to 2026-10-15: 242 commits up to the release prep, from 24
+  written briefs.
+- **Tests:** 104 after the first session, 729 when all six stages worked (night of day 1), and
+  2,320 at v1.0.0 (2,317 passed, 3 skipped in the last run).
 - **Day 2:** the MVP finish line was met. On a 41-minute two-person podcast, 6 of 8 kept clips
   were rated usable, 2 needed edits and none was rejected. A day later, a one-command run on
   the same video gave 5 usable clips out of 6.
@@ -70,16 +73,17 @@ rerun without redoing the ones before it.
   - **Normal pipeline:** a 41-minute episode cost $0.05-0.06.
   - **Human-picked campaign clips:** $0, because campaign rendering runs with the API switched
     off.
-- **Speed:** a 4.5-hour episode takes about 35 minutes end to end on a laptop GPU (GTX 1660 Ti).
-  Transcription runs at 14-16x realtime.
+- **Speed:** a 4-4.6-hour episode took about 35-37 minutes end to end on a GTX 1660 Ti.
+  Transcription ran at about 15x realtime (10-16x).
 
 ## Six bugs worth telling
 
-**1. Cuts that weren't detected.** Shot-cut detection compared colour histograms with a
-threshold tuned on one video, where real cuts measured 0.37-0.42. In the podcast's dark studio
-the close-up and the wide shot share their colours, so real cuts measured 0.077-0.114 and none
-was detected. The speaker crop stayed on the old shot for 0.5-1.7 seconds, showing a table and a
-half face. Simply lowering the threshold would have made photo overlays and gestures count as
+**1. Cuts that weren't detected.** I noticed it while reviewing clips: in a dark studio the
+crop lagged on camera cuts, showing a table and a toy instead of the speaker. Shot-cut detection
+compared colour histograms with a threshold tuned on one video, where real cuts measured
+0.37-0.42. In that studio the close-up and the wide shot share their colours, so real cuts
+measured 0.077-0.114 and none was detected; the crop stayed on the old shot for 0.5-1.7 seconds.
+Simply lowering the threshold would have made photo overlays and gestures count as
 cuts. The fix pairs a lower colour threshold with a layout-change test on a small grey grid.
 Measured on 52 rendered clips from both campaigns, all 16 real cuts are found and none of the 10
 in-shot changes are.
@@ -99,8 +103,9 @@ review flagged it as the main risk in the branch. Now a campaign that fails to l
 rows exactly as they were. Three tests that fail on the old code pin this down.
 
 **4. The allocator that forgot what was already posted.** The first combined scheduler gave
-every day a full set of slots. With real campaign data, a day that already had posts could be
-filled again, past an account's daily cap and a campaign's own limit. The fix starts each day's
+every day a full set of slots. Before trusting the plan, I compared it with my real hand-made
+schedule: it wanted 10 extra posts that day, because posts already made that day weren't
+counted. The fix starts each day's
 counters from the posts already dated that day and gives the free slots the latest times. A
 second allocator bug turned up in the real marking run on day 6. A post stamped on a slot's
 exact minute used up the earliest free slot instead of its own, and that was fixed too.
