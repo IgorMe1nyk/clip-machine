@@ -833,7 +833,7 @@ def test_box_karaoke_with_the_default_margins_is_valid(project: Path) -> None:
     [
         (lambda d: d["captions"].update(spoken_color="FFD400"), "spoken_color"),
         (lambda d: d["captions"].update(upcoming_color="#FFF"), "upcoming_color"),
-        (lambda d: d["captions"].update(style="neon"), "captions.style"),
+        (lambda d: d["captions"].update(style="glow"), "captions.style"),
         (lambda d: d["captions"].update(max_words=0), "captions.max_words"),
         (lambda d: d["captions"].update(max_words=13), "captions.max_words"),
         (lambda d: d["captions"].update(max_width_px=0), "captions.max_width_px"),

@@ -438,9 +438,10 @@ class CampaignModeConfig(StrictModel):
     auto_watermark_x_step: float = Field(default=0.05, gt=0, le=0.5)
     auto_watermark_y_step: float = Field(default=0.02, gt=0, le=0.5)
     # Brief 11.2: words written as given here in a YouTube title (the hook in sentence case),
-    # on top of the campaign's names, spelling targets and allowed words
+    # on top of the campaign's names, spelling targets, allowed words and its own
+    # title_keep_case (campaign.yaml); generic acronyms only, campaign names go in campaign.yaml
     title_keep_case: list[str] = Field(
-        default_factory=lambda: ["NBA", "NFL", "NHL", "MLB", "UFC", "MMA", "MPJ", "US", "UK"]
+        default_factory=lambda: ["NBA", "NFL", "NHL", "MLB", "UFC", "MMA", "US", "UK"]
     )
     # Brief 12 (scout): the host-side check looks at the first seconds of a proposed moment and
     # says "likely" when a face sits on the host's side in at least this share of the frames

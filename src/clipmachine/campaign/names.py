@@ -34,7 +34,7 @@ SHORT_NAME = 5  # a normalised name shorter than this must also match in Soundex
 MIN_APPLY_LETTERS = 4  # a normalised span shorter than this is a suggestion at most (Igor)
 MIN_STEM = 3  # letters a name's stem needs before another ending makes a form of its verb
 _ENDINGS = ("", "e", "s", "es", "d", "ed", "ing")
-_VERB_ENDINGS = ("ed", "ing")  # a one-word name ending so may be a verb ("Solved")
+_VERB_ENDINGS = ("ed", "ing")  # a one-word name ending so may be a verb ("Rooted")
 _LOOKALIKES = str.maketrans({"3": "e", "1": "i", "0": "o"})
 _SOUNDEX = {
     **dict.fromkeys("bfpv", "1"),
@@ -96,8 +96,8 @@ def _core(text: str) -> str:
 
 def is_inflection(span: str, name: str) -> bool:
     """Whether a one-word span is another form of a one-word name that is itself an inflected
-    verb (ending in -ed or -ing, like the show "Solved"): the name's stem of MIN_STEM letters or
-    more with another ending ("solve", "solves", "solving"). A name that is not shaped like a
+    verb (ending in -ed or -ing, like a show called "Rooted"): the name's stem of MIN_STEM letters
+    or more with another ending ("root", "roots", "rooting"). A name that is not shaped like a
     verb never matches, so "david" for Davis or "holms" for Holmes is still a variant."""
     if len(span.split()) != 1 or len(name.split()) != 1:
         return False
@@ -115,8 +115,8 @@ def classify(
 ) -> tuple[float, bool, Status | None]:
     """(ratio, same Soundex, status) of a span (words joined with spaces) against a name; the
     status is None when the span is neither applied nor suggested. Another form of a name that is
-    also an ordinary word (the verb "solve" for the show "Solved") is never a variant: it is that
-    word, said as itself."""
+    also an ordinary word (the verb "root" for a show called "Rooted") is never a variant: it is
+    that word, said as itself."""
     a, b = normalise(span), normalise(name)
     if not a or not b:
         return 0.0, False, None
@@ -125,8 +125,8 @@ def classify(
     ratio = SequenceMatcher(None, a, b).ratio()
     same_sound = soundex(a) == soundex(b)
     if ratio >= apply_threshold and (len(b) >= SHORT_NAME or same_sound):
-        # a span of fewer than MIN_APPLY_LETTERS letters is too often an ordinary word ("non" for
-        # a name sounding like "neon"): listed, never applied, whatever its ratio and sound
+        # a span of fewer than MIN_APPLY_LETTERS letters is too often an ordinary word ("nin" for
+        # a name like "Nion"): listed, never applied, whatever its ratio and sound
         return ratio, same_sound, "apply" if len(a) >= MIN_APPLY_LETTERS else "suggest"
     if ratio >= suggest_threshold and same_sound:
         return ratio, same_sound, "suggest"
@@ -143,11 +143,10 @@ def find_variants(
     """Every span of 1..MAX_SPAN adjacent words inside one sentence that is a variant of a name.
     A span written exactly like the name (apart from case) is not a variant, and a longer span is
     not one when a shorter span inside it (sharing its first or last word) is the name, another
-    form of it or an applied variant of it ("neon sign" when "neon" already counts; "solve it"
-    for "Solved"; "i'm curious like" when
-    "curious like" does). Each distinct span text is one Variant with its count; a span is
-    counted for the name it fits best. Applied variants come first, then suggestions, each by
-    count (most first) then text."""
+    form of it or an applied variant of it ("zorbie sign" when "zorbie" already counts; "root
+    it" for "Rooted"; "so gorbal twinkel" when "gorbal twinkel" does). Each distinct span text
+    is one Variant with its count; a span is counted for the name it fits best. Applied variants
+    come first, then suggestions, each by count (most first) then text."""
     if not names:
         return []
     words = index.words
@@ -155,7 +154,7 @@ def find_variants(
     lower_names = {name.lower() for name in names}
 
     def applies(span: str) -> bool:
-        """Whether this span is a name, another form of one ("solve" for "Solved") or an applied
+        """Whether this span is a name, another form of one ("root" for "Rooted") or an applied
         variant of one by itself."""
         if span in lower_names or any(is_inflection(span, n) for n in names):
             return True

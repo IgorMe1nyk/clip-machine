@@ -54,8 +54,8 @@ def variants(index: SentenceIndex, *names: str) -> list[Variant]:
 
 
 def test_normalise_lowers_maps_digit_lookalikes_and_drops_punctuation() -> None:
-    assert normalise("N3on!") == "neon"
-    assert normalise("M.P.J") == "mpj"
+    assert normalise("Z3ph!") == "zeph"
+    assert normalise("Q.X.V") == "qxv"
     assert normalise("Z0rb1e's") == "zorbies"
     assert normalise("...") == ""
 
@@ -90,11 +90,11 @@ def test_classify(span: str, name: str, status: str | None) -> None:
 
 
 def test_the_verb_in_a_show_name_is_never_spelled_as_the_name() -> None:
-    # found in Batch A: names [..., Solved] turned "solve" and "solves" into "Solved" (S42)
-    for span in ("solve", "solves", "solving", "Solve"):
-        assert classify(span, "Solved", apply_threshold=0.8, suggest_threshold=0.7)[2] is None
-    index = index_of("we solve it.", "she solves them.", "solving is hard.", "the Solved show.")
-    assert variants(index, "Solved") == []
+    # found in a real run: a show named like a verb turned the verb itself into the show's name
+    for span in ("zorble", "zorbles", "zorbling", "Zorble"):
+        assert classify(span, "Zorbled", apply_threshold=0.8, suggest_threshold=0.7)[2] is None
+    index = index_of("we zorble it.", "she zorbles them.", "zorbling is hard.", "the Zorbled show.")
+    assert variants(index, "Zorbled") == []
     assert classify("zorbi", "Zorbie", apply_threshold=0.8, suggest_threshold=0.7)[2] == "apply"
 
 
@@ -111,7 +111,7 @@ def test_a_name_not_shaped_like_a_verb_keeps_its_variants(span: str, name: str) 
     # review of the fix above: ending-only differences must not hide real misspellings of names
     assert classify(span, name, apply_threshold=0.8, suggest_threshold=0.7)[2] == "apply"
     assert not is_inflection(span, name)
-    assert is_inflection("solving", "Solved") and not is_inflection("so lived", "Solved")
+    assert is_inflection("zorbling", "Zorbled") and not is_inflection("zor bled", "Zorbled")
 
 
 def test_a_span_under_four_letters_is_never_applied() -> None:
@@ -147,7 +147,7 @@ def test_a_name_or_variant_with_its_neighbour_is_not_a_second_variant() -> None:
 
 
 def test_a_two_word_variant_with_its_neighbour_is_not_a_third_variant() -> None:
-    # found in the real run: "i'm curious like" (0.83) is "curious like" (0.91) plus a word
+    # found in a real run: a two-word variant plus the word before it was listed again
     index = index_of("so i'm gorbal twinkel today.", "gorbal twinkel s2.")
     found = variants(index, "Gorbal Twinkle")
     assert [(v.text, v.count, v.status) for v in found] == [("gorbal twinkel", 2, "apply")]
