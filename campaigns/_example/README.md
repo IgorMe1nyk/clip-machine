@@ -41,7 +41,8 @@ Run from the repo root.
 uv run python -m clipmachine campaign-init <slug> --brief <file> [--watermark <png>] [--moments <list>] [--force]
 uv run python -m clipmachine produce <source-video> --campaign <slug> [--rerender]
 uv run python -m clipmachine campaign <source-video> --campaign <slug> [--only A03,B05] [--force-reuse]
-uv run python -m clipmachine campaign-posted --campaign <slug> --id A03 [--platform tiktok]
+uv run python -m clipmachine campaign-posted --campaign <slug> --id A03 [--platform tiktok] [--at "2026-10-16 12:30"]
+uv run python -m clipmachine campaign-posted --date 2026-10-16 [--campaign <slug>]
 uv run python -m clipmachine campaign-posted --campaign <slug> --id A03 --fix-platform instagram
 uv run python -m clipmachine plan
 ```
@@ -52,7 +53,10 @@ it scouts when `selection: ai`, renders this episode's unposted moments (clips w
 not change are kept; `--rerender` redoes them), and rebuilds the report and the plan; posted and
 rejected moments are left alone. `campaign` renders the listed moments (every one, every time).
 `campaign-posted` marks a moment as posted, so it is not reused by accident; without
-`--platform` it uses the moment's assigned platform. `--fix-platform` corrects the platform of a
+`--platform` it uses the moment's assigned platform. The post is recorded at the clip's slot
+in the posting plan, so marking a scheduled clip ahead of its day leaves the plan as it was;
+`--at` gives another local time, and a clip with no slot is recorded now. `--date` marks every
+unposted clip with a slot that day (all campaigns, or only `--campaign`'s), listing them first. `--fix-platform` corrects the platform of a
 posted entry that was recorded wrongly. `plan` rebuilds the combined posting plan.
 
 A moment without `source:` belongs to whichever episode the command is given. Once a campaign

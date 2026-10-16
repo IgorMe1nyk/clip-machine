@@ -1516,8 +1516,9 @@ def test_the_posting_plan_is_written_with_the_rendered_unposted_clips(
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
     assert rows[1]["date"] == tomorrow and rows[1]["time_et"] == "12:30 PM"
     assert rows[1]["file"] == "tiktok/A01.mp4" and rows[1]["text_file"] == "tiktok/A01.txt"
-    # the posted row: the posted date, and the slot it was planned for until Igor corrects it
-    assert rows[0]["date"] == date.today().isoformat() and rows[0]["time_et"] == "12:30 PM"
+    # the posted row: campaign-posted recorded A02 at its slot (tomorrow's first time), and the
+    # row keeps that slot until Igor corrects it
+    assert rows[0]["date"] == tomorrow and rows[0]["time_et"] == "12:30 PM"
     assert "views_48h" in rows[0] and "notes" in rows[0]
     for secret in SECRET_TEXTS:
         assert secret not in path.read_text(encoding="utf-8")

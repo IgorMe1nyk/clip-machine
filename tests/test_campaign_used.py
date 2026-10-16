@@ -295,7 +295,8 @@ def test_the_command_marks_the_entry_and_a_second_call_says_already(
 
     assert run_cli(project, *args) == 0
     out = capsys.readouterr().out
-    assert out.strip() == "A01 tiktok: marked as posted"
+    assert out.startswith("A01 tiktok: marked as posted at ")
+    assert out.strip().endswith("(now: no slot in the posting plan)")
     data = json.loads((folder / USED_FILE).read_text(encoding="utf-8"))
     stamp = data["entries"][0]["posted_at"]
     assert stamp is not None and stamp.endswith("+00:00")
@@ -383,7 +384,7 @@ def test_without_a_platform_the_assigned_one_is_used(
     folder = rendered_campaign(project)
     lock(folder, A01="tiktok")
     assert run_cli(project, "--campaign", "demo", "--id", "A01") == 0
-    assert capsys.readouterr().out.strip() == "A01 tiktok: marked as posted"
+    assert capsys.readouterr().out.startswith("A01 tiktok: marked as posted at ")
     assert load_used(folder).entries[0].posted_at is not None
 
 
