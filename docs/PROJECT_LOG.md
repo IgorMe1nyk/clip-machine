@@ -2,6 +2,30 @@
 
 Dated entries, newest first. Numbers come from real runs only.
 
+## 2026-10-15 — Brief 13: v1.0.0 release prep (branch `release/v1.0.0`, not pushed, not tagged)
+
+- **Upload packs:** `runs/_campaigns/post_2026-10-17/` to `post_2026-10-22/`, 8 posts each, built
+  by `runs/_scratch/build_packs.py` from the plan and each day's sheet (same layout as Oct 16).
+  The face-check flag comes from the sheet's Review line; all 48 clips are flagged, since none of
+  them was on the sheet Igor face-checked.
+- **Hygiene scan** of all history (trufflehog3 3.0.10 and detect-secrets 1.5.0 via uvx, plus a
+  regex pass): no secret, `.env` never committed. Campaign and creator names, two handles and a
+  personal path are in pushed history; the list with commit ids is in
+  `runs/_scratch/hygiene/findings.md`. History was not rewritten (Igor decides).
+- **Clean clone** (`runs/_scratch/clean-clone/`, from `98c5e0c`): every README step worked
+  as written; checks all exit 0 (2315 passed, 3 skipped). The normal pipeline on a 12:42 NASA
+  in-flight interview (CPU transcription, run cap $0.50): 4 candidates, 3 kept, $0.0181, 6 min
+  56 s. A second clean clone of the release branch: all checks exit 0 again.
+- **Docs:** README rewritten as the portfolio page (demo GIF and stills in `docs/media/`, source
+  in `docs/media/SOURCE.md`), `docs/CASE_STUDY.md` (draft), `docs/RELEASE_NOTES_v1.0.0.md`, real
+  runs added to `docs/EVAL.md`. Version 1.0.0 in `pyproject.toml`, `__init__.py` and `uv.lock`.
+  No new dependency; no LICENSE file.
+
+**Parked**
+- The upload-pack builder is a scratch script; a `campaign-pack --date` command would make it
+  repeatable.
+- The scout's per-run cost line could go into `run.json`, so EVAL rows need no ledger digging.
+
 ## 2026-10-15 — S05 rejected; campaign-posted records the slot; Oct 16 marked posted
 
 - **Sheets:** S05 was rejected (Igor) and the plan rebuilt. The Oct 16-22 sheets were regenerated
