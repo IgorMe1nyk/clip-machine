@@ -12,13 +12,16 @@ from clipmachine.campaign.assign import ASSIGNMENTS_FILE, assigned_platform
 from clipmachine.campaign.init import run_init
 from clipmachine.campaign.loader import campaign_dir
 from clipmachine.campaign.models import PLATFORMS
+from clipmachine.campaign.plan import Row
 from clipmachine.campaign.produce import run_produce
 from clipmachine.campaign.run import run_campaign
 from clipmachine.campaign.schedule import (
     load_schedule,
+    plan_slot,
     rebuild_plans,
     report_backups,
     run_plan,
+    unposted_plan_rows,
 )
 from clipmachine.campaign.scout import reject_moment, run_scout
 from clipmachine.campaign.used import USED_FILE, load_used, mark_posted, relabel_posted, save_used
@@ -144,8 +147,24 @@ def build_parser() -> argparse.ArgumentParser:
         "campaign-posted",
         help="mark a campaign moment as posted, so it is not reused by accident",
     )
-    posted.add_argument("--campaign", required=True, help="the folder name under campaigns/")
-    posted.add_argument("--id", required=True, help="the moment id, e.g. A03")
+    posted.add_argument(
+        "--campaign", help="the folder name under campaigns/ (with --date: only its clips)"
+    )
+    posted.add_argument("--id", help="the moment id, e.g. A03")
+    posted.add_argument(
+        "--date",
+        type=_plan_date,
+        metavar="YYYY-MM-DD",
+        help="mark every unposted clip with a slot on this day in the posting plan, each at its "
+        "slot (the list is printed first)",
+    )
+    posted.add_argument(
+        "--at",
+        type=_local_time,
+        metavar='"YYYY-MM-DD HH:MM"',
+        help="when it was posted, local time; left out, the clip's slot in the posting plan, "
+        "or now when it has none",
+    )
     posted.add_argument(
         "--platform",
         choices=PLATFORMS,
@@ -202,6 +221,36 @@ def build_parser() -> argparse.ArgumentParser:
         "graphics-aware layout (video.graphics) needs it",
     )
     return parser
+
+
+def _plan_date(text: str) -> str:
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a date like 2026-10-16") from None
+
+
+def _local_time(text: str) -> datetime:
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M").astimezone()
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f'{text!r} is not a local time like "2026-10-16 12:30"'
+        ) from None
+
+
+def _check_posted_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """campaign-posted takes --date (a whole day) or --campaign and --id (one clip)."""
+    if args.date is not None:
+        if args.id or args.at or args.platform or args.fix_platform:
+            parser.error(
+                "--date marks a whole day; it takes no --id, --at, --platform or --fix-platform"
+            )
+        return
+    if not args.campaign or not args.id:
+        parser.error("campaign-posted needs --campaign and --id, or --date")
+    if args.at is not None and args.fix_platform is not None:
+        parser.error("--at does not go with --fix-platform")
 
 
 def _configure_logging() -> None:
@@ -306,7 +355,11 @@ def _cmd_campaign(args: argparse.Namespace, root: Path) -> int:
 def _cmd_campaign_posted(args: argparse.Namespace, root: Path) -> int:
     """Mark the latest rendered, unposted entry of a moment as posted in used.json, or (Brief
     11.2, --fix-platform) relabel its posted entry. Needs only the campaign folder: campaign.yaml
-    and the watermark are not read."""
+    and the watermark are not read. The post is stamped with the clip's slot in the posting
+    plan (so marking it ahead never moves the plan), --at when given, else now. --date marks a
+    whole day of the plan."""
+    if args.date is not None:
+        return _mark_day(root, args.date, args.campaign)
     folder = campaign_dir(root, args.campaign)
     if args.fix_platform is not None:
         log, before, after = relabel_posted(
@@ -325,14 +378,67 @@ def _cmd_campaign_posted(args: argparse.Namespace, root: Path) -> int:
             f"moment {args.id} has no platform assigned yet (no entry in {ASSIGNMENTS_FILE}); "
             "render it first, or say which with --platform"
         )
-    log, _, changed = mark_posted(
-        load_used(folder), args.id, platform, datetime.now(UTC).isoformat()
-    )
+    when, why = args.at, "--at"
+    if when is None:
+        when, why = _slot_of(root, args.campaign, args.id, platform), "its slot"
+    if when is None:
+        when, why = datetime.now().astimezone(), "now: no slot in the posting plan"
+    log, _, changed = mark_posted(load_used(folder), args.id, platform, _utc(when))
     if changed:
         save_used(folder, log)
-    state = "marked as posted" if changed else "already marked as posted"
-    print(f"{args.id} {platform}: {state}")
-    if changed:
+        print(f"{args.id} {platform}: marked as posted at {_shown(when)} ({why})")
+        _replan(root)
+    else:
+        print(f"{args.id} {platform}: already marked as posted")
+    return EXIT_OK
+
+
+def _slot_of(root: Path, slug: str, moment_id: str, platform: str) -> datetime | None:
+    """The clip's slot; None when the plan has none for it on this platform (a post that went
+    elsewhere did not use that platform's slot)."""
+    for row in unposted_plan_rows(root, slug):
+        if row.get("id") == moment_id and row.get("platform") == platform:
+            return plan_slot(row)
+    return None
+
+
+def _utc(when: datetime) -> str:
+    return when.astimezone(UTC).isoformat()
+
+
+def _shown(when: datetime) -> str:
+    return when.strftime("%Y-%m-%d %H:%M")
+
+
+def _mark_day(root: Path, day: str, slug: str | None) -> int:
+    """Every unposted clip with a slot on `day` (only `slug`'s when given), listed first, then
+    marked at its slot. Every mark is checked before any used.json is written."""
+    if slug is not None:
+        campaign_dir(root, slug)  # an unknown campaign is an error, not an empty day
+    rows = [r for r in unposted_plan_rows(root, slug) if r.get("date") == day and plan_slot(r)]
+    if not rows:
+        print(f"no unposted clips with a slot on {day} in the posting plan")
+        return EXIT_OK
+    rows.sort(key=lambda r: (plan_slot(r) or datetime.min, r["platform"], r["campaign"], r["id"]))
+    print(f"marking {len(rows)} clips posted at their slots on {day}:")
+    for row in rows:
+        print(f"  {row['time_et']:>8}  {row['platform']:<9}  {row['campaign']}  {row['id']}")
+    folders = {s: campaign_dir(root, s) for s in dict.fromkeys(r["campaign"] for r in rows)}
+    logs = {s: load_used(folder) for s, folder in folders.items()}
+    results: list[tuple[Row, bool]] = []
+    for row in rows:
+        when = plan_slot(row)
+        assert when is not None
+        logs[row["campaign"]], _, changed = mark_posted(
+            logs[row["campaign"]], row["id"], row["platform"], _utc(when)
+        )
+        results.append((row, changed))
+    for s, folder in folders.items():
+        save_used(folder, logs[s])
+    for row, changed in results:
+        state = "marked as posted" if changed else "already marked as posted"
+        print(f"{row['id']} {row['platform']}: {state}")
+    if any(changed for _, changed in results):
         _replan(root)
     return EXIT_OK
 
@@ -385,7 +491,10 @@ def _fetch_models(root: Path, specs: tuple[faces.ModelSpec, ...]) -> int:
 
 def main(argv: Sequence[str] | None = None, root: Path | None = None) -> int:
     """root is the project folder holding config/, clients/ and runs/ (default: current dir)."""
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "campaign-posted":
+        _check_posted_args(parser, args)
     _configure_logging()
     project_root = root if root is not None else Path.cwd()
     try:

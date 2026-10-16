@@ -43,8 +43,11 @@ produce <episode-video> --campaign <slug>
    names the campaign, the platform, the date and time, the file to upload
    (`<slug>/<platform>/<id>.mp4`) and the text to paste (`<slug>/<platform>/<id>.txt`).
    The per-campaign `posting_plan.csv` files are read-only views of the same rows.
-3. After each post goes live: `campaign-posted --campaign <slug> --id <id>`. The plan updates
-   itself (the row shows `posted` yes with the real date and platform). A wrong platform:
+3. After each post goes live, or once it is scheduled on the platform:
+   `campaign-posted --campaign <slug> --id <id>`, or `campaign-posted --date <YYYY-MM-DD>` for
+   a whole day. Each is recorded at its slot (`--at "YYYY-MM-DD HH:MM"` for another time), so
+   the plan does not move. The plan updates itself (the row shows `posted` yes with its date
+   and platform). A wrong platform:
    `campaign-posted ... --fix-platform <platform>`.
 4. **At 48 h:** submit to the campaign (analytics screenshots with viewer location), then fill
    the row's result columns (`views_48h`, `likes`, `comments`, `shares`, `pct_us_ca_uk`,

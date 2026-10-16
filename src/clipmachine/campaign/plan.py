@@ -2,8 +2,9 @@
 
 One row per clip, keyed by the moment id, opened in Excel:
 
-- a **posted** clip (used.json) keeps its row: `posted` yes, the date it was marked posted (the
-  computer's local date), the platform it really went to, no new slot;
+- a **posted** clip (used.json) keeps its row: `posted` yes, the local date of its `posted_at`
+  (campaign-posted records the clip's slot, `--at` or now), the platform it really went to, no
+  new slot;
 - an **unposted** rendered clip gets a slot: per platform, the clips in assignment order
   (strongest first) take the campaign's `posting_times` in turn, one set of times per day,
   starting the day after `today`.

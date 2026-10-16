@@ -2,13 +2,15 @@
 one file across campaigns, migration of result columns, read-only views. Invented words only."""
 
 import csv
-from datetime import datetime
+import json
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
+import clipmachine.campaign.schedule as schedule_module
 from campaign_helpers import base_campaign, moment, write_campaign, write_moments
 from clipmachine import cli
 from clipmachine.campaign.models import (
@@ -31,7 +33,7 @@ from clipmachine.campaign.schedule import (
     load_schedule,
     write_combined_plan,
 )
-from clipmachine.campaign.used import record_render, save_used
+from clipmachine.campaign.used import load_used, record_render, save_used
 from clipmachine.config import ConfigError
 
 TIMES = ["12:30", "15:00", "17:30", "20:00"]
@@ -668,3 +670,181 @@ def test_a_priority_slug_without_a_folder_fails_the_plan_command(
     write_schedule(project, priority=[{"slug": "ghost"}])
     assert cli.main(["plan"], root=project) == 2
     assert "priority names 'ghost'" in capsys.readouterr().err
+
+
+# --- campaign-posted stamps the clip's slot ------------------------------------------------------
+
+
+class FrozenClock(datetime):
+    """`now` is MORNING (local time), so the commands plan from a known day."""
+
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> datetime:  # type: ignore[override]
+        return MORNING if tz is None else MORNING.astimezone(tz)
+
+
+@pytest.fixture
+def frozen(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "datetime", FrozenClock)
+    monkeypatch.setattr(schedule_module, "datetime", FrozenClock)
+
+
+def posted_at(project: Path, slug: str) -> dict[str, str]:
+    """id -> the local time it was marked posted, from used.json."""
+    data = json.loads((project / "campaigns" / slug / "used.json").read_text(encoding="utf-8"))
+    return {
+        e["id"]: datetime.fromisoformat(e["posted_at"]).astimezone().strftime("%Y-%m-%d %H:%M")
+        for e in data["entries"]
+        if e["posted_at"]
+    }
+
+
+def plan_slots(project: Path) -> dict[str, tuple[str, str, str]]:
+    return {
+        r["id"]: (r["date"], r["time_et"], r["platform"]) for r in read(project / COMBINED_PLAN)
+    }
+
+
+def mark(project: Path, *args: str) -> int:
+    return cli.main(["campaign-posted", *args], root=project)
+
+
+SIX_TIKTOK = [(f"A{i}", "tiktok") for i in range(1, 7)]  # 4 on Oct 13, A5 and A6 on Oct 14
+
+
+def test_marking_a_clip_a_day_early_keeps_its_slot_and_the_plan_stays_unchanged(
+    project: Path, frozen: None
+) -> None:
+    real_campaign(project, "alpha", *SIX_TIKTOK)
+    write_schedule(project)
+    assert cli.main(["plan"], root=project) == 0
+    before = plan_slots(project)
+    assert before["A5"] == ("2026-10-14", "12:30 PM", "tiktok")
+    assert before["A6"] == ("2026-10-14", "3:00 PM", "tiktok")
+    # it is Oct 13, 9:00; A6 goes out on Oct 14 at 3:00 PM, not the day's first time
+    assert mark(project, "--campaign", "alpha", "--id", "A6", "--platform", "tiktok") == 0
+    assert posted_at(project, "alpha") == {"A6": "2026-10-14 15:00"}
+    assert plan_slots(project) == before
+    rows = {r["id"]: r["posted"] for r in read(project / COMBINED_PLAN)}
+    assert rows == {"A1": "no", "A2": "no", "A3": "no", "A4": "no", "A5": "no", "A6": "yes"}
+
+
+def test_date_lists_then_marks_exactly_that_days_clips_at_their_slots(
+    project: Path, frozen: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real_campaign(project, "alpha", *SIX_TIKTOK)
+    real_campaign(project, "beta", *[(f"B{i}", "youtube") for i in range(1, 6)])
+    write_schedule(project)
+    assert cli.main(["plan"], root=project) == 0
+    before = plan_slots(project)
+    assert mark(project, "--date", "2026-10-14", "--campaign", "beta") == 0
+    assert posted_at(project, "beta") == {"B5": "2026-10-14 12:30"}
+    assert posted_at(project, "alpha") == {}
+    capsys.readouterr()
+    assert mark(project, "--date", "2026-10-14") == 0
+    out = capsys.readouterr().out
+    listed = out.index("marking 2 clips posted at their slots on 2026-10-14:")
+    assert listed < out.index("A5 tiktok: marked as posted") < out.index("A6 tiktok: marked")
+    assert "B5" not in out  # already posted, so not listed
+    assert posted_at(project, "alpha") == {"A5": "2026-10-14 12:30", "A6": "2026-10-14 15:00"}
+    assert plan_slots(project) == before
+    assert mark(project, "--date", "2026-10-20") == 0
+    assert "no unposted clips with a slot on 2026-10-20" in capsys.readouterr().out
+
+
+def test_at_overrides_the_slot(project: Path, frozen: None) -> None:
+    real_campaign(project, "alpha", ("A1", "tiktok"), ("A2", "tiktok"))
+    write_schedule(project)
+    assert cli.main(["plan"], root=project) == 0
+    args = ["--campaign", "alpha", "--id", "A2", "--platform", "tiktok"]
+    assert mark(project, *args, "--at", "2026-10-12 18:05") == 0
+    assert posted_at(project, "alpha") == {"A2": "2026-10-12 18:05"}
+    row = {r["id"]: r for r in read(project / COMBINED_PLAN)}["A2"]
+    assert (row["date"], row["posted"]) == ("2026-10-12", "yes")
+
+
+def test_a_clip_without_a_slot_is_stamped_now(
+    project: Path, frozen: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real_campaign(project, "alpha", ("A1", "tiktok"))
+    write_schedule(project)  # no plan built yet, so A1 has no slot
+    assert mark(project, "--campaign", "alpha", "--id", "A1", "--platform", "tiktok") == 0
+    assert posted_at(project, "alpha") == {"A1": "2026-10-13 09:00"}
+    assert "(now: no slot in the posting plan)" in capsys.readouterr().out
+
+
+def utc_stamp(*local: int) -> str:
+    return datetime(*local).astimezone().astimezone(UTC).isoformat()  # type: ignore[misc]
+
+
+def test_only_a_post_stamped_on_a_slots_minute_takes_that_slot(rig: Rig) -> None:
+    clips = [("A1", "tiktok"), ("A2", "tiktok"), ("A3", "tiktok")]
+    for stamp, expected in [
+        (utc_stamp(2026, 10, 13, 15, 0), ["12:30 PM", "5:30 PM", "8:00 PM"]),  # its slot
+        (utc_stamp(2026, 10, 13, 15, 0, 47), ["3:00 PM", "5:30 PM", "8:00 PM"]),  # a "now" stamp
+    ]:
+        used = UsedLog(entries=[posted_entry("alpha", "P1", "tiktok", stamp)])
+        alpha = rig.campaign("alpha", ("P1", "tiktok"), *clips, used=used)
+        rows = [r for r in rig.rows(schedule(), alpha) if r["posted"] == "no"]
+        assert [r["time_et"] for r in rows] == expected
+
+
+def test_a_kept_post_holds_the_time_its_row_shows(rig: Rig) -> None:
+    alpha = rig.campaign("alpha", *SIX_TIKTOK)
+    kept = [
+        {
+            "date": "2026-10-14",
+            "time_et": "5:30 PM",
+            "platform": "tiktok",
+            "campaign": "beta",
+            "id": "B1",
+            "posted": "yes",
+        }
+    ]
+    sched = schedule()
+    order = campaign_order(sched, ["alpha"])
+    rows = allocate(sched, [alpha], order, root=rig.root, now=MORNING, kept=kept)
+    assert slots(rows)[-2:] == [
+        ("2026-10-14", "12:30 PM", "tiktok", "alpha", "A5"),
+        ("2026-10-14", "3:00 PM", "tiktok", "alpha", "A6"),
+    ]
+
+
+def test_a_post_that_went_to_another_platform_does_not_take_the_planned_slot(
+    project: Path, frozen: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    folder = real_campaign(project, "alpha", ("A1", "tiktok"), ("A2", "tiktok"))
+    save_used(folder, record_render(load_used(folder), entry("alpha", "A2", "instagram")))
+    write_schedule(project)
+    assert cli.main(["plan"], root=project) == 0
+    assert mark(project, "--campaign", "alpha", "--id", "A2", "--platform", "instagram") == 0
+    assert posted_at(project, "alpha") == {"A2": "2026-10-13 09:00"}
+    assert "(now: no slot in the posting plan)" in capsys.readouterr().out
+
+
+def test_date_with_an_unknown_campaign_is_an_error(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real_campaign(project, "alpha", ("A1", "tiktok"))
+    write_schedule(project)
+    assert mark(project, "--date", "2026-10-14", "--campaign", "ghost") == 2
+    assert "unknown campaign 'ghost'" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--date", "2026-10-14", "--id", "A1"],
+        ["--date", "2026-10-14", "--at", "2026-10-14 12:30"],
+        ["--date", "2026-10-14", "--platform", "tiktok"],
+        ["--date", "14/10/2026"],
+        ["--campaign", "alpha", "--id", "A1", "--at", "noon"],
+        ["--campaign", "alpha", "--id", "A1", "--at", "2026-10-14 12:30", "--fix-platform", "x"],
+        ["--campaign", "alpha"],
+        [],
+    ],
+)
+def test_bad_campaign_posted_arguments_are_usage_errors(argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as info:
+        mark(Path("."), *argv)
+    assert info.value.code == 2

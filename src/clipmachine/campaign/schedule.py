@@ -34,6 +34,7 @@ from clipmachine.campaign.models import (
     CampaignConfig,
     Moment,
     ScheduleConfig,
+    UsedEntry,
     UsedLog,
 )
 from clipmachine.campaign.plan import (
@@ -47,6 +48,7 @@ from clipmachine.campaign.plan import (
     _posted_row,
     clock_12h,
     read_plan,
+    read_posting_plan,
 )
 from clipmachine.campaign.used import is_rejected, latest_posted, latest_source_name, load_used
 from clipmachine.config import ConfigError, _read_yaml, _validate, load_app_config
@@ -161,23 +163,50 @@ def pending_by_platform(inp: PlanInput) -> dict[str, deque[Moment]]:
 # --- allocation ----------------------------------------------------------------------------------
 
 
-def _posted_rows(inp: PlanInput, root: Path) -> list[Row]:
-    rows: list[Row] = []
+def _posted_entries(inp: PlanInput) -> list[UsedEntry]:
+    """The latest posted entry of each posted moment, moments order first."""
+    entries: list[UsedEntry] = []
     seen: set[str] = set()
     for moment in inp.moments:
         posted = latest_posted(inp.used, moment.id)
         if posted is not None:
             seen.add(moment.id)
-            rows.append(_posted_row(posted, root, inp.out_dir, file_prefix=f"{inp.slug}/"))
+            entries.append(posted)
     for entry in inp.used.entries:  # posted moments that left moments.yaml still count
         if entry.posted_at and entry.id not in seen:
             latest = latest_posted(inp.used, entry.id)
             if latest is not None:
                 seen.add(entry.id)
-                rows.append(_posted_row(latest, root, inp.out_dir, file_prefix=f"{inp.slug}/"))
+                entries.append(latest)
+    return entries
+
+
+def _posted_rows(inp: PlanInput, root: Path) -> list[Row]:
+    rows = [
+        _posted_row(entry, root, inp.out_dir, file_prefix=f"{inp.slug}/")
+        for entry in _posted_entries(inp)
+    ]
     for row in rows:
         row["campaign"] = inp.slug
     return rows
+
+
+def _posted_slots(
+    inputs: Sequence[PlanInput], times: Sequence[str], per_day: int
+) -> dict[tuple[str, str], list[int | None]]:
+    """(local date, platform) -> the slot each post of that day used: its own when it was posted
+    at one of the day's times (campaign-posted records the clip's slot), else None."""
+    slots: dict[tuple[str, str], list[int | None]] = {}
+    for inp in inputs:
+        for entry in _posted_entries(inp):
+            assert entry.posted_at is not None
+            stamp = datetime.fromisoformat(entry.posted_at).astimezone()
+            clock = stamp.strftime("%H:%M")
+            # a slot stamp is on the minute; an old "now" stamp at 12:30:47 is not that slot
+            on_minute = stamp.second == 0 and stamp.microsecond == 0
+            position = times.index(clock) if on_minute and clock in times[:per_day] else None
+            slots.setdefault((stamp.date().isoformat(), entry.platform), []).append(position)
+    return slots
 
 
 def _clock_24h(time_et: str) -> str | None:
@@ -205,8 +234,10 @@ def allocate(
 
     Posts already made on a day count against that day (Igor, 2026-10-14): a platform's posted
     rows dated that day use up its slots, a campaign's posted rows use up its cap, and the free
-    slots left take the day's latest times (a posted row records no real time). Posted rows on
-    other dates do not count. A time that has passed today is never given.
+    slots left take the day's latest times. A post stamped at one of the times uses up that time
+    instead: campaign-posted records a clip's slot, so a clip marked before its day keeps its
+    slot and the rest of that day stays as it was. Posted rows on other dates do not count. A
+    time that has passed today is never given.
 
     `kept` are the rows of a campaign that did not load, carried over unchanged (they are not
     returned): a posted one counts like any post, an unposted one holds its slot, so no other
@@ -214,15 +245,18 @@ def allocate(
     by_slug = {inp.slug: inp for inp in inputs}
     pending = {slug: pending_by_platform(by_slug[slug]) for slug, _ in order}
     posted = [row for inp in inputs for row in _posted_rows(inp, root)]
-    posted_on: dict[tuple[str, str], int] = {}  # (date, platform) -> posts that day
     posted_by: dict[tuple[str, str, str], int] = {}  # (date, platform, campaign) -> posts
     for done in [*posted, *(r for r in kept if r.get("posted") == "yes")]:
-        key = (done["date"], done["platform"])
-        posted_on[key] = posted_on.get(key, 0) + 1
-        who = (*key, done["campaign"])
+        who = (done["date"], done["platform"], done["campaign"])
         posted_by[who] = posted_by.get(who, 0) + 1
     times = schedule.posting_times
     per_day = min(schedule.per_day, len(times))
+    posted_slots = _posted_slots(inputs, times, per_day)
+    for kept_row in kept:  # a kept post holds the time its row shows, when that is a slot
+        if kept_row.get("posted") == "yes":
+            clock = _clock_24h(kept_row.get("time_et", ""))
+            position = times.index(clock) if clock in times[:per_day] else None
+            posted_slots.setdefault((kept_row["date"], kept_row["platform"]), []).append(position)
     held: dict[tuple[str, str], list[int | None]] = {}  # (date, platform) -> kept slots
     for kept_row in kept:
         if kept_row.get("posted") != "yes" and kept_row.get("date"):
@@ -236,8 +270,14 @@ def allocate(
         day = now.date()
         while any(pending[slug][platform] for slug, _ in order):
             stamp = day.isoformat()
-            left = max(0, per_day - posted_on.get((stamp, platform), 0))
-            latest = list(range(per_day))[per_day - left :] if left else []
+            latest = list(range(per_day))
+            posts = posted_slots.get((stamp, platform), [])
+            # a post at one of the times takes that time; any other post the earliest left
+            for position in [p for p in posts if p is not None] + [p for p in posts if p is None]:
+                if position in latest:
+                    latest.remove(position)
+                elif latest:
+                    latest.pop(0)
             for position in held.get((stamp, platform), []):
                 # a kept row's own time stays its own; one at a time no longer in the schedule
                 # still uses up one of the day's slots (the earliest left)
@@ -425,6 +465,35 @@ def rebuild_plans(
     if current is not None and current.slug not in [inp.slug for inp in inputs]:
         inputs.append(current)
     return write_combined_plan(root, schedule, inputs, now=now, unloaded=unloaded)
+
+
+def plan_slot(row: Mapping[str, str]) -> datetime | None:
+    """A plan row's slot as a local time; None when it has no date or no readable time."""
+    clock = _clock_24h(row.get("time_et", ""))
+    if not row.get("date") or clock is None:
+        return None
+    try:
+        return datetime.strptime(f"{row['date']} {clock}", "%Y-%m-%d %H:%M").astimezone()
+    except ValueError:
+        return None
+
+
+def unposted_plan_rows(root: Path, slug: str | None = None) -> list[Row]:
+    """The posting plan's unposted rows, each with its campaign, for campaign-posted: the
+    combined plan when there is a campaigns/schedule.yaml, else the campaign's own plan (then a
+    campaign must be named). Only `slug`'s rows when it is given; [] when there is no plan."""
+    if load_schedule(root) is not None:
+        rows = list(read_plan(root / COMBINED_PLAN, key=COMBINED_KEY).values())
+    elif slug is not None:
+        own = read_posting_plan(root / CAMPAIGNS_OUT / slug / PLAN_FILE)
+        rows = [{**row, "campaign": slug} for row in own.values()]
+    else:
+        raise ConfigError(f"no campaigns/{SCHEDULE_FILE}: say which campaign with --campaign")
+    return [
+        row
+        for row in rows
+        if row.get("posted") != "yes" and (slug is None or row.get("campaign") == slug)
+    ]
 
 
 def report_backups(backups: Sequence[Path]) -> None:
